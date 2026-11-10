@@ -1,0 +1,9 @@
+{
+  "name": "DEAD WORLD",
+  "description": "Private multiplayer zombie survival game with huge procedural world, vehicles, crafting, and 64-bit access key.",
+  "version": "1.0.0",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

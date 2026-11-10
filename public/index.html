@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>DEAD WORLD</title>
+<meta name="description" content="Private multiplayer zombie survival game with huge procedural world, vehicles, crafting, and 64-bit access key.">
+<meta property="og:title" content="DEAD WORLD">
+<meta property="og:description" content="Private multiplayer zombie survival game with huge procedural world, vehicles, crafting, and 64-bit access key.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E%F0%9F%A7%9F%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<!-- Main Menu & Account Login/Registration -->
+<div id="login" class="panel center main-menu-panel">
+  <div class="menu-brand">
+    <h1>DEAD WORLD</h1>
+    <div class="badge-row">
+      <span class="badge red">🧟 Zombie Apocalypse</span>
+      <span class="badge gold">⚙️ Shelter Tycoon</span>
+      <span class="badge blue">👥 Multiplayer</span>
+    </div>
+    <p class="sub">16 Persistent Shelter Plots · Realistic Physics · Operation Exodus Endgame</p>
+  </div>
+
+  <div class="auth-tabs">
+    <button type="button" class="tab-btn active" id="tab-account">Survivor Account</button>
+    <button type="button" class="tab-btn" id="tab-guest">Quick Play (Guest)</button>
+  </div>
+
+  <div id="sec-account" class="auth-section">
+    <div class="account-toggle-row">
+      <label class="radio-chip"><input type="radio" name="acc-mode" id="acc-mode-login" checked> Sign In</label>
+      <label class="radio-chip"><input type="radio" name="acc-mode" id="acc-mode-reg"> Register New Profile</label>
+    </div>
+    <label>Survivor Name / Username
+      <input id="acc-user" maxlength="20" placeholder="e.g. Nomad, Ghost" autocomplete="username">
+    </label>
+    <label>Secret Password / PIN
+      <input id="acc-pass" type="password" maxlength="32" placeholder="Saves your shelter, scrap & stats" autocomplete="current-password">
+    </label>
+  </div>
+
+  <div id="sec-guest" class="auth-section" hidden>
+    <label>Guest Survivor Call-sign
+      <input id="lname" maxlength="16" placeholder="Survivor" autocomplete="nickname">
+    </label>
+    <p class="small hint-text">💡 Tip: Create an account to permanently save your Shelter upgrades & Scrap balance!</p>
+  </div>
+
+  <!-- Mode & Team Selection -->
+  <div class="menu-subgroup">
+    <h3>Game Mode</h3>
+    <div class="mode-select-row">
+      <button type="button" class="mode-btn sel" data-mode="coop" id="btn-mode-coop">
+        <span class="mode-icon">🛡️</span>
+        <span class="mode-title">Co-op Survival</span>
+        <span class="mode-desc">United against hordes</span>
+      </button>
+      <button type="button" class="mode-btn" data-mode="teams" id="btn-mode-teams">
+        <span class="mode-icon">⚔️</span>
+        <span class="mode-title">Faction Teams</span>
+        <span class="mode-desc">Compete for shelters</span>
+      </button>
+      <button type="button" class="mode-btn" data-mode="ffa" id="btn-mode-ffa">
+        <span class="mode-icon">💀</span>
+        <span class="mode-title">Solo / No Teams</span>
+        <span class="mode-desc">Every survivor for self</span>
+      </button>
+    </div>
+  </div>
+
+  <div id="team-select-box" class="menu-subgroup" hidden>
+    <h3>Select Your Team</h3>
+    <div class="team-grid">
+      <button type="button" class="team-chip sel" data-team="1" style="--tc:#ff4d4d">
+        <span class="team-dot" style="background:#ff4d4d"></span> Red Vanguard
+      </button>
+      <button type="button" class="team-chip" data-team="2" style="--tc:#4d8bff">
+        <span class="team-dot" style="background:#4d8bff"></span> Blue Outlaws
+      </button>
+      <button type="button" class="team-chip" data-team="3" style="--tc:#4dff88">
+        <span class="team-dot" style="background:#4dff88"></span> Green Militia
+      </button>
+      <button type="button" class="team-chip" data-team="4" style="--tc:#ffd24d">
+        <span class="team-dot" style="background:#ffd24d"></span> Gold Syndicate
+      </button>
+    </div>
+  </div>
+
+  <div class="menu-subgroup">
+    <label>64-bit Access Key
+      <input id="lkey" placeholder="XXXX-XXXX-XXXX-XXXX" maxlength="19" autocomplete="off" spellcheck="false">
+    </label>
+    <label class="row"><input type="checkbox" id="lrem" checked> Remember credentials on this device</label>
+  </div>
+
+  <button id="lgo" class="cta-play-btn">ENTER THE WASTELAND</button>
+  <div id="lerr" class="err"></div>
+  <div id="lstatus" class="small"></div>
+</div>
+
+<!-- In-Game HUD Overlays -->
+<div id="hud" hidden>
+  <div id="chatlog"></div>
+  <input id="chatin" maxlength="200" hidden placeholder="Say something… (start with /t for team chat)">
+  <div id="toasts"></div>
+  <div id="feed"></div>
+  <div id="banner"></div>
+</div>
+
+<!-- Shelter Tycoon Modal -->
+<div id="shelter-modal" class="panel center wide" hidden>
+  <div class="modal-header">
+    <div class="modal-title-wrap">
+      <h2 id="sh-title">🏰 Shelter Outpost Alpha</h2>
+      <div id="sh-subtitle" class="small">Plot #1 · Owner: Unclaimed · Region: Alpine</div>
+    </div>
+    <div class="modal-scrap-box">
+      <span class="scrap-icon">⚙️</span>
+      <span id="sh-scrap-counter" class="scrap-value">0</span>
+      <span class="scrap-label">Scrap</span>
+    </div>
+    <button type="button" id="sh-close" class="close-x-btn" title="Close [T / Esc]">✕</button>
+  </div>
+
+  <div class="shelter-info-bar">
+    <div class="sh-stat"><span class="lbl">SHELTER LEVEL</span><span id="sh-level" class="val">1</span></div>
+    <div class="sh-stat"><span class="lbl">PASSIVE INCOME</span><span id="sh-income" class="val">+1 Scrap/s</span></div>
+    <div class="sh-stat"><span class="lbl">DEFENSE STATUS</span><span id="sh-defense" class="val">Active Sentries</span></div>
+    <div class="sh-stat highlight"><span class="lbl">EXODUS BEACON</span><span id="sh-beacon-stat" class="val">Stage 0/5</span></div>
+  </div>
+
+  <div class="tycoon-cats" id="sh-categories">
+    <button class="cat-pill active" data-cat="all">All Upgrades</button>
+    <button class="cat-pill" data-cat="Defense">Defense</button>
+    <button class="cat-pill" data-cat="Turrets">Turrets</button>
+    <button class="cat-pill" data-cat="Production">Production</button>
+    <button class="cat-pill" data-cat="Survival">Survival</button>
+    <button class="cat-pill" data-cat="Armory">Armory</button>
+    <button class="cat-pill" data-cat="Logistics">Logistics</button>
+    <button class="cat-pill" data-cat="Endgame">Exodus Goal</button>
+  </div>
+
+  <div id="sh-upgrades-grid" class="upgrades-grid">
+    <!-- Populated dynamically -->
+  </div>
+</div>
+
+<div id="inv" class="panel side" hidden></div>
+<div id="craft" class="panel side left" hidden></div>
+<div id="menu" class="panel center wide" hidden></div>
+<div id="board" class="panel center wide" hidden></div>
+<div id="death" class="panel center" hidden>
+  <h2>YOU DIED</h2>
+  <p class="small">Your gear dropped where you fell. Respawn at your fortified shelter or nearest safe zone.</p>
+  <button id="drsp">Respawn</button>
+</div>
+<canvas id="bigmap" hidden></canvas>
+<script src="game.js"></script>
+</body>
+</html>

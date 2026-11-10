@@ -1,0 +1,19 @@
+{
+  "name": "deadworld",
+  "version": "1.0.0",
+  "description": "Private multiplayer zombie survival game (friends only, 64-bit key)",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "genkey": "node tools/genkey.js",
+    "build": "node tools/check.js",
+    "lint": "node tools/check.js",
+    "dev": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
