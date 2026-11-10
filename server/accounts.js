@@ -62,6 +62,9 @@ function register(username, password) {
     lastLogin: Date.now(),
     plotId: null,
     scrap: 150, // Starting bonus scrap
+    rebirths: 0, // Reborn prestige tier
+    prestigeTokens: 0, // Quantum Cores (⚛️)
+    rebornPerks: {}, // Permanent ascendant perks
     stats: {
       kills: 0,
       deaths: 0,
@@ -118,8 +121,41 @@ function updateStats(username, statDeltas) {
   saveAccounts();
 }
 
+function performReborn(username, bonusCores = 5) {
+  const user = String(username || '').trim().toLowerCase();
+  const acc = accounts.get(user);
+  if (!acc) return null;
+  acc.rebirths = (acc.rebirths || 0) + 1;
+  acc.prestigeTokens = (acc.prestigeTokens || 0) + bonusCores;
+  acc.plotId = null;
+  acc.upgrades = {};
+  // Bonus starting scrap based on new rebirth tier
+  acc.scrap = 300 * (1 + acc.rebirths);
+  acc.rebornPerks = acc.rebornPerks || {};
+  saveAccounts();
+  return sanitizeAccount(acc);
+}
+
+function buyRebornPerk(username, perkKey, cost) {
+  const user = String(username || '').trim().toLowerCase();
+  const acc = accounts.get(user);
+  if (!acc) return { ok: false, error: 'Account not found' };
+  acc.prestigeTokens = acc.prestigeTokens || 0;
+  if (acc.prestigeTokens < cost) {
+    return { ok: false, error: `Need ${cost} Quantum Cores (have ${acc.prestigeTokens})` };
+  }
+  acc.prestigeTokens -= cost;
+  acc.rebornPerks = acc.rebornPerks || {};
+  acc.rebornPerks[perkKey] = (acc.rebornPerks[perkKey] || 0) + 1;
+  saveAccounts();
+  return { ok: true, account: sanitizeAccount(acc) };
+}
+
 function sanitizeAccount(acc) {
   const { salt, hash, ...safe } = acc;
+  safe.rebirths = safe.rebirths || 0;
+  safe.prestigeTokens = safe.prestigeTokens || 0;
+  safe.rebornPerks = safe.rebornPerks || {};
   return safe;
 }
 
@@ -129,5 +165,8 @@ module.exports = {
   getAccount,
   savePlotProgress,
   updateStats,
+  performReborn,
+  buyRebornPerk,
   sanitizeAccount
 };
+

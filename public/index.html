@@ -143,10 +143,57 @@
     <button class="cat-pill" data-cat="Armory">Armory</button>
     <button class="cat-pill" data-cat="Logistics">Logistics</button>
     <button class="cat-pill" data-cat="Endgame">Exodus Goal</button>
+    <button class="cat-pill" data-cat="Reborn Tech">Reborn Tech</button>
   </div>
 
   <div id="sh-upgrades-grid" class="upgrades-grid">
     <!-- Populated dynamically -->
+  </div>
+</div>
+
+<!-- Reborn Ascension Modal -->
+<div id="reborn-modal" class="panel center wide reborn-window" hidden>
+  <div class="modal-header reborn-header">
+    <div class="modal-title-wrap">
+      <h2 id="rb-title"><span class="pulse-icon">⚛️</span> QUANTUM REBORN & ASCENSION</h2>
+      <div id="rb-subtitle" class="small">Transcend mortality · Permanent mutations & exotic technology across all lives</div>
+    </div>
+    <div class="modal-cores-box">
+      <span class="core-icon">⚛️</span>
+      <span id="rb-token-counter" class="core-value">0</span>
+      <span class="core-label">Quantum Cores</span>
+    </div>
+    <button type="button" id="rb-close" class="close-x-btn" title="Close [R / Esc]">✕</button>
+  </div>
+
+  <div class="reborn-status-banner">
+    <div class="rb-stat-col">
+      <span class="rb-stat-lbl">CURRENT PRESTIGE</span>
+      <span id="rb-tier-display" class="rb-stat-val gold">MORTAL SURVIVOR (TIER 0)</span>
+    </div>
+    <div class="rb-stat-col">
+      <span class="rb-stat-lbl">SCRAP PRODUCTION MULTIPLIER</span>
+      <span id="rb-scrap-mult" class="rb-stat-val cyan">+0% Scrap Boost</span>
+    </div>
+    <div class="rb-stat-col">
+      <span class="rb-stat-lbl">ASCENDANT GENOMES</span>
+      <span id="rb-perks-count" class="rb-stat-val">0 / 8 Unlocked</span>
+    </div>
+    <div class="rb-stat-col action-col">
+      <button type="button" id="btn-do-ascend" class="ascend-trigger-btn">
+        <span class="btn-flare"></span>
+        <span class="btn-txt">⚡ ASCEND NOW (+15 ⚛️)</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="reborn-perks-intro">
+    <h3>🧬 Ascendant Bio-Cybernetic Matrix</h3>
+    <p>Quantum Cores (⚛️) persist permanently through deaths and rebirths. Spend them below to unlock god-tier capabilities.</p>
+  </div>
+
+  <div id="rb-perks-grid" class="reborn-perks-grid">
+    <!-- Populated dynamically from REBORN_PERKS -->
   </div>
 </div>
 

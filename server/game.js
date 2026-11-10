@@ -10,7 +10,7 @@ const {SKY, COSMIC, FXD} = require('./data/sky');
 const LOOT = require('./data/loot');
 
 const accounts = require('./accounts');
-const {PLOTS, UPGRADES, computePlotLevel, getUpgradeCost} = require('./data/shelter');
+const {PLOTS, UPGRADES, REBORN_PERKS, computePlotLevel, getUpgradeCost} = require('./data/shelter');
 
 const THEME_DENS = {city:16,gov:14,culture:14,sports:14,historic:12,rural:10,alpine:8,volcanic:8,karst:8,coast:8,desert:8,saltflat:6,canyon:8,lakes:8,reef:5};
 const MAXZ = 280;
@@ -63,7 +63,7 @@ class Game {
 
     this.mapJSON = JSON.stringify({W: M.W, H: M.H, TS: M.TS, tiles: Buffer.from(M.tiles).toString('base64'), region: Buffer.from(M.region).toString('base64'),
       rects: M.rects, styles: M.styles, landmarks: M.landmarks, zones: M.zones, themes: M.themes, rnames: M.rnames});
-    this.defsJSON = JSON.stringify({W: WLIST.map(k => WEAPONS[k]), AMMO, ITEMS, STRUCTS, RECIPES, VEH, VLIST, ZD, ZLIST, TILES: PROPS, TEAMS: TEAM_NAMES, PLOTS, UPGRADES});
+    this.defsJSON = JSON.stringify({W: WLIST.map(k => WEAPONS[k]), AMMO, ITEMS, STRUCTS, RECIPES, VEH, VLIST, ZD, ZLIST, TILES: PROPS, TEAMS: TEAM_NAMES, PLOTS, UPGRADES, REBORN_PERKS});
     this.initLoot(); this.initVehicles();
     console.log(`[game] ${this.items.size} ground items, ${this.vehicles.size} vehicles, ${this.plots.size} shelter plots. Init payload ${(this.mapJSON.length / 1024).toFixed(0)} KB`);
   }
@@ -146,6 +146,10 @@ class Game {
       pull: [0, 0], hurt: -1e9, scope: false, ping: 0, lastHorn: 0, rev: -1e9, msgT: {}, spd: 210, swim: false,
       scrap: account ? (account.scrap || 150) : 120,
       accountName: account ? account.username : null,
+      rebirths: account ? (account.rebirths || 0) : 0,
+      prestigeTokens: account ? (account.prestigeTokens || 0) : 0,
+      rebornPerks: account ? (account.rebornPerks || {}) : {},
+      hardlightShield: (account && account.rebornPerks && account.rebornPerks.hardlight_shield) ? 150 : 0,
       plotId: account ? account.plotId : null,
       upgrades: account ? (account.upgrades || {}) : {}};
 
@@ -174,6 +178,10 @@ class Game {
   giveKit(p) {
     p.hotbar = [{w: KNIFE}, {w: GLOCK, mag: 17}, null, null, null]; p.sel = 1; p.ammo = {pistol: 34};
     p.inv = [{k: 'bandage', n: 2}, {k: 'waterbottle', n: 1}, {k: 'beans', n: 1}, {k: 'flashlight', n: 1}]; p.wear = {};
+    if (p.rebornPerks && p.rebornPerks.exotic_cache) {
+      p.hotbar[2] = {w: wkey('DragonFire Laser'), mag: 60};
+      p.ammo.cell = 120;
+    }
     this.recalcWear(p); this.invChanged(p);
   }
   respawnPlayer(p) {
@@ -260,8 +268,12 @@ class Game {
   }
   awardScrap(p, amount, x, y) {
     if (!p) return;
-    p.scrap = (p.scrap || 0) + amount;
-    this.ev.push({x, y, d: ['sc', Math.round(x), Math.round(y), amount, p.id]});
+    let mult = 1 + (p.rebirths || 0) * 0.25;
+    if (p.rebornPerks && p.rebornPerks.quantum_scavenger) mult += p.rebornPerks.quantum_scavenger * 0.3;
+    if (p.plot && p.plot.upgrades && p.plot.upgrades.scrap_smelter) mult += p.plot.upgrades.scrap_smelter * 0.25;
+    const finalAmt = Math.max(1, Math.round(amount * mult));
+    p.scrap = (p.scrap || 0) + finalAmt;
+    this.ev.push({x, y, d: ['sc_add', finalAmt, Math.round(x), Math.round(y)]});
     if (p.accountName && this.tickN % 15 === 0) accounts.savePlotProgress(p.accountName, p.plotId, p.plot ? p.plot.upgrades : p.upgrades, p.scrap);
   }
 
@@ -295,6 +307,66 @@ class Game {
       case 'get_plot': this.sendPlotDetail(p, +m.plotId); break;
       case 'set_team': { const t = clamp(+m.team || 0, 0, 4); p.team = t; if (p.plot) p.plot.team = t; this.msg(p, `Joined team: ${TEAM_NAMES[t]}`); this.sendBoard(); this.broadcastPlots(); break; }
       case 'set_mode': { if (m.mode === 'coop' || m.mode === 'teams' || m.mode === 'ffa') { this.settings.mode = m.mode; this.feed(`Game mode set to ${m.mode.toUpperCase()}`); this.sendBoard(); } break; }
+      case 'reborn_ascend': {
+        const bonusCores = 10 + Math.floor((p.scrap || 0) / 400) + (p.plot ? p.plot.level * 2 : 0);
+        const acc = accounts.performReborn(p.accountName || p.name, bonusCores);
+        if (acc) {
+          p.rebirths = acc.rebirths;
+          p.prestigeTokens = acc.prestigeTokens;
+          p.rebornPerks = acc.rebornPerks;
+          p.scrap = acc.scrap;
+          if (p.plot) { p.plot.owner = null; p.plot.ownerName = ''; p.plot.upgrades = {}; p.plot.level = 1; }
+          p.plotId = null; p.plot = null;
+          this.feed(`🌟 ${p.name} has ASCENDED to Reborn Tier ${p.rebirths}! Earned ${bonusCores} Quantum Cores ⚛️!`);
+          this.broadcast({t: 'msg', m: `🌟 ${p.name} ASCENDED to Reborn Tier ${p.rebirths}! Exotic Prototypes Unlocked!`});
+          this.respawnPlayer(p);
+          this.broadcastPlots();
+          this.send(p, {t: 'reborn_success', rebirths: p.rebirths, tokens: p.prestigeTokens, cores: bonusCores});
+        }
+        break;
+      }
+      case 'buy_reborn_perk': {
+        const perkKey = String(m.perk);
+        const perkDef = REBORN_PERKS[perkKey];
+        if (!perkDef) return;
+        const curRank = (p.rebornPerks && p.rebornPerks[perkKey]) || 0;
+        if (curRank >= perkDef.max) { this.msg(p, `${perkDef.name} is already at MAX rank!`); return; }
+        const cost = perkDef.cost[curRank] || 5;
+        const res = accounts.buyRebornPerk(p.accountName || p.name, perkKey, cost);
+        if (!res.ok) { this.msg(p, res.error); return; }
+        p.rebornPerks = res.account.rebornPerks;
+        p.prestigeTokens = res.account.prestigeTokens;
+        if (perkKey === 'hardlight_shield') p.hardlightShield = 150;
+        this.msg(p, `⚡ Acquired ${perkDef.name} Rank ${p.rebornPerks[perkKey]}!`);
+        this.send(p, {t: 'reborn_updated', perks: p.rebornPerks, tokens: p.prestigeTokens});
+        break;
+      }
+      case 'quantum_recall': {
+        if ((p.rebornPerks && p.rebornPerks.quantum_recall) || (p.plot && p.plot.upgrades && p.plot.upgrades.teleport_pad)) {
+          if (!p.plot) { this.msg(p, 'You must claim a Shelter Plot to recall!'); return; }
+          p.x = p.plot.x; p.y = p.plot.y;
+          this.forcePos(p);
+          this.ev.push({x: p.x, y: p.y, d: ['ring', Math.round(p.x), Math.round(p.y), 240, '#00e5ff']});
+          this.msg(p, '🌀 Quantum Recall: Warped to Shelter!');
+        } else {
+          this.msg(p, 'Quantum Recall requires Quantum Recall Perk or Teleport Pad upgrade.');
+        }
+        break;
+      }
+      case 'orbital_strike': {
+        if ((p.rebornPerks && p.rebornPerks.orbital_beam) || (p.plot && p.plot.upgrades && p.plot.upgrades.orbital_strike_array)) {
+          const targetX = +m.x || p.x, targetY = +m.y || p.y;
+          if (this.now - (p.lastOrbital || 0) < 60000) {
+            this.msg(p, `Orbital Lance cooling down (${Math.ceil((60000 - (this.now - p.lastOrbital)) / 1000)}s)`);
+            return;
+          }
+          p.lastOrbital = this.now;
+          this.explode(targetX, targetY, 260, 800, p, {fx: 'flash'});
+          this.ev.push({x: targetX, y: targetY, d: ['lt', Math.round(targetX), Math.round(targetY)]});
+          this.broadcast({t: 'msg', m: `🛰️ Orbital Particle Strike deployed at (${Math.round(targetX)}, ${Math.round(targetY)})!`});
+        }
+        break;
+      }
     }
   }
   validatePos(p, x, y) {
@@ -685,7 +757,17 @@ class Game {
     if (kind === 'bullet') m *= 1 - Math.min(0.7, f.bullet || 0); else if (kind === 'explosion') m *= 1 - (f.blast || 0); else if (kind === 'zombie' || kind === 'melee') m *= 1 - Math.min(0.6, f.melee || 0);
     if (kind === 'fire' && f.fireRes) m *= 1 - f.fireRes;
     m *= 1 - (f.armor || 0);
-    p.hp -= dmg * m; p.hurt = now;
+    if (p.rebornPerks && p.rebornPerks.exoskeleton) {
+      m *= Math.max(0.4, 1 - p.rebornPerks.exoskeleton * 0.1);
+    }
+    let effectiveDmg = dmg * m;
+    if (p.hardlightShield > 0) {
+      const absorbed = Math.min(p.hardlightShield, effectiveDmg);
+      p.hardlightShield -= absorbed;
+      effectiveDmg -= absorbed;
+      this.ev.push({x: p.x, y: p.y, d: ['ring', Math.round(p.x), Math.round(p.y), 45, '#00e5ff']});
+    }
+    p.hp -= effectiveDmg; p.hurt = now;
     if (kind === 'zombie' && zsrc) {
       const zd = ZD[zsrc.type];
       if (!p.inf && !(p.buf.disinf > now) && rnd() < 0.1 * (f.infect || 1)) { p.inf = 1; this.msg(p, '🧟 You were bitten — INFECTED! Find Antibiotics or Antizyme.'); }
@@ -1374,8 +1456,19 @@ class Game {
       }
       if (dmg > 0) { p.hp -= dmg; if (p.hp <= 0) { this.killPlayer(p, null, p.swim ? 'drowned' : p.inf > 0 ? 'infection' : 'the elements'); continue; } }
       else if (p.hu > 50 && p.th > 50 && !p.bleed && !p.inf) p.hp = Math.min(100, p.hp + 0.35 * dt);
+      if (p.rebornPerks && p.rebornPerks.nanite_regen) {
+        p.hp = Math.min(100, p.hp + p.rebornPerks.nanite_regen * 2.5 * dt);
+        p.bleed = false; p.frac = false;
+      }
+      if (p.rebornPerks && p.rebornPerks.hardlight_shield) {
+        if (!p.hardlightShield) p.hardlightShield = 0;
+        if (now - p.hurt > 7000 && p.hardlightShield < 150) {
+          p.hardlightShield = Math.min(150, p.hardlightShield + 25 * dt);
+        }
+      }
       const sl = p.hotbar[p.sel], w = sl && WEAPONS[sl.w]; let s = 210;
       if (w && w.spd) s *= w.spd; if (p.frac) s *= 0.6; s *= p.wfx.speed || 1; if (b.adren > now) s *= 1.3; if (p.hu < 10 || p.th < 10) s *= 0.85; if (b.slow > now) s *= 0.55; if (b.stun > now) s = 0;
+      if (p.rebornPerks && p.rebornPerks.cybernetic_legs) s *= (1 + p.rebornPerks.cybernetic_legs * 0.15);
       p.spd = s; p.scope = !!(p.input.alt && w && w.scope && !p.veh);
       this.tryFire(p);
       if (p.reloadUntil && now >= p.reloadUntil) p.reloadUntil = 0;
@@ -1388,66 +1481,120 @@ class Game {
       if (!plot.owner) continue;
       const up = plot.upgrades || {};
       let scrapPerSec = 1;
-      if (up.scrap_compactor) scrapPerSec += [0, 2, 5, 12, 25, 50][up.scrap_compactor] || 0;
-      if (up.salvage_drone) scrapPerSec += [0, 3, 8, 18, 35][up.salvage_drone] || 0;
-      if (up.industrial_forge) scrapPerSec += [0, 15, 35, 75][up.industrial_forge] || 0;
-      if (up.solar_array) scrapPerSec *= (1 + up.solar_array * 0.25);
+      if (up.scrap_compactor) scrapPerSec += [0, 3, 6, 10, 16, 24, 35, 50, 70, 100, 150][up.scrap_compactor] || 0;
+      if (up.scavenger_drones) scrapPerSec += up.scavenger_drones * 6;
+      if (up.nuclear_rtg) scrapPerSec += [0, 18, 36, 60, 100][up.nuclear_rtg] || 0;
+      if (up.crypto_terminal) scrapPerSec += [0, 12, 25, 45, 75][up.crypto_terminal] || 0;
+      if (up.antimatter_reactor) scrapPerSec += [0, 40, 90, 200][up.antimatter_reactor] || 0;
+      if (up.solar_array) scrapPerSec *= (1 + up.solar_array * 0.15);
+      if (up.scrap_smelter) scrapPerSec *= (1 + up.scrap_smelter * 0.25);
       const earned = Math.round(scrapPerSec * dt);
       if (earned > 0) {
         plot.scrap = (plot.scrap || 0) + earned;
         const ownerPlayer = this.players.get(plot.owner);
         if (ownerPlayer) ownerPlayer.scrap = (ownerPlayer.scrap || 0) + earned;
       }
-      const hasTurret = up.turret_pistol || up.turret_mg || up.turret_shotgun || up.turret_flame || up.turret_rocket || up.turret_laser;
-      if (hasTurret && now - (plot.lastTurretFire || 0) > 400) {
-        let targetZ = null, minD = 550 * 550;
-        for (const z of this.zh.query(plot.x, plot.y, 600, [])) {
+
+      // Hardlight shield dome pushes away and repels approaching zombies
+      if (up.hardlight_dome) {
+        for (const z of this.zh.query(plot.x, plot.y, plot.radius, [])) {
+          if (z.hp <= 0) continue;
+          const dd = Math.hypot(z.x - plot.x, z.y - plot.y);
+          if (dd < plot.radius && dd > 1) {
+            const pushA = Math.atan2(z.y - plot.y, z.x - plot.x);
+            z.x = plot.x + Math.cos(pushA) * (plot.radius + 15);
+            z.y = plot.y + Math.sin(pushA) * (plot.radius + 15);
+            this.hitZombie(z, 20 * up.hardlight_dome * dt, null, {knock: 60});
+          }
+        }
+      }
+
+      // Defensive turrets & Tesla Spire
+      const hasTurret = up.turret_pistol || up.turret_mg || up.turret_shotgun || up.turret_sniper || up.turret_rocket || up.turret_laser || up.turret_cryo || up.turret_flame || up.tesla_spire;
+      if (hasTurret && now - (plot.lastTurretFire || 0) > 350) {
+        let targetZ = null, minD = 750 * 750;
+        for (const z of this.zh.query(plot.x, plot.y, 800, [])) {
           if (z.hp <= 0) continue;
           const dd = d2(z.x, z.y, plot.x, plot.y);
           if (dd < minD) { minD = dd; targetZ = z; }
         }
         if (targetZ) {
           plot.lastTurretFire = now;
-          let turretDmg = 30;
-          if (up.turret_pistol) turretDmg += up.turret_pistol * 16;
-          if (up.turret_mg) turretDmg += up.turret_mg * 28;
-          if (up.turret_laser) turretDmg += up.turret_laser * 55;
-          if (up.turret_flame) { targetZ.burn = now + 3000; turretDmg += up.turret_flame * 20; }
+          let turretDmg = 35;
+          if (up.turret_pistol) turretDmg += up.turret_pistol * 18;
+          if (up.turret_mg) turretDmg += up.turret_mg * 30;
+          if (up.turret_sniper) turretDmg += up.turret_sniper * 65;
+          if (up.turret_laser) turretDmg += up.turret_laser * 60;
+          if (up.turret_cryo) { targetZ.stun = now + 1200; turretDmg += up.turret_cryo * 20; }
+          if (up.turret_flame) { targetZ.burn = now + 4000; turretDmg += up.turret_flame * 25; }
           const ownerPlayer = this.players.get(plot.owner) || null;
-          this.hitZombie(targetZ, turretDmg, ownerPlayer, {knock: 100});
-          this.ev.push({x: plot.x, y: plot.y, d: ['turret', Math.round(plot.x), Math.round(plot.y), Math.round(targetZ.x), Math.round(targetZ.y), up.turret_laser ? 'laser' : 'bullet']});
-        }
-      }
-      if (up.med_bay) {
-        const healRate = [0, 4, 8, 16, 25, 40][up.med_bay] || 4;
-        for (const p of this.players.values()) {
-          if (p.dead) continue;
-          if (p.id === plot.owner || (plot.team > 0 && p.team === plot.team)) {
-            if (d2(p.x, p.y, plot.x, plot.y) < plot.radius * plot.radius) {
-              p.hp = Math.min(100, p.hp + healRate * dt);
-              if (up.med_bay >= 2) p.bleed = false;
-              if (up.med_bay >= 3) p.frac = false;
-              if (up.decon_shower) p.inf = Math.max(0, p.inf - up.decon_shower * 4 * dt);
+          this.hitZombie(targetZ, turretDmg, ownerPlayer, {knock: 120});
+          this.ev.push({x: plot.x, y: plot.y, d: ['tr', Math.round(plot.x), Math.round(plot.y), Math.round(targetZ.x), Math.round(targetZ.y), up.turret_laser ? 2 : up.turret_mg ? 3 : 1]});
+          if (up.turret_rocket) {
+            this.explode(targetZ.x, targetZ.y, 90 + up.turret_rocket * 25, 140, ownerPlayer, {fx: 'frag'});
+          }
+          if (up.tesla_spire) {
+            let hitCount = 0;
+            for (const otherZ of this.zh.query(targetZ.x, targetZ.y, 250, [])) {
+              if (otherZ !== targetZ && otherZ.hp > 0 && hitCount < 2 + up.tesla_spire) {
+                hitCount++;
+                this.hitZombie(otherZ, 60 * up.tesla_spire, ownerPlayer, {knock: 80});
+                this.ev.push({x: targetZ.x, y: targetZ.y, d: ['zp', Math.round(targetZ.x), Math.round(targetZ.y), Math.round(otherZ.x), Math.round(otherZ.y)]});
+              }
             }
           }
         }
       }
-      if (up.auto_repair || up.fuel_synthesizer) {
+
+      // Survival, food, water, and ammo replenishment inside shelter
+      for (const p of this.players.values()) {
+        if (p.dead) continue;
+        if (p.id === plot.owner || (plot.team > 0 && p.team === plot.team) || plot.owner === null) {
+          if (d2(p.x, p.y, plot.x, plot.y) < plot.radius * plot.radius) {
+            if (up.medbay) {
+              const healRate = [0, 5, 12, 20, 35, 60][up.medbay] || 5;
+              p.hp = Math.min(100, p.hp + healRate * dt);
+              if (up.medbay >= 2) p.bleed = false;
+              if (up.medbay >= 3) p.frac = false;
+            }
+            if (up.decontamination_chamber) p.inf = 0;
+            if (up.hydroponic_greenhouse) p.hu = Math.min(100, p.hu + 20 * dt);
+            if (up.water_vaporator) p.th = Math.min(100, p.th + 25 * dt);
+            if (up.ammo_press && this.tickN % 30 === 0) {
+              for (const [k] of Object.entries(AMMO)) p.ammo[k] = Math.max(p.ammo[k] || 0, 40 * up.ammo_press);
+              p.dirty = true;
+            }
+          }
+        }
+      }
+
+      // Vehicle repair and refuel inside shelter
+      if (up.repair_lift || up.fuel_synthesizer) {
         for (const v of this.vh.query(plot.x, plot.y, plot.radius, [])) {
           if (v.dead) continue;
           const vd = VEH[v.type];
-          if (up.auto_repair) v.hp = Math.min(v.maxhp, v.hp + (30 * up.auto_repair) * dt);
-          if (up.fuel_synthesizer) v.fuel = Math.min(vd.fuel, v.fuel + (10 * up.fuel_synthesizer) * dt);
+          if (up.repair_lift) v.hp = Math.min(v.maxhp, v.hp + (40 * up.repair_lift) * dt);
+          if (up.fuel_synthesizer) v.fuel = Math.min(vd.fuel, v.fuel + (20 * up.fuel_synthesizer) * dt);
           v.broken = false;
         }
       }
+
+      // Evacuation and Reborn trigger
       if (plot.evacActive && plot.evacTimer > 0) {
         const rem = Math.max(0, Math.round((plot.evacTimer - now) / 1000));
         if (rem <= 0) {
           plot.evacTimer = -1;
-          this.broadcast({t: 'msg', m: `🏆 VICTORY! Military Gunship extracted all survivors from Plot #${plot.id}!`});
-          this.feed('🏆 OPERATION EXODUS COMPLETE! Wasteland Conquered!');
-          for (const p of this.players.values()) this.awardScrap(p, 5000, plot.x, plot.y);
+          plot.evacActive = false;
+          this.broadcast({t: 'msg', m: `🏆 VICTORY! Military Gunship extracted survivors from Plot #${plot.id}!`});
+          this.feed('🏆 OPERATION EXODUS COMPLETE! REBIRTH ASCENSION UNLOCKED!');
+          for (const p of this.players.values()) {
+            this.awardScrap(p, 5000, plot.x, plot.y);
+            if (p.id === plot.owner || (plot.team > 0 && p.team === plot.team)) {
+              p.prestigeTokens = (p.prestigeTokens || 0) + 20;
+              if (p.accountName) accounts.updateStats(p.accountName, { timePlayed: 1 });
+              this.send(p, {t: 'exodus_ready_reborn', plotId: plot.id, bonusCores: 20});
+            }
+          }
         }
       }
     }
@@ -1471,7 +1618,7 @@ class Game {
       const sl = p.hotbar[p.sel], w = sl ? WEAPONS[sl.w] : null; let f = 0;
       if (p.dead) f |= 1; if (p.light) f |= (p.pfx.light === 'cone' ? 2 : 512); if (now < p.reloadUntil) f |= 4; if (p.swim) f |= 8; if (p.input.sprint && p.st > 1) f |= 16;
       if (p.buf.burn > now) f |= 32; if (p.buf.stun > now) f |= 64; if (p.nvg) f |= 128; if (p.scope) f |= 256; if (now < p.spawnProt) f |= 1024; if (p.bleed) f |= 2048;
-      P.push([p.id, Math.round(p.x), Math.round(p.y), Math.round(Math.atan2(p.input.ay - p.y, p.input.ax - p.x) * 100), Math.round(p.hp), p.team, w ? w.i : -1, p.veh ? p.veh.id : 0, f]);
+      P.push([p.id, Math.round(p.x), Math.round(p.y), Math.round(Math.atan2(p.input.ay - p.y, p.input.ax - p.x) * 100), Math.round(p.hp), p.team, w ? w.i : -1, p.veh ? p.veh.id : 0, f, p.rebirths || 0]);
     }
     for (const p of this.players.values()) {
       if (!p.ws || p.ws.readyState !== 1 || p.ws.bufferedAmount > 2e6) continue;
@@ -1503,6 +1650,7 @@ class Game {
         res: w && w.ammo ? (p.ammo[w.ammo] || 0) : -1, rl: p.reloadUntil > now ? Math.round(p.reloadUntil - now) : 0, rlT: p.reloadT, veh: p.veh ? p.veh.id : 0, seat: p.seat, dead: p.dead ? 1 : 0,
         rsp: p.dead ? Math.max(0, Math.round(p.rspAt - now)) : 0, b: bits, hurt: Math.min(99999, Math.round(now - p.hurt)), emp: now < this.empUntil ? 1 : 0, nvg: p.nvg ? 1 : 0, lt: p.light ? (p.pfx.light || 'cone') : 0,
         scrap: p.scrap || 0, plotId: p.plotId || 0, plotLv: p.plot ? p.plot.level : 0, team: p.team || 0,
+        rebirths: p.rebirths || 0, prestigeTokens: p.prestigeTokens || 0, rebornPerks: p.rebornPerks || {}, hardlightShield: Math.round(p.hardlightShield || 0),
         beacon: p.plot ? (p.plot.upgrades.evac_beacon || 0) : 0, evacTimer: p.plot && p.plot.evacActive ? Math.max(0, Math.round((p.plot.evacTimer - now) / 1000)) : 0};
       if (p.veh) {
         const v = p.veh, vd = VEH[v.type]; me.vf = Math.round(100 * v.fuel / vd.fuel); me.vh = Math.round(100 * v.hp / v.maxhp); me.vb = v.broken ? 1 : 0; me.va = v.alt > 0.5 ? 1 : 0; me.vp = Math.round((v.plate || 0) * 100);

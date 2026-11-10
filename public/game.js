@@ -240,6 +240,31 @@ function onMsg(m) {
       $('shelter-modal').hidden = false;
       renderShelterModal(m.plot);
       break;
+    case 'reborn_success':
+      if (me) {
+        me.rebirths = m.rebirths;
+        me.prestigeTokens = m.prestigeTokens;
+        me.rebornPerks = m.rebornPerks;
+      }
+      showBanner('✨ ASCENSION TRANSCENDENCE COMPLETE! ✨', `Tier ${m.rebirths} Ascendant · +${m.rebirths * 25}% Permanent Scrap Yield`, '#a855f7', 8000);
+      sfx('event');
+      burst(pred.x, pred.y, 80, '#00e5ff', 300, 1500, 8);
+      renderRebornModal();
+      break;
+    case 'reborn_updated':
+      if (me) {
+        me.prestigeTokens = m.prestigeTokens;
+        me.rebornPerks = m.rebornPerks;
+      }
+      toast('🧬 Ascendant Perk Mutated!');
+      sfx('pick');
+      renderRebornModal();
+      break;
+    case 'exodus_ready_reborn':
+      showBanner('🚀 EXODUS EXTRACTION SHIP INBOUND!', `Outpost #${m.plotId} Beacon activated! Quantum Ascension (+${m.bonusTokens} ⚛️) ready!`, '#ffd700', 10000);
+      sfx('event');
+      toggleRebornModal(true);
+      break;
     case 'chat': addChat(m); break;
     case 'feed': addFeed(m.m); break;
     case 'msg': toast(m.m); break;
@@ -270,8 +295,9 @@ function init(m) {
   buildRectGrid(); buildMinimap();
   $('login').hidden = true; $('hud').hidden = false;
   setInterval(() => send({t: 'ping', c: performance.now(), l: ping}), 2000);
-  toast('Welcome to DEAD WORLD — Press T for Shelter Tycoon · Esc for menu');
+  toast('Welcome to DEAD WORLD — Press T for Shelter · Press P for Recall · Esc for menu');
   initShelterUI();
+  initRebornUI();
   requestAnimationFrame(frame);
 }
 function b64(s) {
@@ -593,7 +619,7 @@ function lerpArr(A, B, u, ix, iy, ia, as) {
 
 // ───────── input ─────────
 const worldMouse = () => ({x: camX + (mouse.x - VW / 2) / zoom, y: camY + (mouse.y - VH / 2) / zoom});
-const uiBlock = () => !$('menu').hidden || !$('board').hidden || !$('bigmap').hidden || !$('shelter-modal').hidden || chatOpen || (me && me.dead);
+const uiBlock = () => !$('menu').hidden || !$('board').hidden || !$('bigmap').hidden || !$('shelter-modal').hidden || !$('reborn-modal').hidden || chatOpen || (me && me.dead);
 
 addEventListener('keydown', e => {
   if (!D) return;
@@ -606,6 +632,22 @@ addEventListener('keydown', e => {
     case 'Enter': e.preventDefault(); openChat(); break;
     case 'KeyE': send({t: 'act'}); break;
     case 'KeyT': toggleShelterTycoon(); break;
+    case 'KeyY': case 'KeyU': toggleRebornModal(); break;
+    case 'KeyP':
+      if (me && me.rebornPerks && me.rebornPerks.includes('quantum_recall')) {
+        send({t: 'quantum_recall'});
+        toast('🌀 Engaging Quantum Recall Matrix…');
+      } else {
+        toast('Unlock "Quantum Recall Beacon" in Reborn menu [Y] to warp to your shelter!');
+      }
+      break;
+    case 'KeyO':
+      if (me && me.rebornPerks && me.rebornPerks.includes('orbital_beam')) {
+        const wm = worldMouse();
+        send({t: 'orbital_strike', x: wm.x, y: wm.y});
+        toast('⚡ Orbital Kinetic Lance target designated!');
+      }
+      break;
     case 'KeyR': if (mode && mode.type === 'place') mode.rot ^= 1; else send({t: 'reload'}); break;
     case 'KeyQ': if (mode && mode.type === 'place') mode.rot ^= 1; break;
     case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4': case 'Digit5': send({t: 'slot', v: +e.code.slice(5) - 1}); break;
@@ -616,6 +658,7 @@ addEventListener('keydown', e => {
       if (mode) mode = null;
       else if (!$('bigmap').hidden) toggleMap();
       else if (!$('shelter-modal').hidden) $('shelter-modal').hidden = true;
+      else if (!$('reborn-modal').hidden) $('reborn-modal').hidden = true;
       else if (!$('inv').hidden || !$('craft').hidden) { $('inv').hidden = $('craft').hidden = true; }
       else { const mn = $('menu'); mn.hidden = !mn.hidden; if (!mn.hidden) renderMenu(); }
       break;
@@ -944,6 +987,95 @@ function renderShelterModal(plot) {
       send({t: 'upgrade_plot', plotId: plot.id, key});
       btn.disabled = true;
       btn.textContent = 'Purchasing…';
+    };
+  });
+}
+
+// ───────── Reborn Ascension UI & Matrix ─────────
+function initRebornUI() {
+  const closeBtn = $('rb-close');
+  if (closeBtn) closeBtn.onclick = () => $('reborn-modal').hidden = true;
+
+  const ascendBtn = $('btn-do-ascend');
+  if (ascendBtn) {
+    ascendBtn.onclick = () => {
+      send({t: 'reborn_ascend'});
+      ascendBtn.disabled = true;
+      const txt = ascendBtn.querySelector('.btn-txt');
+      if (txt) txt.textContent = 'Ascending…';
+    };
+  }
+}
+
+function toggleRebornModal(forceOpen = false) {
+  const modal = $('reborn-modal');
+  if (!modal) return;
+  if (forceOpen) modal.hidden = false;
+  else modal.hidden = !modal.hidden;
+  if (!modal.hidden) renderRebornModal();
+}
+
+function renderRebornModal() {
+  const modal = $('reborn-modal');
+  if (!modal || !D || !D.REBORN_PERKS) return;
+
+  const rebirths = (me && me.rebirths) || 0;
+  const cores = (me && me.prestigeTokens) || 0;
+  const perks = (me && me.rebornPerks) || [];
+
+  $('rb-token-counter').textContent = cores;
+  $('rb-tier-display').textContent = rebirths > 0 ? `ASCENDANT (TIER ${rebirths})` : 'MORTAL SURVIVOR (TIER 0)';
+  $('rb-scrap-mult').textContent = `+${rebirths * 25}% Permanent Scrap Boost`;
+  $('rb-perks-count').textContent = `${perks.length} / ${Object.keys(D.REBORN_PERKS).length} Unlocked`;
+
+  const ascendBtn = $('btn-do-ascend');
+  if (ascendBtn) {
+    const canAscend = (me && ((me.plotLv && me.plotLv >= 4) || (activePlot && activePlot.beacon >= 5) || rebirths > 0));
+    const tokenReward = 15 + rebirths * 5;
+    ascendBtn.disabled = !canAscend;
+    const txt = ascendBtn.querySelector('.btn-txt');
+    if (txt) {
+      txt.textContent = canAscend
+        ? `⚡ ASCEND NOW (+${tokenReward} ⚛️ CORES)`
+        : 'LOCKED (Reach Outpost Lv.4+ or Activate Exodus Beacon)';
+    }
+  }
+
+  const grid = $('rb-perks-grid');
+  let cardsHtml = '';
+  for (const [key, p] of Object.entries(D.REBORN_PERKS)) {
+    const unlocked = perks.includes(key);
+    const canAfford = cores >= p.cost;
+
+    cardsHtml += `<div class="reborn-card ${unlocked ? 'unlocked' : ''}">
+      <div class="rb-top">
+        <span class="rb-icon">${p.icon}</span>
+        <div class="rb-title-wrap">
+          <div class="rb-name">${esc(p.name)}</div>
+          <div class="rb-cat">${esc(p.tier)}</div>
+        </div>
+        <span class="rb-badge ${unlocked ? 'active' : ''}">${unlocked ? 'ACTIVE' : p.cost + ' ⚛️'}</span>
+      </div>
+      <div class="rb-desc">${esc(p.desc)}</div>
+      <div class="rb-effect">✦ ${esc(p.effect)}</div>
+      <div class="rb-action">
+        ${unlocked
+          ? `<button class="rb-btn unlocked-btn" disabled>✓ PERMANENTLY UNLOCKED</button>`
+          : `<button class="rb-btn ${canAfford ? 'can-buy' : 'need-cores'}" data-perk="${key}" ${canAfford ? '' : 'disabled'}>
+              UNLOCK WITH ${p.cost} ⚛️ CORES
+            </button>`
+        }
+      </div>
+    </div>`;
+  }
+
+  grid.innerHTML = cardsHtml;
+  grid.querySelectorAll('[data-perk]').forEach(btn => {
+    btn.onclick = () => {
+      const perkKey = btn.dataset.perk;
+      send({t: 'buy_reborn_perk', perk: perkKey});
+      btn.disabled = true;
+      btn.textContent = 'Unlocking Matrix…';
     };
   });
 }
@@ -1472,21 +1604,23 @@ function render(now, dt) {
 // ───────── draw 16 shelter plots in the world ─────────
 function drawShelterPlots(now, inView, selfX, selfY) {
   for (const plot of shelterPlots) {
-    if (!inView(plot.x, plot.y, 220)) continue;
+    if (!inView(plot.x, plot.y, 240)) continue;
     const S = 320;
     const x0 = plot.x - S / 2, y0 = plot.y - S / 2;
     const isOwner = me && me.plotId === plot.id;
     const teamColor = plot.team > 0 ? TEAMCOL[plot.team] : isOwner ? '#ffd166' : '#00e5ff';
+    const upg = plot.upgrades || {};
+    const lv = plot.level || 1;
 
     // 1. Reinforced concrete slab foundation
-    ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(x0 + 10, y0 + 10, S, S);
-    ctx.fillStyle = '#484b52'; ctx.fillRect(x0, y0, S, S);
-    ctx.strokeStyle = '#2d3036'; ctx.lineWidth = 5; ctx.strokeRect(x0, y0, S, S);
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(x0 + 10, y0 + 10, S, S);
+    ctx.fillStyle = '#3a3d45'; ctx.fillRect(x0, y0, S, S);
+    ctx.strokeStyle = '#22252a'; ctx.lineWidth = 5; ctx.strokeRect(x0, y0, S, S);
 
     // Hazard warning stripes along perimeter
     ctx.lineWidth = 6;
     for (let k = 8; k < S; k += 24) {
-      ctx.strokeStyle = k % 48 === 8 ? '#f4a261' : '#222';
+      ctx.strokeStyle = k % 48 === 8 ? '#f4a261' : '#1e2229';
       ctx.beginPath(); ctx.moveTo(x0 + k, y0 + 3); ctx.lineTo(x0 + k + 10, y0 + 3); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(x0 + k, y0 + S - 3); ctx.lineTo(x0 + k + 10, y0 + S - 3); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(x0 + 3, y0 + k); ctx.lineTo(x0 + 3, y0 + k + 10); ctx.stroke();
@@ -1494,55 +1628,165 @@ function drawShelterPlots(now, inView, selfX, selfY) {
     }
 
     // 2. Fortified perimeter walls scaling with plot level
-    const lv = plot.level || 1;
     if (lv >= 2) {
-      ctx.strokeStyle = lv >= 4 ? '#2b2d42' : '#8d99ae';
+      ctx.strokeStyle = lv >= 4 ? '#1f242e' : '#64748b';
       ctx.lineWidth = lv >= 4 ? 8 : 5;
       ctx.strokeRect(x0 + 16, y0 + 16, S - 32, S - 32);
     }
 
-    // 3. Four Corner Defensive Sentry Turrets
+    // 3. Four Corner Defensive Sentry Turrets (with upgrade scaling)
     const corners = [
       [x0 + 32, y0 + 32], [x0 + S - 32, y0 + 32],
       [x0 + 32, y0 + S - 32], [x0 + S - 32, y0 + S - 32]
     ];
     for (let i = 0; i < 4; i++) {
       const [cx, cy] = corners[i];
-      ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(cx, cy, 18, 0, 7); ctx.fill();
+      ctx.fillStyle = '#181b22'; ctx.beginPath(); ctx.arc(cx, cy, 18, 0, 7); ctx.fill();
       ctx.strokeStyle = teamColor; ctx.lineWidth = 2.5; ctx.stroke();
       // Turret scanning rotation
       const scanA = (now / 1200 + i * 1.57) % 6.28;
       ctx.save(); ctx.translate(cx, cy); ctx.rotate(scanA);
-      ctx.fillStyle = '#555'; ctx.fillRect(-4, -5, 26, 4); ctx.fillRect(-4, 1, 26, 4);
-      // Laser sight beam
-      ctx.strokeStyle = 'rgba(255,40,40,.35)'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(22, 0); ctx.lineTo(140, 0); ctx.stroke();
+      ctx.fillStyle = '#475569';
+      if (upg.turret_missile) {
+        // Quad missile pods
+        ctx.fillStyle = '#15803d'; ctx.fillRect(-8, -10, 16, 20);
+        ctx.fillStyle = '#ef4444'; ctx.fillRect(8, -6, 6, 4); ctx.fillRect(8, 2, 6, 4);
+      } else if (upg.turret_laser) {
+        // High-tech pulse laser emitter
+        ctx.fillStyle = '#3b82f6'; ctx.fillRect(-4, -6, 28, 12);
+        ctx.fillStyle = '#60a5fa'; ctx.beginPath(); ctx.arc(24, 0, 4, 0, 7); ctx.fill();
+      } else {
+        ctx.fillRect(-4, -5, 26, 4); ctx.fillRect(-4, 1, 26, 4);
+      }
+      // Laser targeting sight beam
+      ctx.strokeStyle = upg.turret_laser ? 'rgba(59,130,246,.55)' : 'rgba(239,68,68,.35)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(22, 0); ctx.lineTo(150, 0); ctx.stroke();
       ctx.restore();
     }
 
-    // 4. Medical Bay Pad
-    ctx.fillStyle = '#1b4332'; ctx.fillRect(x0 + 44, y0 + 120, 50, 50);
-    ctx.fillStyle = '#52b788'; ctx.fillRect(x0 + 64, y0 + 126, 10, 38); ctx.fillRect(x0 + 50, y0 + 140, 38, 10);
+    // 4. Medical Bay Pad (Top-Left quadrant)
+    ctx.fillStyle = '#064e3b'; ctx.fillRect(x0 + 44, y0 + 80, 52, 52);
+    ctx.strokeStyle = '#10b981'; ctx.lineWidth = 1.5; ctx.strokeRect(x0 + 44, y0 + 80, 52, 52);
+    ctx.fillStyle = '#34d399';
+    ctx.fillRect(x0 + 65, y0 + 88, 10, 36); ctx.fillRect(x0 + 52, y0 + 101, 36, 10);
 
-    // 5. Scrap Compactor / Solar Bay
-    ctx.fillStyle = '#1e3d59'; ctx.fillRect(x0 + S - 94, y0 + 120, 50, 50);
-    ctx.strokeStyle = 'rgba(255,255,255,.3)'; ctx.lineWidth = 1;
-    ctx.strokeRect(x0 + S - 94, y0 + 120, 25, 25); ctx.strokeRect(x0 + S - 69, y0 + 120, 25, 25);
-    ctx.strokeRect(x0 + S - 94, y0 + 145, 25, 25); ctx.strokeRect(x0 + S - 69, y0 + 145, 25, 25);
+    // 5. Scrap Compactor / Solar Bay (Top-Right quadrant)
+    ctx.fillStyle = '#0f172a'; ctx.fillRect(x0 + S - 96, y0 + 80, 52, 52);
+    ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 1.5; ctx.strokeRect(x0 + S - 96, y0 + 80, 52, 52);
+    ctx.strokeStyle = 'rgba(56,189,248,.35)'; ctx.lineWidth = 1;
+    ctx.strokeRect(x0 + S - 96, y0 + 80, 26, 26); ctx.strokeRect(x0 + S - 70, y0 + 80, 26, 26);
+    ctx.strokeRect(x0 + S - 96, y0 + 106, 26, 26); ctx.strokeRect(x0 + S - 70, y0 + 106, 26, 26);
+    // Solar cell reflection
+    const solarShimmer = (Math.sin(now / 500) + 1) * 0.15;
+    ctx.fillStyle = `rgba(56,189,248,${solarShimmer})`; ctx.fillRect(x0 + S - 96, y0 + 80, 52, 52);
 
-    // 6. Central Command Terminal Kiosk
-    ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(plot.x, plot.y, 34, 0, 7); ctx.fill();
+    // 6. Hydroponic Greenhouse Dome (Bottom-Left quadrant)
+    if (upg.greenhouse) {
+      const gx = x0 + 70, gy = y0 + S - 80;
+      ctx.fillStyle = 'rgba(16,185,129,.15)'; ctx.beginPath(); ctx.arc(gx, gy, 26, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#10b981'; ctx.lineWidth = 2; ctx.stroke();
+      // Glowing botanical flora inside
+      ctx.fillStyle = '#34d399';
+      for (let p = 0; p < 5; p++) {
+        const pa = p * 1.25 + now / 2000;
+        ctx.beginPath(); ctx.arc(gx + Math.cos(pa) * 12, gy + Math.sin(pa) * 12, 4, 0, 7); ctx.fill();
+      }
+    }
+
+    // 7. Atmospheric Water Vaporator Tower (Bottom-Right quadrant)
+    if (upg.water_vaporator) {
+      const wx = x0 + S - 70, wy = y0 + S - 80;
+      ctx.fillStyle = '#1e293b'; ctx.fillRect(wx - 16, wy - 16, 32, 32);
+      ctx.strokeStyle = '#0284c7'; ctx.lineWidth = 2; ctx.strokeRect(wx - 16, wy - 16, 32, 32);
+      // Spinning condenser fan
+      ctx.save(); ctx.translate(wx, wy); ctx.rotate(now / 150);
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(-12, -2, 24, 4); ctx.fillRect(-2, -12, 4, 24);
+      ctx.restore();
+      // Cool water condensation reservoir
+      ctx.fillStyle = 'rgba(56,189,248,.6)'; ctx.beginPath(); ctx.arc(wx, wy, 6, 0, 7); ctx.fill();
+    }
+
+    // 8. Elevated Helipad & Evac Zone (Center or Upper)
+    if (upg.helipad || upg.teleport_pad || upg.exodus_beacon) {
+      const hx = plot.x, hy = plot.y + 60;
+      ctx.fillStyle = '#1e293b'; ctx.beginPath(); ctx.arc(hx, hy, 32, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3; ctx.setLineDash([8, 6]); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = '#fbbf24'; ctx.font = 'bold 22px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('H', hx, hy);
+      // Beacon edge strobes
+      const strobe = (now % 800 < 400);
+      ctx.fillStyle = strobe ? '#ef4444' : '#7f1d1d';
+      ctx.beginPath(); ctx.arc(hx - 28, hy, 4, 0, 7); ctx.arc(hx + 28, hy, 4, 0, 7); ctx.fill();
+    }
+
+    // 9. Central Command Terminal & Antimatter / Tesla Core
+    ctx.fillStyle = '#0f172a'; ctx.beginPath(); ctx.arc(plot.x, plot.y, 36, 0, 7); ctx.fill();
     ctx.strokeStyle = teamColor; ctx.lineWidth = 3.5; ctx.stroke();
+
+    if (upg.antimatter_reactor) {
+      // Swirling violet plasma singularity
+      const rGrad = ctx.createRadialGradient(plot.x, plot.y, 2, plot.x, plot.y, 30);
+      rGrad.addColorStop(0, '#c084fc'); rGrad.addColorStop(0.5, '#7c3aed'); rGrad.addColorStop(1, 'rgba(124,58,237,0)');
+      ctx.fillStyle = rGrad; ctx.beginPath(); ctx.arc(plot.x, plot.y, 30, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#e9d5ff'; ctx.lineWidth = 2; ctx.beginPath();
+      ctx.arc(plot.x, plot.y, 16 + Math.sin(now / 150) * 4, now / 200, now / 200 + 4.5); ctx.stroke();
+    } else if (upg.tesla_coil || upg.turret_tesla) {
+      // Central Tesla arc sparks
+      ctx.fillStyle = '#0284c7'; ctx.beginPath(); ctx.arc(plot.x, plot.y, 16, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+      const sparkA = Math.random() * 6.28;
+      ctx.beginPath(); ctx.moveTo(plot.x, plot.y); ctx.lineTo(plot.x + Math.cos(sparkA) * 36, plot.y + Math.sin(sparkA) * 36); ctx.stroke();
+    }
+
     ctx.fillStyle = teamColor; ctx.font = 'bold 15px system-ui';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(`Lv.${lv}`, plot.x, plot.y);
 
-    // 7. Operation Exodus Beacon Spire
+    // 10. Scavenger Drones flying around base
+    if (upg.scavenger_drones || (upg.scrap_compactor && upg.scrap_compactor >= 3)) {
+      const droneCount = Math.min(4, 1 + Math.floor((upg.scrap_compactor || 0) / 2));
+      for (let d = 0; d < droneCount; d++) {
+        const dAngle = now / 1400 + (d * Math.PI * 2) / droneCount;
+        const dx = plot.x + Math.cos(dAngle) * 165, dy = plot.y + Math.sin(dAngle) * 135;
+        // Drone body
+        ctx.fillStyle = '#0f172a'; ctx.beginPath(); ctx.arc(dx, dy, 7, 0, 7); ctx.fill();
+        ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 1.5; ctx.stroke();
+        // Spinning drone rotors
+        ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 1.2;
+        const rRot = now / 40;
+        ctx.beginPath();
+        ctx.moveTo(dx - 10 * Math.cos(rRot), dy - 10 * Math.sin(rRot));
+        ctx.lineTo(dx + 10 * Math.cos(rRot), dy + 10 * Math.sin(rRot));
+        ctx.stroke();
+        // Drone scanning beam to ground
+        ctx.fillStyle = 'rgba(56,189,248,.18)';
+        ctx.beginPath(); ctx.moveTo(dx, dy); ctx.lineTo(dx - 12, dy + 28); ctx.lineTo(dx + 12, dy + 28); ctx.closePath(); ctx.fill();
+      }
+    }
+
+    // 11. Hardlight Forcefield Dome
+    if (upg.hardlight_dome) {
+      const domeR = 210;
+      const dGrad = ctx.createRadialGradient(plot.x, plot.y, domeR * 0.4, plot.x, plot.y, domeR);
+      const shieldPulse = 0.12 + 0.05 * Math.sin(now / 350);
+      dGrad.addColorStop(0, 'rgba(56,189,248,0.02)');
+      dGrad.addColorStop(0.85, `rgba(56,189,248,${shieldPulse})`);
+      dGrad.addColorStop(1, `rgba(56,189,248,${shieldPulse * 2})`);
+      ctx.fillStyle = dGrad; ctx.beginPath(); ctx.arc(plot.x, plot.y, domeR, 0, 7); ctx.fill();
+      ctx.strokeStyle = `rgba(56,189,248,${0.4 + 0.2 * Math.sin(now / 200)})`; ctx.lineWidth = 2.5; ctx.stroke();
+      // Concentric shield grid rings
+      ctx.strokeStyle = 'rgba(56,189,248,.12)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(plot.x, plot.y, domeR * 0.7, 0, 7); ctx.stroke();
+    }
+
+    // 12. Operation Exodus Beacon Spire
     if (plot.beacon) {
       const ph = (now % 1600) / 1600;
       ctx.strokeStyle = `rgba(255,215,0,${1 - ph})`; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.arc(plot.x, plot.y, 40 + ph * 160, 0, 7); ctx.stroke();
-      ctx.fillStyle = '#ffd700'; ctx.beginPath(); ctx.arc(plot.x, plot.y, 10, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(plot.x, plot.y, 40 + ph * 180, 0, 7); ctx.stroke();
+      ctx.fillStyle = '#ffd700'; ctx.beginPath(); ctx.arc(plot.x, plot.y, 11, 0, 7); ctx.fill();
     }
 
     // Name & Owner Badge
@@ -1594,16 +1838,50 @@ function drawLabels(inView) {
 
 function drawPlayer(p, x, y, a, isMe, now) {
   const f = p[8], col = isMe ? '#ffd166' : settings.mode === 'coop' ? TEAMCOL[0] : settings.mode === 'ffa' ? '#ff8f6b' : TEAMCOL[p[5]];
+  const rebirths = isMe ? ((me && me.rebirths) || 0) : (p[9] || 0);
+
   if (f & 1) {
     ctx.strokeStyle = '#a00'; ctx.lineWidth = 5; ctx.beginPath();
     ctx.moveTo(x - 12, y - 12); ctx.lineTo(x + 12, y + 12);
     ctx.moveTo(x + 12, y - 12); ctx.lineTo(x - 12, y + 12); ctx.stroke();
     return;
   }
-  if (f & 8) {
-    ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(x, y, 22 + Math.sin(now / 200) * 3, 0, 7); ctx.stroke();
+
+  // ───────── Radiant Golden Ascendant Aura for Reborn Survivors ─────────
+  if (rebirths > 0) {
+    const auraR = 30 + Math.min(18, rebirths * 4);
+    const aPulse = (Math.sin(now / 220) + 1) * 0.5;
+    const aGrad = ctx.createRadialGradient(x, y, 10, x, y, auraR);
+    aGrad.addColorStop(0, 'rgba(251,191,36,0.35)');
+    aGrad.addColorStop(0.6, 'rgba(168,85,247,0.2)');
+    aGrad.addColorStop(1, 'rgba(56,189,248,0)');
+    ctx.fillStyle = aGrad; ctx.beginPath(); ctx.arc(x, y, auraR, 0, 7); ctx.fill();
+
+    // Swirling energy motes
+    const motes = Math.min(5, 2 + rebirths);
+    for (let m = 0; m < motes; m++) {
+      const ma = now / 350 + (m * Math.PI * 2) / motes;
+      const mx = x + Math.cos(ma) * (auraR * 0.8), my = y + Math.sin(ma) * (auraR * 0.8);
+      ctx.fillStyle = m % 2 === 0 ? '#fbbf24' : '#c084fc';
+      ctx.beginPath(); ctx.arc(mx, my, 2.5, 0, 7); ctx.fill();
+    }
+
+    // Ethereal wings of light for high prestige
+    if (rebirths >= 2) {
+      ctx.strokeStyle = `rgba(251,191,36,${0.35 + aPulse * 0.3})`; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x - 12, y); ctx.quadraticCurveTo(x - 28, y - 16, x - 34, y - 6);
+      ctx.moveTo(x + 12, y); ctx.quadraticCurveTo(x + 28, y - 16, x + 34, y - 6);
+      ctx.stroke();
+    }
   }
+
+  // Active shield barrier
+  if (f & 8 || (isMe && me.hardlightShield > 0)) {
+    ctx.strokeStyle = 'rgba(56,189,248,.75)'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(x, y, 22 + Math.sin(now / 150) * 3, 0, 7); ctx.stroke();
+  }
+
   ctx.save(); ctx.translate(x, y);
   ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.arc(4, 5, 17, 0, 7); ctx.fill();
   ctx.rotate(a);
@@ -1613,6 +1891,7 @@ function drawPlayer(p, x, y, a, isMe, now) {
   ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.arc(-3, 0, 8, 0, 7); ctx.fill();
   ctx.fillStyle = '#e0b48a'; ctx.beginPath(); ctx.arc(13, -7, 4, 0, 7); ctx.arc(13, 7, 4, 0, 7); ctx.fill();
   ctx.restore();
+
   if (f & 32) {
     for (let k = 0; k < 3; k++) {
       ctx.fillStyle = `rgba(255,${100 + k * 50},0,.7)`; ctx.beginPath();
@@ -1623,13 +1902,15 @@ function drawPlayer(p, x, y, a, isMe, now) {
     ctx.strokeStyle = 'rgba(120,220,255,.6)'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(x, y, 24, 0, 7); ctx.stroke();
   }
-  if (f & 64) {
-    ctx.fillStyle = '#ffeb3b'; ctx.font = '16px sans-serif'; ctx.fillText('★', x + Math.cos(now / 150) * 14, y - 26);
+  if (f & 64 || rebirths > 0) {
+    ctx.fillStyle = rebirths > 0 ? '#38bdf8' : '#ffeb3b';
+    ctx.font = '16px sans-serif'; ctx.fillText(rebirths > 0 ? '⚛️' : '★', x + Math.cos(now / 150) * 14, y - 26);
   }
   if (!isMe) {
     const row = board.find(r => r[0] === p[0]); const name = row ? row[1] : '?';
+    const tag = rebirths > 0 ? `[⚛️ Ascendant ${rebirths}] ${name}` : name;
     ctx.font = '600 13px system-ui'; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = '#000';
-    ctx.strokeText(name, x, y - 30); ctx.fillStyle = col; ctx.fillText(name, x, y - 30);
+    ctx.strokeText(tag, x, y - 30); ctx.fillStyle = col; ctx.fillText(tag, x, y - 30);
     if (p[4] < 100) {
       ctx.fillStyle = '#000'; ctx.fillRect(x - 18, y + 22, 36, 4);
       ctx.fillStyle = '#e63946'; ctx.fillRect(x - 18, y + 22, 36 * p[4] / 100, 4);
@@ -1999,10 +2280,14 @@ function drawHUD(now, selfX, selfY, inVeh, b) {
 
   // 1. Bottom-Left Survivor Vitals with Glass styling
   const bx = 16, by = VH - 120;
+  const hasShield = me.hardlightShield > 0;
   ctx.fillStyle = 'rgba(12,16,24,.75)';
-  ctx.fillRect(bx - 6, by - 6, 248, 114);
-  ctx.strokeStyle = 'rgba(255,255,255,.15)'; ctx.strokeRect(bx - 6, by - 6, 248, 114);
+  ctx.fillRect(bx - 6, by - (hasShield ? 22 : 6), 248, hasShield ? 130 : 114);
+  ctx.strokeStyle = 'rgba(255,255,255,.15)'; ctx.strokeRect(bx - 6, by - (hasShield ? 22 : 6), 248, hasShield ? 130 : 114);
 
+  if (hasShield) {
+    bar(bx, by - 16, 236, 12, (me.hardlightShield / 150) * 100, '#38bdf8', `🛡️ Shield ${Math.round(me.hardlightShield)}`);
+  }
   bar(bx, by, 236, 16, me.hp, '#e63946', '❤ Health');
   bar(bx, by + 20, 236, 12, me.st, '#f4d35e', '⚡ Stamina');
   bar(bx, by + 36, 116, 12, me.hu, '#f4a261', '🍖');
@@ -2042,18 +2327,23 @@ function drawHUD(now, selfX, selfY, inVeh, b) {
   ctx.fillStyle = '#ffffff'; ctx.font = '600 12px system-ui';
   ctx.fillText(missionStage, ox + 14, oy + 34);
 
-  // 3. Top-Left Scrap & Shelter Widget
-  ctx.fillStyle = 'rgba(12,18,28,.82)'; ctx.fillRect(16, 14, 300, 84);
-  ctx.strokeStyle = 'rgba(255,255,255,.15)'; ctx.lineWidth = 1; ctx.strokeRect(16, 14, 300, 84);
+  // 3. Top-Left Scrap, Quantum Cores & Shelter Widget
+  ctx.fillStyle = 'rgba(12,18,28,.82)'; ctx.fillRect(16, 14, 300, 102);
+  ctx.strokeStyle = 'rgba(255,255,255,.15)'; ctx.lineWidth = 1; ctx.strokeRect(16, 14, 300, 102);
 
   ctx.fillStyle = '#fff'; ctx.font = '700 14px system-ui'; ctx.textAlign = 'left';
   ctx.fillText(regionName(selfX, selfY), 26, 30);
-  ctx.font = 'bold 15px system-ui'; ctx.fillStyle = '#ffd700';
-  ctx.fillText(`⚙️ Scrap: ${me.scrap || 0}`, 26, 52);
+  ctx.font = 'bold 14px system-ui'; ctx.fillStyle = '#ffd700';
+  ctx.fillText(`⚙️ Scrap: ${me.scrap || 0}`, 26, 50);
 
-  ctx.font = '12px system-ui'; ctx.fillStyle = '#94a3b8';
-  const myPlotStr = me.plotId ? `🏰 Shelter Lv.${me.plotLv || 1} [Press T]` : 'No Shelter Claimed [Press T]';
-  ctx.fillText(myPlotStr, 26, 72);
+  ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#c084fc';
+  const rbTier = me.rebirths || 0;
+  const rbText = rbTier > 0 ? `⚛️ Cores: ${me.prestigeTokens || 0} (Tier ${rbTier})` : `⚛️ Cores: ${me.prestigeTokens || 0} [Y]`;
+  ctx.fillText(rbText, 26, 70);
+
+  ctx.font = '11.5px system-ui'; ctx.fillStyle = '#94a3b8';
+  const myPlotStr = me.plotId ? `🏰 Shelter Lv.${me.plotLv || 1} [T] · [P] Recall` : 'No Shelter [Press T]';
+  ctx.fillText(myPlotStr, 26, 90);
 
   // 4. Hotbar
   if (inv) {
