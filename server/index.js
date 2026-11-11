@@ -4,7 +4,7 @@ const http = require('http'), fs = require('fs'), path = require('path'), crypto
 const {WebSocketServer} = require('ws');
 const {Game} = require('./game');
 
-const PORT = +process.env.PORT || 3000;
+const PORT = 3000;
 const fmt = k => k.toUpperCase().match(/.{4}/g).join('-');
 let KEY = (process.env.GAME_KEY || 'deadbeefdeadbeef').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
 if (KEY.length !== 16) {
@@ -23,7 +23,12 @@ const accounts = require('./accounts');
 const PUB = path.join(__dirname, '..', 'public');
 const TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon'};
 const server = http.createServer((req, res) => {
-  const url = decodeURIComponent((req.url || '/').split('?')[0]);
+  let url = '/';
+  try {
+    url = decodeURIComponent((req.url || '/').split('?')[0]);
+  } catch (e) {
+    url = (req.url || '/').split('?')[0];
+  }
   if (url === '/health') { res.writeHead(200, {'Content-Type': 'text/plain'}); res.end('ok'); return; }
   if (url === '/key' || url === '/api/key') {
     res.writeHead(200, {'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache'});
@@ -99,5 +104,11 @@ setInterval(() => {
   const n = Date.now(); const dt = Math.min(0.1, (n - last) / 1000); last = n;
   try { game.tick(dt); } catch (e) { console.error('[tick error]', e); }
 }, 1000 / 30);
+
+server.on('error', err => console.error('[http server error]', err));
+wss.on('error', err => console.error('[wss error]', err));
+
+process.on('uncaughtException', err => console.error('[uncaughtException]', err));
+process.on('unhandledRejection', reason => console.error('[unhandledRejection]', reason));
 
 server.listen(PORT, '0.0.0.0', () => console.log(`[http] DEAD WORLD listening on 0.0.0.0:${PORT}`));

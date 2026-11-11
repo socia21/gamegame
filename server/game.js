@@ -22,6 +22,24 @@ const HIT_TILE = {t: 'tile'}, HIT_RECT = {t: 'rect'}, HIT_OOB = {t: 'oob'};
 const tmpA = [], tmpB = [];
 const KNIFE = wkey('Fairbairn–Sykes Fighting Knife'), GLOCK = wkey('Glock 17 / 19');
 
+function circleBuildingCollide(x, y, r, q) {
+  const bx = q[0], by = q[1], bw = q[2], bh = q[3];
+  if (!circleRect(x, y, r, bx, by, bw, bh)) return false;
+  if (bw < 64 || bh < 64) return true; // solid small structure
+  const th = 16;
+  const isLarge = bw > 180 || bh > 180;
+  const gw = Math.min(bw * 0.55, isLarge ? 104 : 72);
+  const cx = bx + bw / 2;
+  const halfDoor = gw / 2;
+  const leftW = Math.max(0, (bw - gw) / 2);
+  if (circleRect(x, y, r, bx, by, bw, th)) return true; // Top wall
+  if (circleRect(x, y, r, bx, by + th, th, bh - th)) return true; // Left wall
+  if (circleRect(x, y, r, bx + bw - th, by + th, th, bh - th)) return true; // Right wall
+  if (leftW > 0 && circleRect(x, y, r, bx, by + bh - th, leftW, th)) return true; // Bottom-left wall
+  if (leftW > 0 && circleRect(x, y, r, cx + halfDoor, by + bh - th, leftW, th)) return true; // Bottom-right wall
+  return false; // Interior and doorway are open and enterable
+}
+
 class Game {
   constructor(seed) {
     const t0 = Date.now();
@@ -86,7 +104,7 @@ class Game {
       if (s && circleRect(x, y, r, tx * TS, ty * TS, TS, TS)) return HIT_TILE;
     }
     tmpA.length = 0; this.rgrid.query(x - r, y - r, x + r, y + r, tmpA);
-    for (const q of tmpA) if (circleRect(x, y, r, q[0], q[1], q[2], q[3])) return HIT_RECT;
+    for (const q of tmpA) if (circleBuildingCollide(x, y, r, q)) return HIT_RECT;
     tmpB.length = 0; this.sh.query(x, y, r + 100, tmpB);
     for (const s of tmpB) { if (s.def.block === 0 || (s.def.door && s.open)) continue; if (circleRect(x, y, r, s.x - s.w / 2, s.y - s.h / 2, s.w, s.h)) return s; }
     return null;
@@ -204,7 +222,22 @@ class Game {
   getPlotsSummary() {
     const list = [];
     for (const pl of this.plots.values()) {
-      list.push([pl.id, pl.x, pl.y, pl.ownerName || '', pl.team, pl.level, pl.scrap || 0, pl.upgrades ? (pl.upgrades.evac_beacon || 0) : 0]);
+      list.push({
+        id: pl.id,
+        name: pl.name,
+        x: pl.x,
+        y: pl.y,
+        region: pl.region,
+        theme: pl.theme,
+        radius: pl.radius || 180,
+        owner: pl.owner,
+        ownerName: pl.ownerName || '',
+        team: pl.team || 0,
+        level: pl.level || 1,
+        scrap: pl.scrap || 0,
+        beacon: pl.upgrades ? (pl.upgrades.evac_beacon || 0) : 0,
+        upgrades: pl.upgrades || {}
+      });
     }
     return list;
   }
@@ -867,12 +900,17 @@ class Game {
   interact(p) {
     if (p.dead) return;
     if (p.veh) { this.exitVehicle(p); return; }
+    let bv = null, bvd = Infinity; for (const v of this.vh.query(p.x, p.y, 280, [])) { if (v.dead) continue; const r = VEH[v.type].r + 80, dd = d2(v.x, v.y, p.x, p.y); if (dd < r * r && dd < bvd) { bvd = dd; bv = v; } }
     let bi = null, bid = 80 * 80; for (const it of this.ih.query(p.x, p.y, 90, [])) { const dd = d2(it.x, it.y, p.x, p.y); if (dd < bid) { bid = dd; bi = it; } }
-    let bv = null, bvd = Infinity; for (const v of this.vh.query(p.x, p.y, 220, [])) { if (v.dead) continue; const r = VEH[v.type].r + 44, dd = d2(v.x, v.y, p.x, p.y); if (dd < r * r && dd < bvd) { bvd = dd; bv = v; } }
     let bs = null, bsd = 95 * 95; for (const s of this.sh.query(p.x, p.y, 200, [])) { if (!(s.def.door || s.def.water)) continue; const dd = d2(s.x, s.y, p.x, p.y); if (dd < bsd) { bsd = dd; bs = s; } }
-    if (bi && (!bv || bid < 45 * 45 || bid <= bvd * 0.6)) { this.pickup(p, bi); return; }
-    if (bv) { this.enterVehicle(p, bv); return; }
+    if (bv && (!bi || bvd < 70 * 70 || bvd <= bid)) { this.enterVehicle(p, bv); return; }
     if (bi) { this.pickup(p, bi); return; }
+    if (bv) { this.enterVehicle(p, bv); return; }
+    for (const pl of this.plots.values()) {
+      if (d2(p.x, p.y, pl.x, pl.y) < 180 * 180) {
+        if (!pl.owner || pl.owner === p.id) { this.claimPlot(p, pl.id); return; }
+      }
+    }
     if (bs) {
       if (bs.def.door) {
         if (this.settings.mode !== 'coop' && bs.team !== p.team && bs.owner !== p.id) { this.msg(p, '🔒 Not your door.'); return; }
@@ -1036,9 +1074,9 @@ class Game {
   // ───────── vehicles ─────────
   createVehicle(type, x, y, a, sp) {
     const d = VEH[type];
-    const v = {id: this.id(), type, ti: VLIST.indexOf(type), x, y, a: a || 0, vx: 0, vy: 0, sp: 0, hp: Math.round(d.hp * R(0.55, 1)), maxhp: d.hp, fuel: d.fuel * R(0.35, 0.95),
+    const v = {id: this.id(), type, ti: VLIST.indexOf(type), x, y, a: a || 0, vx: 0, vy: 0, sp: 0, hp: d.hp, maxhp: d.hp, fuel: d.fuel,
       seats: new Array(d.seats).fill(0), spawn: sp || null, broken: false, emp: 0, siren: false, alt: 0, plate: 0, dead: false, ta: a || 0, lastUsed: 0};
-    if (d.kind !== 'heli' && !d.military && rnd() < 0.22) v.broken = true;
+    v.broken = false;
     this.vehicles.set(v.id, v); return v;
   }
   initVehicles() {
