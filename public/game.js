@@ -383,6 +383,54 @@ const circRect = (cx, cy, r, rx, ry, rw, rh) => {
   const dx = cx - nx, dy = cy - ny;
   return dx * dx + dy * dy < r * r;
 };
+function circleBuildingCollide(x, y, r, q) {
+  const bx = q[0], by = q[1], bw = q[2], bh = q[3];
+  if (!circRect(x, y, r, bx, by, bw, bh)) return false;
+  if (bw < 64 || bh < 64) return true; // solid small structure
+  const th = 16;
+  const isLarge = bw > 180 || bh > 180;
+  const gw = Math.min(bw * 0.55, isLarge ? 104 : 72);
+  const cx = bx + bw / 2;
+  const halfDoor = gw / 2;
+  const leftW = Math.max(0, (bw - gw) / 2);
+  if (circRect(x, y, r, bx, by, bw, th)) return true; // Top wall
+  if (circRect(x, y, r, bx, by + th, th, bh - th)) return true; // Left wall
+  if (circRect(x, y, r, bx + bw - th, by + th, th, bh - th)) return true; // Right wall
+  if (leftW > 0 && circRect(x, y, r, bx, by + bh - th, leftW, th)) return true; // Bottom-left wall
+  if (leftW > 0 && circRect(x, y, r, cx + halfDoor, by + bh - th, leftW, th)) return true; // Bottom-right wall
+  return false; // Interior and doorway are open and enterable
+}
+
+function computePlotSize(plot) {
+  const up = plot ? (plot.upgrades || {}) : {};
+  const exp = up.compound_expansion || 0;
+  const lv = plot ? (plot.level || 1) : 1;
+  return 320 + exp * 70 + Math.min(100, (lv - 1) * 15);
+}
+
+function circleShelterCollide(x, y, r, plot, isAuth) {
+  const S = computePlotSize(plot);
+  const x0 = plot.x - S / 2, y0 = plot.y - S / 2;
+  const T = 20;
+  if (x + r < x0 || x - r > x0 + S || y + r < y0 || y - r > y0 + S) return false;
+  const gateW = 100;
+  const gateX0 = plot.x - gateW / 2;
+  const gateX1 = plot.x + gateW / 2;
+  // 1. Solid perimeter walls
+  if (circRect(x, y, r, x0, y0, S, T)) return true; // Top
+  if (circRect(x, y, r, x0, y0, T, S)) return true; // Left
+  if (circRect(x, y, r, x0 + S - T, y0, T, S)) return true; // Right
+  if (circRect(x, y, r, x0, y0 + S - T, gateX0 - x0, T)) return true; // Bottom left wing
+  if (circRect(x, y, r, gateX1, y0 + S - T, (x0 + S) - gateX1, T)) return true; // Bottom right wing
+  // 2. Airlock blast gate (opens only for authorized survivors approaching doorway)
+  const nearAirlock = Math.abs(x - plot.x) <= gateW / 2 + 30 && Math.abs(y - (y0 + S)) <= 120;
+  const gateOpen = (isAuth || !plot.owner) && nearAirlock;
+  if (!gateOpen && circRect(x, y, r, gateX0, y0 + S - T, gateW, T)) return true;
+  // 3. Central command console
+  if (circRect(x, y, r, plot.x - 28, plot.y - 28, 56, 56)) return true;
+  return false;
+}
+
 function blockedAt(x, y, r) {
   if (x < r || y < r || x > WP - r || y > HP - r) return true;
   for (let ty = Math.floor((y - r) / TS); ty <= Math.floor((y + r) / TS); ty++) {
@@ -395,7 +443,7 @@ function blockedAt(x, y, r) {
       const a = RG.get(cx * 65536 + cy);
       if (a) for (const i of a) {
         const q = M.rects[i];
-        if (circRect(x, y, r, q[0], q[1], q[2], q[3])) return true;
+        if (circleBuildingCollide(x, y, r, q)) return true;
       }
     }
   }
@@ -404,6 +452,12 @@ function blockedAt(x, y, r) {
     const d = D.STRUCTS[s.k];
     if (d.block === 0 || (d.door && s.open)) continue;
     if (circRect(x, y, r, s.x - s.w / 2, s.y - s.h / 2, s.w, s.h)) return true;
+  }
+  // 16 Designated Shelter Tycoon Plots
+  for (const plot of shelterPlots) {
+    if (Math.abs(plot.x - x) > 550 || Math.abs(plot.y - y) > 550) continue;
+    const isAuth = me && (me.id === plot.owner || (plot.team > 0 && me.team === plot.team) || !plot.owner);
+    if (circleShelterCollide(x, y, r, plot, isAuth)) return true;
   }
   return false;
 }
@@ -462,32 +516,101 @@ function drawChunk(g, cx, cy) {
     g.fillStyle = shade(TRGB[t], 0.94 + h * 0.12); g.fillRect(x, y, TS + 1, TS + 1);
     const nb = (dx, dy) => { const xx = tx + dx, yy = ty + dy; return (xx < 0 || yy < 0 || xx >= MW || yy >= MH) ? -1 : tiles[yy * MW + xx]; };
     switch (t) {
-      case 4: for (let k = 0; k < 4; k++) { const px = x + hsh(tx * 3 + k, ty) * TS, py = y + hsh(tx, ty * 3 + k) * TS, r = 14 + hsh(tx + k, ty + k) * 14; g.fillStyle = 'rgba(20,50,20,.55)'; g.beginPath(); g.arc(px + 4, py + 5, r, 0, 7); g.fill(); g.fillStyle = shade(TRGB[4], 1.1 + hsh(k, tx) * 0.3); g.beginPath(); g.arc(px, py, r, 0, 7); g.fill(); } break;
-      case 3: case 15: case 17: if (t !== 3) { g.fillStyle = (ty % 2) ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.05)'; g.fillRect(x, y, TS, TS); } else { g.fillStyle = 'rgba(30,70,25,.25)'; for (let k = 0; k < 5; k++) g.fillRect(x + hsh(k, tx + ty) * TS, y + hsh(tx, k + ty) * TS, 3, 6); } break;
-      case 7: g.strokeStyle = 'rgba(80,55,25,.35)'; g.lineWidth = 3; for (let k = 6; k < TS; k += 14) { g.beginPath(); g.moveTo(x, y + k); g.lineTo(x + TS, y + k); g.stroke(); } break;
-      case 0: case 1: g.strokeStyle = t ? 'rgba(255,255,255,.12)' : 'rgba(255,255,255,.07)'; g.lineWidth = 2; for (let k = 0; k < 2; k++) { const yy = y + 20 + k * 36 + h * 10; g.beginPath(); g.moveTo(x + 8, yy); g.quadraticCurveTo(x + 30, yy - 6, x + 50, yy); g.stroke(); } if (t === 1 && nb(0, -1) !== 1 && nb(0, -1) !== 0) { g.fillStyle = 'rgba(255,255,255,.15)'; g.fillRect(x, y, TS, 4); } break;
-      case 8: g.fillStyle = 'rgba(0,0,0,.18)'; g.beginPath(); g.moveTo(x + h * 30, y + 10); g.lineTo(x + 70, y + 20 + h * 30); g.lineTo(x + 30, y + 72); g.fill(); g.fillStyle = 'rgba(255,255,255,.08)'; g.fillRect(x + 10, y + 10, 30, 8); if (nb(0, 1) !== 8) { g.fillStyle = 'rgba(0,0,0,.3)'; g.fillRect(x, y + TS - 10, TS, 10); } break;
-      case 5: case 20: {
-        g.fillStyle = 'rgba(255,255,255,.03)'; g.fillRect(x, y, TS, TS);
+      case 4: // Lush Forest & Dense Woodlands
+        for (let k = 0; k < 4; k++) {
+          const px = x + hsh(tx * 3 + k, ty) * TS, py = y + hsh(tx, ty * 3 + k) * TS, r = 16 + hsh(tx + k, ty + k) * 16;
+          g.fillStyle = 'rgba(12,35,14,.65)'; g.beginPath(); g.arc(px + 5, py + 6, r, 0, 7); g.fill(); // shadow
+          g.fillStyle = shade(TRGB[4], 0.95 + hsh(k, tx) * 0.35); g.beginPath(); g.arc(px, py, r, 0, 7); g.fill(); // crown
+          g.fillStyle = 'rgba(255,255,255,.08)'; g.beginPath(); g.arc(px - 3, py - 3, r * 0.5, 0, 7); g.fill(); // highlight
+        }
+        break;
+      case 3: case 15: case 17: // Grassland, Turf, & Meadows
+        g.fillStyle = 'rgba(25,60,20,.3)';
+        for (let k = 0; k < 6; k++) {
+          const gx = x + hsh(k, tx + ty) * TS, gy = y + hsh(tx, k + ty) * TS;
+          g.fillRect(gx, gy, 3, 7);
+          g.fillRect(gx + 2, gy + 1, 2, 4);
+        }
+        if (h > 0.6) { g.fillStyle = '#fef08a'; g.fillRect(x + h * TS * 0.7, y + (1 - h) * TS * 0.7, 3, 3); } // wildflowers
+        break;
+      case 7: // Farmland Soil & Crop Furrows
+        g.strokeStyle = 'rgba(70,45,20,.45)'; g.lineWidth = 4;
+        for (let k = 6; k < TS; k += 13) {
+          g.beginPath(); g.moveTo(x, y + k); g.lineTo(x + TS, y + k); g.stroke();
+          g.fillStyle = 'rgba(84,130,53,.35)'; g.fillRect(x + (k % 7) * 9, y + k - 2, 6, 3); // crop sprouts
+        }
+        break;
+      case 0: case 1: // Deep & Shallow Water
+        g.fillStyle = t === 0 ? 'rgba(10,35,70,.35)' : 'rgba(30,120,180,.25)';
+        g.fillRect(x, y, TS, TS);
+        g.strokeStyle = t ? 'rgba(255,255,255,.22)' : 'rgba(255,255,255,.1)'; g.lineWidth = 2;
+        for (let k = 0; k < 2; k++) {
+          const yy = y + 18 + k * 36 + h * 10;
+          g.beginPath(); g.moveTo(x + 4, yy); g.quadraticCurveTo(x + 28, yy - 5, x + 54, yy); g.stroke();
+        }
+        // Shoreline water foam edge
+        if (nb(0, -1) !== 0 && nb(0, -1) !== 1) { g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(x, y, TS, 4); }
+        if (nb(0, 1) !== 0 && nb(0, 1) !== 1) { g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(x, y + TS - 4, TS, 4); }
+        if (nb(-1, 0) !== 0 && nb(-1, 0) !== 1) { g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(x, y, 4, TS); }
+        if (nb(1, 0) !== 0 && nb(1, 0) !== 1) { g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(x + TS - 4, y, 4, TS); }
+        break;
+      case 8: // Solid Mountain Rock
+        g.fillStyle = 'rgba(0,0,0,.22)';
+        g.beginPath(); g.moveTo(x + h * 30, y + 8); g.lineTo(x + 72, y + 18 + h * 30); g.lineTo(x + 32, y + 74); g.fill();
+        g.strokeStyle = 'rgba(255,255,255,.12)'; g.lineWidth = 2;
+        g.beginPath(); g.moveTo(x + 12, y + 20); g.lineTo(x + 45, y + 55); g.stroke(); // fissure
+        break;
+      case 5: case 20: { // Paved Asphalt Road & Highway & Runway
+        g.fillStyle = '#22252a'; g.fillRect(x, y, TS, TS);
         const L = nb(-1, 0) === t, Rr = nb(1, 0) === t, U = nb(0, -1) === t, Dn = nb(0, 1) === t;
-        g.fillStyle = 'rgba(210,210,200,.35)';
-        if (!U && L && Rr) g.fillRect(x, y, TS, 3); if (!Dn && L && Rr) g.fillRect(x, y + TS - 3, TS, 3); if (!L && U && Dn) g.fillRect(x, y, 3, TS); if (!Rr && U && Dn) g.fillRect(x + TS - 3, y, 3, TS);
-        g.fillStyle = t === 20 ? 'rgba(255,255,255,.7)' : 'rgba(240,200,60,.6)';
-        if (L && Rr && U && Dn && nb(0, -2) !== t && nb(0, 2) !== t) g.fillRect(x + 10, y + TS / 2 - 2, 26, 4);
-        else if (L && Rr && U && Dn && nb(-2, 0) !== t && nb(2, 0) !== t) g.fillRect(x + TS / 2 - 2, y + 10, 4, 26);
+        // White shoulder edges
+        g.fillStyle = 'rgba(240,240,245,.6)';
+        if (!U && (L || Rr)) g.fillRect(x, y, TS, 3.5);
+        if (!Dn && (L || Rr)) g.fillRect(x, y + TS - 3.5, TS, 3.5);
+        if (!L && (U || Dn)) g.fillRect(x, y, 3.5, TS);
+        if (!Rr && (U || Dn)) g.fillRect(x + TS - 3.5, y, 3.5, TS);
+        // Double yellow center markings
+        g.fillStyle = t === 20 ? '#ffffff' : '#ffd166';
+        if (L || Rr) {
+          g.fillRect(x + 8, y + TS / 2 - 3, 22, 2.5);
+          g.fillRect(x + 40, y + TS / 2 - 3, 22, 2.5);
+          g.fillRect(x + 8, y + TS / 2 + 1, 22, 2.5);
+          g.fillRect(x + 40, y + TS / 2 + 1, 22, 2.5);
+        } else if (U || Dn) {
+          g.fillRect(x + TS / 2 - 3, y + 8, 2.5, 22);
+          g.fillRect(x + TS / 2 - 3, y + 40, 2.5, 22);
+          g.fillRect(x + TS / 2 + 1, y + 8, 2.5, 22);
+          g.fillRect(x + TS / 2 + 1, y + 40, 2.5, 22);
+        }
         break;
       }
-      case 6: g.strokeStyle = 'rgba(0,0,0,.08)'; g.lineWidth = 2; g.strokeRect(x + 1, y + 1, TS / 2, TS / 2); g.strokeRect(x + TS / 2, y + TS / 2, TS / 2 - 1, TS / 2 - 1); break;
-      case 16: for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) if (nb(dx, dy) !== 16) { for (let k = 0; k < 4; k++) { g.fillStyle = k % 2 ? '#fff' : '#d00'; if (dy) g.fillRect(x + k * 20, dy < 0 ? y : y + TS - 7, 20, 7); else g.fillRect(dx < 0 ? x : x + TS - 7, y + k * 20, 7, 20); } } break;
-      case 9: g.fillStyle = 'rgba(180,200,220,.35)'; for (let k = 0; k < 4; k++) g.fillRect(x + hsh(k, tx) * TS, y + hsh(ty, k) * TS, 4, 4); break;
-      case 10: g.strokeStyle = 'rgba(255,255,255,.5)'; g.lineWidth = 2; g.beginPath(); g.moveTo(x + 10, y + 20 + h * 30); g.lineTo(x + 60, y + 10 + h * 40); g.stroke(); break;
-      case 11: g.strokeStyle = '#ffd23a'; g.lineWidth = 4; g.beginPath(); g.moveTo(x, y + h * TS); g.lineTo(x + 40, y + 40); g.lineTo(x + TS, y + (1 - h) * TS); g.stroke(); break;
-      case 12: g.strokeStyle = 'rgba(160,150,130,.35)'; g.lineWidth = 2; g.beginPath(); g.moveTo(x, y + 30); g.lineTo(x + 30, y + 20); g.lineTo(x + 50, y + 50); g.lineTo(x + TS, y + 40); g.stroke(); break;
-      case 13: g.fillStyle = 'rgba(70,50,30,.3)'; for (let k = 0; k < 4; k++) g.fillRect(x + hsh(k + 5, tx) * TS, y + hsh(ty, k + 5) * TS, 5, 4); break;
-      case 14: g.fillStyle = 'rgba(40,70,90,.45)'; g.beginPath(); g.ellipse(x + 20 + h * 30, y + 40, 18, 10, 0, 0, 7); g.fill(); break;
-      case 18: g.strokeStyle = 'rgba(150,110,50,.4)'; g.lineWidth = 3; for (let k = 0; k < 3; k++) { g.beginPath(); g.moveTo(x, y + 15 + k * 25); g.quadraticCurveTo(x + 40, y + 5 + k * 25, x + TS, y + 15 + k * 25); g.stroke(); } break;
-      case 19: g.fillStyle = 'rgba(190,255,60,.35)'; for (let k = 0; k < 3; k++) { g.beginPath(); g.arc(x + hsh(k, tx) * TS, y + hsh(ty, k) * TS, 5 + k * 2, 0, 7); g.fill(); } break;
-      case 2: g.fillStyle = 'rgba(160,130,70,.25)'; for (let k = 0; k < 6; k++) g.fillRect(x + hsh(k, tx + 1) * TS, y + hsh(ty + 1, k) * TS, 2, 2); break;
+      case 6: // Concrete Plaza Slab
+        g.strokeStyle = 'rgba(0,0,0,.15)'; g.lineWidth = 2;
+        g.strokeRect(x + 1, y + 1, TS / 2, TS / 2);
+        g.strokeRect(x + TS / 2, y + TS / 2, TS / 2 - 1, TS / 2 - 1);
+        break;
+      case 14: // Muddy Swamp & Murky Bog
+        g.fillStyle = 'rgba(25,45,28,.65)'; g.beginPath(); g.ellipse(x + 24 + h * 24, y + 38, 26, 16, 0, 0, 7); g.fill();
+        g.fillStyle = 'rgba(10,25,15,.4)'; g.beginPath(); g.arc(x + 20 + h * 20, y + 35, 12, 0, 7); g.fill();
+        break;
+      case 10: // Slick Ice
+        g.fillStyle = 'rgba(200,235,255,.3)'; g.fillRect(x, y, TS, TS);
+        g.strokeStyle = 'rgba(255,255,255,.7)'; g.lineWidth = 2;
+        g.beginPath(); g.moveTo(x + 12, y + 15 + h * 25); g.lineTo(x + 62, y + 10 + h * 35); g.stroke();
+        break;
+      case 9: // Deep Snow
+        g.fillStyle = 'rgba(240,248,255,.45)'; g.fillRect(x, y, TS, TS);
+        g.fillStyle = 'rgba(180,210,235,.4)';
+        for (let k = 0; k < 5; k++) g.fillRect(x + hsh(k, tx) * TS, y + hsh(ty, k) * TS, 6, 6);
+        break;
+      case 18: case 2: // Sand & Desert Dunes
+        g.strokeStyle = 'rgba(180,140,70,.35)'; g.lineWidth = 3;
+        for (let k = 0; k < 3; k++) {
+          g.beginPath(); g.moveTo(x, y + 15 + k * 24); g.quadraticCurveTo(x + 38, y + 6 + k * 24, x + TS, y + 15 + k * 24); g.stroke();
+        }
+        break;
+      default:
+        break;
     }
   }
   for (const i of rectsIn(tx0 * TS, ty0 * TS, (tx0 + CH) * TS, (ty0 + CH) * TS)) drawRect(g, M.rects[i]);
@@ -719,6 +842,7 @@ addEventListener('keydown', e => {
   if (chatOpen) { if (e.key === 'Enter') sendChat(); else if (e.key === 'Escape') closeChat(); return; }
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (e.code === 'Tab') { e.preventDefault(); $('board').hidden = false; renderBoard(); return; }
+  if (e.code === 'Space') { e.preventDefault(); }
   if (keys[e.code]) return; keys[e.code] = true;
   ac();
   switch (e.code) {
@@ -766,9 +890,17 @@ addEventListener('keydown', e => {
   }
 });
 addEventListener('keyup', e => { keys[e.code] = false; if (e.code === 'Tab') $('board').hidden = true; });
-addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouse.l = mouse.r = false; });
-cv.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+function updateMouse(e) {
+  const r = cv.getBoundingClientRect();
+  const sx = r.width ? (VW / r.width) : 1;
+  const sy = r.height ? (VH / r.height) : 1;
+  mouse.x = (e.clientX - r.left) * sx;
+  mouse.y = (e.clientY - r.top) * sy;
+}
+cv.addEventListener('mousemove', updateMouse);
+cv.addEventListener('mouseenter', updateMouse);
 cv.addEventListener('mousedown', e => {
+  updateMouse(e);
   ac(); if (!D) return;
   if (e.button === 0) {
     if (mode) {
@@ -1340,6 +1472,7 @@ function frame() {
   } catch (e) {
     console.error(e);
   }
+  cv.classList.toggle('ui-active', uiBlock());
   requestAnimationFrame(frame);
 }
 
@@ -1350,6 +1483,7 @@ function updateLocal(dt, now) {
     my = (keys.KeyS || keys.ArrowDown ? 1 : 0) - (keys.KeyW || keys.ArrowUp ? 1 : 0);
   }
   const sprint = !!(keys.ShiftLeft || keys.ShiftRight);
+  const brake = !!(keys.Space);
   if (!me.dead && !me.veh) {
     const l = Math.hypot(mx, my), nx = l ? mx / l : 0, ny = l ? my / l : 0;
     const tileProp = D.TILES[tileAt(pred.x, pred.y)];
@@ -1357,10 +1491,10 @@ function updateLocal(dt, now) {
     const spd = me.spd * walk * (sprint && me.st > 1 && l ? 1.45 : 1);
     moveCircle(pred, nx * spd * dt + me.pl[0] * dt, ny * spd * dt + me.pl[1] * dt, 16);
   } else if (me.veh && latest) {
-    const v = latest.V.get(me.veh);
-    if (v) {
-      pred.x = v[2];
-      pred.y = v[3];
+    const iv = myVehicle(now);
+    if (iv) {
+      pred.x = iv.x;
+      pred.y = iv.y;
     }
   }
   if (now - lastSend >= 33) {
@@ -1369,6 +1503,7 @@ function updateLocal(dt, now) {
       t: 'in', mx, my, ax: Math.round(w.x), ay: Math.round(w.y),
       f: mouse.l && !block ? 1 : 0, al: mouse.r && !block ? 1 : 0,
       sp: sprint ? 1 : 0,
+      brk: brake ? 1 : 0,
       x: Math.round(pred.x * 10) / 10, y: Math.round(pred.y * 10) / 10,
       ps: pred.ps
     });
@@ -1706,83 +1841,159 @@ function render(now, dt) {
 // ───────── enterable building interiors and doorway rendering ─────────
 function drawBuildingInteriors(now, inView, selfX, selfY) {
   if (!M || !M.rects) return;
-  const nearby = rectsIn(selfX - 700, selfY - 700, selfX + 700, selfY + 700);
+  const nearby = rectsIn(selfX - 850, selfY - 850, selfX + 850, selfY + 850);
   for (const idx of nearby) {
     const r = M.rects[idx];
     const [x, y, w, h] = r;
     if (w < 64 || h < 64) continue;
     const isInside = selfX >= x && selfX <= x + w && selfY >= y && selfY <= y + h;
     const distToCenter = Math.hypot(selfX - (x + w / 2), selfY - (y + h / 2));
-    const doorW = Math.min(104, Math.max(64, w * 0.35));
+    const isLarge = w > 180 || h > 180;
+    const doorW = Math.min(w * 0.55, isLarge ? 104 : 72);
     const doorX0 = x + (w - doorW) / 2;
     const doorX1 = doorX0 + doorW;
     const distToDoor = Math.hypot(selfX - (x + w / 2), selfY - (y + h));
 
-    // When inside or within immediate vicinity, render detailed interior flooring & furniture
-    if (isInside || distToCenter < Math.max(w, h) * 0.75) {
+    if (isInside || distToCenter < Math.max(w, h) * 0.72) {
+      // ═════════ 1. HIGH-DETAIL INTERIOR MAP SYSTEM ═════════
       ctx.save();
-      // Warm interior illumination pool
-      const lightGrad = ctx.createRadialGradient(x + w / 2, y + h / 2, 8, x + w / 2, y + h / 2, Math.max(w, h) * 0.7);
-      lightGrad.addColorStop(0, 'rgba(255, 235, 175, 0.22)');
-      lightGrad.addColorStop(0.6, 'rgba(255, 210, 120, 0.08)');
-      lightGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-      ctx.fillStyle = lightGrad;
+
+      // Ambient indoor shadow fill
+      ctx.fillStyle = '#14171d';
       ctx.fillRect(x + 6, y + 6, w - 12, h - 12);
 
-      // Interior furniture & survival stations
-      if (w > 90 && h > 90) {
-        // Office desk with computer terminal
-        ctx.fillStyle = '#3a2e26';
-        ctx.fillRect(x + 18, y + 18, 30, 16);
-        ctx.strokeStyle = '#5a4638'; ctx.lineWidth = 1.5; ctx.strokeRect(x + 18, y + 18, 30, 16);
-        ctx.fillStyle = '#38bdf8'; ctx.fillRect(x + 24, y + 20, 10, 4);
-
-        // Medical supply cabinet or locker on north wall
-        ctx.fillStyle = '#334155';
-        ctx.fillRect(x + w - 46, y + 10, 36, 14);
-        ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1; ctx.strokeRect(x + w - 46, y + 10, 36, 14);
-        ctx.fillStyle = '#ef4444'; ctx.fillRect(x + w - 30, y + 14, 6, 6);
-
-        // Ammo / survival crate in corner
-        ctx.fillStyle = '#45321f';
-        ctx.fillRect(x + 18, y + h - 36, 16, 16);
-        ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 1; ctx.strokeRect(x + 18, y + h - 36, 16, 16);
+      // Floor tiles
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.lineWidth = 1;
+      for (let tx = x + 16; tx < x + w - 10; tx += 20) {
+        ctx.beginPath(); ctx.moveTo(tx, y + 6); ctx.lineTo(tx, y + h - 6); ctx.stroke();
+      }
+      for (let ty = y + 16; ty < y + h - 10; ty += 20) {
+        ctx.beginPath(); ctx.moveTo(x + 6, ty); ctx.lineTo(x + w - 6, ty); ctx.stroke();
       }
 
-      // Ceiling lantern bulb
-      ctx.fillStyle = '#fef08a';
-      ctx.beginPath(); ctx.arc(x + w / 2, y + h / 2, 5, 0, 7); ctx.fill();
-      ctx.strokeStyle = 'rgba(254, 240, 138, 0.45)'; ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.arc(x + w / 2, y + h / 2, 10 + Math.sin(now / 250) * 2, 0, 7); ctx.stroke();
+      // Interior partition walls dividing rooms
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 5;
+
+      if (w > 120 && h > 100) {
+        const midX = x + Math.floor(w * 0.52);
+        const midY = y + Math.floor(h * 0.48);
+
+        // Vertical interior wall with open doorway
+        ctx.beginPath();
+        ctx.moveTo(midX, y + 6);
+        ctx.lineTo(midX, midY - 24);
+        ctx.moveTo(midX, midY + 24);
+        ctx.lineTo(midX, y + h - 6);
+        ctx.stroke();
+
+        // Horizontal interior wall with doorway
+        ctx.beginPath();
+        ctx.moveTo(x + 6, midY);
+        ctx.lineTo(midX - 22, midY);
+        ctx.stroke();
+
+        // Room Labels painted on the floor
+        ctx.fillStyle = 'rgba(148, 163, 184, 0.35)';
+        ctx.font = 'bold 10px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('[ RECEPTION ]', (x + midX) / 2, y + h - 28);
+        ctx.fillText('[ ARMORY / AMMO ]', (x + midX) / 2, (y + midY) / 2);
+        ctx.fillText('[ MED BAY & SURGERY ]', (midX + x + w) / 2, (y + midY) / 2);
+        ctx.fillText('[ STORAGE VAULT ]', (midX + x + w) / 2, y + h - 28);
+
+        // Reception Counter & Office Desk
+        ctx.fillStyle = '#452b1e';
+        ctx.fillRect(x + 16, y + h - 42, 34, 12);
+        ctx.strokeStyle = '#6b432a'; ctx.lineWidth = 1.2; ctx.strokeRect(x + 16, y + h - 42, 34, 12);
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(x + 22, y + h - 40, 10, 3);
+        ctx.fillStyle = '#38bdf8'; ctx.fillRect(x + 23, y + h - 43, 8, 3);
+
+        // Armory Gun Racks & Weapon Crate (Northwest Room)
+        ctx.fillStyle = '#1e2430'; ctx.fillRect(x + 14, y + 14, 40, 14);
+        ctx.strokeStyle = '#475569'; ctx.lineWidth = 1; ctx.strokeRect(x + 14, y + 14, 40, 14);
+        ctx.fillStyle = '#d97706'; ctx.fillRect(x + 18, y + 18, 16, 6);
+        ctx.fillStyle = '#ef4444'; ctx.fillRect(x + 36, y + 18, 14, 6);
+
+        // Medical Bay Stretcher Bed & Medkit (Northeast Room)
+        ctx.fillStyle = '#f8fafc'; ctx.fillRect(midX + 16, y + 16, 32, 16);
+        ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1; ctx.strokeRect(midX + 16, y + 16, 32, 16);
+        ctx.fillStyle = '#ef4444'; ctx.fillRect(midX + 28, y + 20, 8, 8);
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(midX + 30, y + 22, 4, 4);
+
+        // Storage Pallets & Shelving (Southeast Room)
+        ctx.fillStyle = '#78350f'; ctx.fillRect(midX + 20, y + h - 44, 28, 22);
+        ctx.strokeStyle = '#b45309'; ctx.lineWidth = 1; ctx.strokeRect(midX + 20, y + h - 44, 28, 22);
+      }
+
+      // Ceiling Light Fixtures with glowing illumination cones
+      const lightX = x + w / 2, lightY = y + h / 2;
+      const lGrad = ctx.createRadialGradient(lightX, lightY, 4, lightX, lightY, Math.max(w, h) * 0.65);
+      lGrad.addColorStop(0, 'rgba(254, 240, 138, 0.28)');
+      lGrad.addColorStop(0.5, 'rgba(254, 240, 138, 0.08)');
+      lGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = lGrad;
+      ctx.fillRect(x + 6, y + 6, w - 12, h - 12);
+
+      ctx.fillStyle = '#fef08a'; ctx.beginPath(); ctx.arc(lightX, lightY, 4, 0, 7); ctx.fill();
+      ctx.strokeStyle = 'rgba(254, 240, 138, 0.4)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(lightX, lightY, 8 + Math.sin(now / 300) * 1.5, 0, 7); ctx.stroke();
+
+      ctx.restore();
+    } else {
+      // ═════════ 2. EXTERIOR ROOF (WHEN OUTSIDE) ═════════
+      ctx.save();
+      ctx.fillStyle = '#1c222b';
+      ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)'; ctx.lineWidth = 1;
+      for (let rx = x + 12; rx < x + w - 10; rx += 12) {
+        ctx.beginPath(); ctx.moveTo(rx, y + 4); ctx.lineTo(rx, y + h - 8); ctx.stroke();
+      }
+      if (w > 80 && h > 80) {
+        ctx.fillStyle = '#334155'; ctx.fillRect(x + 16, y + 16, 24, 20);
+        ctx.strokeStyle = '#475569'; ctx.lineWidth = 1; ctx.strokeRect(x + 16, y + 16, 24, 20);
+        ctx.fillStyle = '#1e293b'; ctx.beginPath(); ctx.arc(x + 28, y + 26, 6, 0, 7); ctx.fill();
+      }
       ctx.restore();
     }
 
-    // Doorway entrance indicator & guide chevron
-    if (distToDoor < 130) {
-      ctx.save();
+    // ═════════ 3. DOORWAY THRESHOLD & EXIT PORTAL ═════════
+    ctx.save();
+    ctx.fillStyle = '#14171d';
+    ctx.fillRect(doorX0, y + h - 18, doorW, 24);
+
+    const exitPhase = (now % 800) / 800;
+    ctx.fillStyle = isInside ? 'rgba(77, 255, 136, 0.25)' : 'rgba(0, 229, 255, 0.25)';
+    ctx.fillRect(doorX0 + 4, y + h - 6, doorW - 8, 10);
+    ctx.strokeStyle = isInside ? '#4dff88' : '#00e5ff';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(doorX0 + 4, y + h - 6, doorW - 8, 10);
+
+    if (distToDoor < 140) {
       ctx.font = 'bold 11px system-ui';
       ctx.textAlign = 'center';
-      const label = isInside ? '🚪 [DOORWAY EXIT]' : '🚪 [ENTER BUILDING]';
-      const tw = ctx.measureText(label).width + 16;
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
-      ctx.fillRect(x + w / 2 - tw / 2, y + h + 8, tw, 20);
-      ctx.strokeStyle = '#4dff88'; ctx.lineWidth = 1.2;
-      ctx.strokeRect(x + w / 2 - tw / 2, y + h + 8, tw, 20);
-      ctx.fillStyle = '#4dff88';
-      ctx.fillText(label, x + w / 2, y + h + 21);
+      const label = isInside ? '🚪 [EXIT TO WASTELAND]' : '🚪 [ENTER BUILDING]';
+      const tw = ctx.measureText(label).width + 18;
+      ctx.fillStyle = 'rgba(8, 12, 18, 0.9)';
+      ctx.fillRect(x + w / 2 - tw / 2, y + h + 8, tw, 22);
+      ctx.strokeStyle = isInside ? '#4dff88' : '#00e5ff'; ctx.lineWidth = 1.2;
+      ctx.strokeRect(x + w / 2 - tw / 2, y + h + 8, tw, 22);
+      ctx.fillStyle = isInside ? '#4dff88' : '#00e5ff';
+      ctx.fillText(label, x + w / 2, y + h + 22);
 
-      // Green animated entrance guide arrows
-      const arrowPhase = (now % 600) / 600;
-      ctx.strokeStyle = `rgba(77, 255, 136, ${1 - arrowPhase * 0.7})`;
-      ctx.lineWidth = 2;
-      const ay = y + h - 2 - arrowPhase * 8;
+      const arrowY = y + h - (isInside ? 4 : 12) + (isInside ? exitPhase * 8 : -exitPhase * 8);
+      ctx.strokeStyle = isInside ? `rgba(77, 255, 136, ${1 - exitPhase})` : `rgba(0, 229, 255, ${1 - exitPhase})`;
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
-      ctx.moveTo(x + w / 2 - 8, ay + 6);
-      ctx.lineTo(x + w / 2, ay);
-      ctx.lineTo(x + w / 2 + 8, ay + 6);
+      if (isInside) {
+        ctx.moveTo(x + w / 2 - 8, arrowY - 4); ctx.lineTo(x + w / 2, arrowY + 4); ctx.lineTo(x + w / 2 + 8, arrowY - 4);
+      } else {
+        ctx.moveTo(x + w / 2 - 8, arrowY + 4); ctx.lineTo(x + w / 2, arrowY - 4); ctx.lineTo(x + w / 2 + 8, arrowY + 4);
+      }
       ctx.stroke();
-      ctx.restore();
     }
+    ctx.restore();
   }
 }
 
@@ -1793,24 +2004,23 @@ function drawShelterPlots(now, inView, selfX, selfY) {
     const teamColor = plot.team > 0 ? TEAMCOL[plot.team] : isOwner ? '#ffd166' : '#00e5ff';
     const upg = plot.upgrades || {};
     const lv = plot.level || 1;
-    const S = 320;
+    const S = computePlotSize(plot);
     const x0 = plot.x - S / 2, y0 = plot.y - S / 2;
 
     // ───────── 1. TOWERING SKY BEACON LIGHT BEAM ─────────
-    // Always visible across wasteland distance so survivors can spot all 16 shelters from afar
     ctx.save();
-    const beamGrad = ctx.createLinearGradient(plot.x - 28, 0, plot.x + 28, 0);
+    const beamGrad = ctx.createLinearGradient(plot.x - 32, 0, plot.x + 32, 0);
     beamGrad.addColorStop(0, 'rgba(0, 229, 255, 0)');
     beamGrad.addColorStop(0.5, isOwner ? 'rgba(255, 209, 102, 0.45)' : 'rgba(0, 229, 255, 0.38)');
     beamGrad.addColorStop(1, 'rgba(0, 229, 255, 0)');
     ctx.fillStyle = beamGrad;
-    ctx.fillRect(plot.x - 28, plot.y - 3200, 56, 3200);
+    ctx.fillRect(plot.x - 32, plot.y - 3600, 64, 3600);
 
     // Vertical ascending energy pulse rings
     for (let r = 0; r < 4; r++) {
       const rProg = ((now / 1400 + r * 0.25) % 1);
-      const ringY = plot.y - rProg * 700;
-      const ringW = 24 + rProg * 48;
+      const ringY = plot.y - rProg * 800;
+      const ringW = 28 + rProg * 54;
       ctx.strokeStyle = isOwner ? `rgba(255, 209, 102, ${1 - rProg})` : `rgba(0, 229, 255, ${1 - rProg})`;
       ctx.lineWidth = 2.5;
       ctx.beginPath();
@@ -1819,130 +2029,245 @@ function drawShelterPlots(now, inView, selfX, selfY) {
     }
     ctx.restore();
 
-    // Skip detailed base ground geometry if completely out of camera view
-    if (!inView(plot.x, plot.y, 450)) continue;
+    // Skip detailed geometry if far off camera
+    if (!inView(plot.x, plot.y, S * 0.8)) continue;
 
-    // ───────── 2. SAFE HAVEN GLOWING AURA ZONE (180px radius) ─────────
+    // ───────── 2. EXPANDED SAFE HAVEN ZONE AURA ─────────
+    const shRadius = S * 0.55;
     ctx.save();
-    const shGrad = ctx.createRadialGradient(plot.x, plot.y, 40, plot.x, plot.y, 190);
-    shGrad.addColorStop(0, 'rgba(77, 255, 136, 0.16)');
-    shGrad.addColorStop(0.8, 'rgba(77, 255, 136, 0.05)');
+    const shGrad = ctx.createRadialGradient(plot.x, plot.y, 40, plot.x, plot.y, shRadius + 15);
+    shGrad.addColorStop(0, 'rgba(77, 255, 136, 0.14)');
+    shGrad.addColorStop(0.85, 'rgba(77, 255, 136, 0.04)');
     shGrad.addColorStop(1, 'rgba(77, 255, 136, 0)');
     ctx.fillStyle = shGrad;
-    ctx.beginPath(); ctx.arc(plot.x, plot.y, 190, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(plot.x, plot.y, shRadius + 15, 0, 7); ctx.fill();
 
     ctx.strokeStyle = `rgba(77, 255, 136, ${0.35 + 0.15 * Math.sin(now / 300)})`;
-    ctx.lineWidth = 2; ctx.setLineDash([10, 8]);
-    ctx.beginPath(); ctx.arc(plot.x, plot.y, 190, 0, 7); ctx.stroke();
+    ctx.lineWidth = 2; ctx.setLineDash([12, 8]);
+    ctx.beginPath(); ctx.arc(plot.x, plot.y, shRadius + 15, 0, 7); ctx.stroke();
     ctx.setLineDash([]);
     ctx.restore();
 
-    // ───────── 3. REINFORCED SLAB FOUNDATION ─────────
-    ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(x0 + 10, y0 + 10, S, S);
-    ctx.fillStyle = '#2c313a'; ctx.fillRect(x0, y0, S, S);
-    ctx.strokeStyle = '#1e2229'; ctx.lineWidth = 5; ctx.strokeRect(x0, y0, S, S);
+    // ───────── 3. REINFORCED CONCRETE & STEEL FOUNDATION ─────────
+    ctx.fillStyle = 'rgba(0,0,0,.65)'; ctx.fillRect(x0 + 12, y0 + 12, S, S);
+    ctx.fillStyle = '#222730'; ctx.fillRect(x0, y0, S, S);
+    ctx.strokeStyle = '#181b22'; ctx.lineWidth = 6; ctx.strokeRect(x0, y0, S, S);
 
-    // Perimeter hazard warning markings
-    ctx.lineWidth = 5;
-    for (let k = 8; k < S; k += 24) {
-      ctx.strokeStyle = k % 48 === 8 ? '#f4a261' : '#1e2229';
-      ctx.beginPath(); ctx.moveTo(x0 + k, y0 + 3); ctx.lineTo(x0 + k + 10, y0 + 3); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x0 + 3, y0 + k); ctx.lineTo(x0 + 3, y0 + k + 10); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x0 + S - 3, y0 + k); ctx.lineTo(x0 + S - 3, y0 + k + 10); ctx.stroke();
+    // Industrial floor paving pattern & vehicle lane markings
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.lineWidth = 1.5;
+    for (let k = 36; k < S - 30; k += 40) {
+      ctx.beginPath(); ctx.moveTo(x0 + k, y0 + 20); ctx.lineTo(x0 + k, y0 + S - 20); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x0 + 20, y0 + k); ctx.lineTo(x0 + S - 20, y0 + k); ctx.stroke();
     }
 
-    // ───────── 4. FORTIFIED WALLS WITH OPEN 90px AIRLOCK GATEWAY ─────────
-    // An open doorway on the bottom wall so survivors can walk right in!
-    const gateW = 92;
+    // ───────── 4. FORTIFIED WALLS & AUTOMATED SOUTH AIRLOCK ─────────
+    const T = 20;
+    const gateW = 100;
     const gateX0 = plot.x - gateW / 2;
     const gateX1 = plot.x + gateW / 2;
 
-    ctx.strokeStyle = lv >= 4 ? '#0f172a' : '#475569';
-    ctx.lineWidth = lv >= 4 ? 8 : 6;
-    ctx.beginPath();
+    const isAuthorized = me && (me.id === plot.owner || (plot.team > 0 && me.team === plot.team) || !plot.owner);
+    const distToGate = Math.hypot(selfX - plot.x, selfY - (y0 + S));
+    const gateOpen = isAuthorized && distToGate < 140;
+
+    // Perimeter Wall Slabs (Heavy concrete with steel capping)
+    ctx.fillStyle = lv >= 4 ? '#0f172a' : '#334155';
+    ctx.strokeStyle = lv >= 4 ? '#38bdf8' : '#475569';
+    ctx.lineWidth = 2.5;
+
     // Top wall
-    ctx.moveTo(x0 + 16, y0 + 16); ctx.lineTo(x0 + S - 16, y0 + 16);
-    // Right wall
-    ctx.lineTo(x0 + S - 16, y0 + S - 16);
-    // Bottom wall right wing
-    ctx.lineTo(gateX1, y0 + S - 16);
-    ctx.stroke();
-
-    ctx.beginPath();
-    // Bottom wall left wing
-    ctx.moveTo(gateX0, y0 + S - 16); ctx.lineTo(x0 + 16, y0 + S - 16);
+    ctx.fillRect(x0, y0, S, T); ctx.strokeRect(x0, y0, S, T);
     // Left wall
-    ctx.lineTo(x0 + 16, y0 + 16);
-    ctx.stroke();
+    ctx.fillRect(x0, y0, T, S); ctx.strokeRect(x0, y0, T, S);
+    // Right wall
+    ctx.fillRect(x0 + S - T, y0, T, S); ctx.strokeRect(x0 + S - T, y0, T, S);
+    // Bottom left wing
+    ctx.fillRect(x0, y0 + S - T, gateX0 - x0, T); ctx.strokeRect(x0, y0 + S - T, gateX0 - x0, T);
+    // Bottom right wing
+    ctx.fillRect(gateX1, y0 + S - T, (x0 + S) - gateX1, T); ctx.strokeRect(gateX1, y0 + S - T, (x0 + S) - gateX1, T);
 
-    // Airlock entrance threshold & welcoming green guide mat
-    ctx.fillStyle = '#1e293b'; ctx.fillRect(gateX0, y0 + S - 24, gateW, 36);
-    ctx.fillStyle = '#ffd166';
-    ctx.fillRect(gateX0 - 4, y0 + S - 24, 8, 16);
-    ctx.fillRect(gateX1 - 4, y0 + S - 24, 8, 16);
+    // Razor wire / perimeter spikes along outer walls
+    if (upg.spikes) {
+      ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2;
+      for (let px = x0 + 10; px < x0 + S - 10; px += 18) {
+        ctx.beginPath(); ctx.moveTo(px, y0 - 6); ctx.lineTo(px + 8, y0 + 2); ctx.stroke();
+      }
+    }
 
-    // Glowing green entrance guideline & text
-    ctx.fillStyle = '#4dff88';
-    ctx.fillRect(gateX0 + 6, y0 + S - 4, gateW - 12, 3);
-    ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'center';
-    ctx.fillText('▲ SHELTER AIRLOCK ▲', plot.x, y0 + S + 6);
+    // ───────── AIRLOCK BLAST GATE LOGIC & ANIMATION ─────────
+    ctx.save();
+    // Doorway jambs & sensor housings
+    ctx.fillStyle = '#1e293b'; ctx.fillRect(gateX0 - 8, y0 + S - T - 6, 8, T + 12);
+    ctx.fillStyle = '#1e293b'; ctx.fillRect(gateX1, y0 + S - T - 6, 8, T + 12);
 
-    // ───────── 5. FOUR CORNER DEFENSIVE TURRETS ─────────
+    if (gateOpen) {
+      // BLAST DOORS SLID OPEN!
+      const doorSlide = 38;
+      // Retracted door leaves
+      ctx.fillStyle = '#475569';
+      ctx.fillRect(gateX0 - doorSlide, y0 + S - T, doorSlide, T);
+      ctx.fillRect(gateX1, y0 + S - T, doorSlide, T);
+
+      // Illuminated green entry threshold mat with animated chevrons
+      const stepProg = (now % 600) / 600;
+      ctx.fillStyle = 'rgba(77, 255, 136, 0.25)';
+      ctx.fillRect(gateX0 + 4, y0 + S - T - 4, gateW - 8, T + 8);
+      ctx.strokeStyle = '#4dff88'; ctx.lineWidth = 2;
+      ctx.strokeRect(gateX0 + 4, y0 + S - T - 4, gateW - 8, T + 8);
+
+      // Animated green chevrons pointing inside
+      ctx.strokeStyle = `rgba(77, 255, 136, ${0.9 - stepProg * 0.4})`;
+      ctx.lineWidth = 3;
+      for (let c = 0; c < 3; c++) {
+        const cy = y0 + S + 6 - (c * 12 + stepProg * 12);
+        if (cy > y0 + S - T - 4) {
+          ctx.beginPath();
+          ctx.moveTo(plot.x - 14, cy); ctx.lineTo(plot.x, cy - 8); ctx.lineTo(plot.x + 14, cy);
+          ctx.stroke();
+        }
+      }
+
+      ctx.fillStyle = '#4dff88'; ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText('▲ ACCESS GRANTED · WELCOME HOME ▲', plot.x, y0 + S + 18);
+    } else {
+      // AIRLOCK SEALED SHUT!
+      ctx.fillStyle = '#1e293b'; ctx.fillRect(gateX0, y0 + S - T, gateW, T);
+      ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 2.5; ctx.strokeRect(gateX0, y0 + S - T, gateW, T);
+
+      // Warning hazard stripes across blast doors
+      for (let sx = gateX0 + 4; sx < gateX1 - 8; sx += 14) {
+        ctx.fillStyle = sx % 28 === 4 ? '#ef4444' : '#0f172a';
+        ctx.beginPath(); ctx.moveTo(sx, y0 + S - T); ctx.lineTo(sx + 8, y0 + S - T); ctx.lineTo(sx + 3, y0 + S); ctx.lineTo(sx - 5, y0 + S); ctx.fill();
+      }
+
+      // Red security laser tripwire
+      ctx.strokeStyle = 'rgba(239, 68, 68, 0.85)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(gateX0, y0 + S - T / 2); ctx.lineTo(gateX1, y0 + S - T / 2); ctx.stroke();
+
+      // Flashing alert lights on jambs
+      ctx.fillStyle = (now % 600 < 300) ? '#ef4444' : '#7f1d1d';
+      ctx.beginPath(); ctx.arc(gateX0 - 4, y0 + S - T / 2, 4, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(gateX1 + 4, y0 + S - T / 2, 4, 0, 7); ctx.fill();
+
+      // Electric shock arcs if upgraded
+      if (upg.gate >= 3 && Math.random() < 0.35) {
+        ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.moveTo(gateX0 + Math.random() * gateW, y0 + S - T);
+        ctx.lineTo(gateX0 + Math.random() * gateW, y0 + S);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = '#ef4444'; ctx.font = 'bold 10.5px system-ui'; ctx.textAlign = 'center';
+      const lockMsg = !plot.owner ? '🔒 AIRLOCK CLOSED · PRESS [E] TO CLAIM' : '🔒 AIRLOCK SEALED · UNAUTHORIZED';
+      ctx.fillText(lockMsg, plot.x, y0 + S + 18);
+    }
+    ctx.restore();
+
+    // ───────── 5. FOUR CORNER DEFENSIVE WATCHTOWERS & AIMING TURRETS ─────────
     const corners = [
-      [x0 + 32, y0 + 32], [x0 + S - 32, y0 + 32],
-      [x0 + 32, y0 + S - 32], [x0 + S - 32, y0 + S - 32]
+      [x0 + 28, y0 + 28], [x0 + S - 28, y0 + 28],
+      [x0 + 28, y0 + S - 28], [x0 + S - 28, y0 + S - 28]
     ];
+
     for (let i = 0; i < 4; i++) {
       const [cx, cy] = corners[i];
-      ctx.fillStyle = '#181b22'; ctx.beginPath(); ctx.arc(cx, cy, 18, 0, 7); ctx.fill();
-      ctx.strokeStyle = teamColor; ctx.lineWidth = 2.5; ctx.stroke();
-      const scanA = (now / 1200 + i * 1.57) % 6.28;
-      ctx.save(); ctx.translate(cx, cy); ctx.rotate(scanA);
-      ctx.fillStyle = '#475569';
-      if (upg.turret_missile) {
-        ctx.fillStyle = '#15803d'; ctx.fillRect(-8, -10, 16, 20);
-        ctx.fillStyle = '#ef4444'; ctx.fillRect(8, -6, 6, 4); ctx.fillRect(8, 2, 6, 4);
-      } else if (upg.turret_laser) {
-        ctx.fillStyle = '#3b82f6'; ctx.fillRect(-4, -6, 28, 12);
-        ctx.fillStyle = '#60a5fa'; ctx.beginPath(); ctx.arc(24, 0, 4, 0, 7); ctx.fill();
-      } else {
-        ctx.fillRect(-4, -5, 26, 4); ctx.fillRect(-4, 1, 26, 4);
+      // Tower base platform
+      ctx.fillStyle = '#14171d'; ctx.beginPath(); ctx.arc(cx, cy, 22, 0, 7); ctx.fill();
+      ctx.strokeStyle = teamColor; ctx.lineWidth = 3; ctx.stroke();
+
+      // Find nearest hostile zombie to aim turret at
+      let targetA = null;
+      if (latest && latest.Z && latest.Z.size > 0) {
+        let nearestZ = null, minZD = 750 * 750;
+        for (const z of latest.Z.values()) {
+          const zd = d2(cx, cy, z[2], z[3]);
+          if (zd < minZD) { minZD = zd; nearestZ = z; }
+        }
+        if (nearestZ) {
+          targetA = Math.atan2(nearestZ[3] - cy, nearestZ[2] - cx);
+        }
       }
-      ctx.strokeStyle = upg.turret_laser ? 'rgba(59,130,246,.55)' : 'rgba(239,68,68,.35)';
+      const aimAngle = targetA !== null ? targetA : ((now / 1500 + i * 1.57) % 6.28);
+
+      // Swiveling automated turret head
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(aimAngle);
+
+      // Targeting laser pointer
+      ctx.strokeStyle = upg.turret_laser ? 'rgba(56, 189, 248, 0.65)' : 'rgba(239, 68, 68, 0.45)';
       ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.moveTo(22, 0); ctx.lineTo(150, 0); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(24, 0); ctx.lineTo(180, 0); ctx.stroke();
+
+      // Gun housing & barrels
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(-10, -10, 20, 20);
+      ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1.5; ctx.strokeRect(-10, -10, 20, 20);
+
+      if (upg.turret_rocket) {
+        // Quad micro-missile battery
+        ctx.fillStyle = '#166534'; ctx.fillRect(-8, -12, 18, 24);
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(10, -8, 6, 4); ctx.fillRect(10, -2, 6, 4);
+        ctx.fillRect(10, 4, 6, 4); ctx.fillRect(10, 10, 6, 4);
+      } else if (upg.turret_laser) {
+        // Continuous laser beam cannon
+        ctx.fillStyle = '#0284c7'; ctx.fillRect(-4, -7, 28, 14);
+        ctx.fillStyle = '#38bdf8'; ctx.beginPath(); ctx.arc(24, 0, 5, 0, 7); ctx.fill();
+      } else if (upg.turret_mg) {
+        // Heavy .50 Cal Minigun with dual heavy fluted barrels
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, -6, 28, 5); ctx.fillRect(0, 1, 28, 5);
+        ctx.fillStyle = '#fbbf24'; ctx.fillRect(-8, -10, 6, 20); // brass ammo chute
+      } else {
+        // Standard 9mm light sentry
+        ctx.fillStyle = '#475569';
+        ctx.fillRect(0, -4, 22, 3); ctx.fillRect(0, 1, 22, 3);
+      }
       ctx.restore();
     }
 
-    // ───────── 6. MEDICAL BAY & SOLAR BAY ─────────
-    ctx.fillStyle = '#064e3b'; ctx.fillRect(x0 + 44, y0 + 80, 52, 52);
-    ctx.strokeStyle = '#10b981'; ctx.lineWidth = 1.5; ctx.strokeRect(x0 + 44, y0 + 80, 52, 52);
+    // ───────── 6. INTERIOR ADVANCED STATIONS ─────────
+    // Medical Triage Pod
+    const medX = x0 + 40, medY = y0 + 60;
+    ctx.fillStyle = '#064e3b'; ctx.fillRect(medX, medY, 48, 48);
+    ctx.strokeStyle = '#10b981'; ctx.lineWidth = 1.5; ctx.strokeRect(medX, medY, 48, 48);
     ctx.fillStyle = '#34d399';
-    ctx.fillRect(x0 + 65, y0 + 88, 10, 36); ctx.fillRect(x0 + 52, y0 + 101, 36, 10);
+    ctx.fillRect(medX + 20, medY + 10, 8, 28); ctx.fillRect(medX + 10, medY + 20, 28, 8);
 
-    ctx.fillStyle = '#0f172a'; ctx.fillRect(x0 + S - 96, y0 + 80, 52, 52);
-    ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 1.5; ctx.strokeRect(x0 + S - 96, y0 + 80, 52, 52);
-    ctx.strokeStyle = 'rgba(56,189,248,.35)'; ctx.lineWidth = 1;
-    ctx.strokeRect(x0 + S - 96, y0 + 80, 26, 26); ctx.strokeRect(x0 + S - 70, y0 + 80, 26, 26);
-    ctx.strokeRect(x0 + S - 96, y0 + 106, 26, 26); ctx.strokeRect(x0 + S - 70, y0 + 106, 26, 26);
+    // Armory Munitions Storage
+    const armX = x0 + S - 88, armY = y0 + 60;
+    ctx.fillStyle = '#1e293b'; ctx.fillRect(armX, armY, 48, 48);
+    ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 1.5; ctx.strokeRect(armX, armY, 48, 48);
+    ctx.fillStyle = '#f59e0b'; ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('ARMORY', armX + 24, armY + 26);
 
-    // ───────── 7. CENTRAL COMMAND TERMINAL & BEACON SPIRE ─────────
-    ctx.fillStyle = '#0f172a'; ctx.beginPath(); ctx.arc(plot.x, plot.y, 36, 0, 7); ctx.fill();
+    // Vehicle Repair Lift & Pad
+    const vehPadX = x0 + 40, vehPadY = y0 + S - 120;
+    ctx.fillStyle = '#181b22'; ctx.fillRect(vehPadX, vehPadY, 68, 54);
+    ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 1.5; ctx.setLineDash([6, 6]);
+    ctx.strokeRect(vehPadX, vehPadY, 68, 54); ctx.setLineDash([]);
+    ctx.fillStyle = '#ffd166'; ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('REPAIR BAY', vehPadX + 34, vehPadY + 30);
+
+    // ───────── 7. CENTRAL COMMAND TERMINAL & QUANTUM CORE ─────────
+    ctx.fillStyle = '#0f172a'; ctx.beginPath(); ctx.arc(plot.x, plot.y, 34, 0, 7); ctx.fill();
     ctx.strokeStyle = teamColor; ctx.lineWidth = 3.5; ctx.stroke();
 
     if (upg.antimatter_reactor) {
-      const rGrad = ctx.createRadialGradient(plot.x, plot.y, 2, plot.x, plot.y, 30);
+      const rGrad = ctx.createRadialGradient(plot.x, plot.y, 2, plot.x, plot.y, 28);
       rGrad.addColorStop(0, '#c084fc'); rGrad.addColorStop(0.5, '#7c3aed'); rGrad.addColorStop(1, 'rgba(124,58,237,0)');
-      ctx.fillStyle = rGrad; ctx.beginPath(); ctx.arc(plot.x, plot.y, 30, 0, 7); ctx.fill();
+      ctx.fillStyle = rGrad; ctx.beginPath(); ctx.arc(plot.x, plot.y, 28, 0, 7); ctx.fill();
     }
+
     ctx.fillStyle = teamColor; ctx.font = 'bold 15px system-ui';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(`Lv.${lv}`, plot.x, plot.y);
 
-    // ───────── 8. FLOATING 3D IN-WORLD NAMEPLATE & BADGE ─────────
+    // ───────── 8. FLOATING 3D IN-WORLD NAMEPLATE ─────────
     ctx.save();
-    ctx.textAlign = 'center';
-    ctx.font = 'bold 16px system-ui';
+    ctx.textAlign = 'center'; ctx.font = 'bold 15px system-ui';
     ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.95)';
     ctx.strokeText(`🏰 ${plot.name}`, plot.x, y0 - 24);
     ctx.fillStyle = '#ffd166';
@@ -1954,18 +2279,18 @@ function drawShelterPlots(now, inView, selfX, selfY) {
     ctx.fillStyle = plot.ownerName ? teamColor : '#4dff88';
     ctx.fillText(sub, plot.x, y0 - 8);
 
-    // Prompt if player is in range
+    // Prompt if survivor is nearby
     const distToMe = Math.hypot(plot.x - selfX, plot.y - selfY);
-    if (distToMe < 240) {
-      const hint = plot.ownerName ? '⚙️ Press E or T for Shelter Tycoon Upgrades' : '🏰 Press E to Claim This Shelter Outpost';
-      ctx.font = 'bold 13px system-ui';
+    if (distToMe < S * 0.58) {
+      const hint = plot.ownerName ? '⚙️ Press [T] for Shelter Tycoon Upgrades' : '🏰 Press [E] to Claim This Shelter Outpost';
+      ctx.font = 'bold 12.5px system-ui';
       const hw = ctx.measureText(hint).width + 24;
-      ctx.fillStyle = 'rgba(10, 15, 24, 0.9)';
-      ctx.fillRect(plot.x - hw / 2, y0 + S + 16, hw, 28);
-      ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 2;
-      ctx.strokeRect(plot.x - hw / 2, y0 + S + 16, hw, 28);
+      ctx.fillStyle = 'rgba(10, 15, 24, 0.92)';
+      ctx.fillRect(plot.x - hw / 2, y0 + S + 28, hw, 26);
+      ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 1.8;
+      ctx.strokeRect(plot.x - hw / 2, y0 + S + 28, hw, 26);
       ctx.fillStyle = '#ffd700';
-      ctx.fillText(hint, plot.x, y0 + S + 31);
+      ctx.fillText(hint, plot.x, y0 + S + 42);
     }
     ctx.restore();
   }
@@ -2072,44 +2397,141 @@ function drawPlayer(p, x, y, a, isMe, now) {
 }
 
 function drawWeapon(w) {
-  if (!w) return; const c = w.cat; ctx.lineCap = 'round';
-  const gun = (len, wid, col = '#1b1b1b') => {
-    ctx.fillStyle = col; ctx.fillRect(8, -wid / 2 + 5, len, wid);
-    ctx.fillStyle = '#444'; ctx.fillRect(8, 4, Math.min(10, len), wid / 2 + 2);
-  };
+  if (!w) return;
+  const c = w.cat;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
   switch (c) {
-    case 'pistol': gun(14, 5); break; case 'smg': gun(22, 6); break; case 'ar': gun(32, 6); break;
-    case 'sniper': gun(44, 5); ctx.fillStyle = '#333'; ctx.fillRect(18, 1, 12, 4); break;
-    case 'shotgun': gun(30, 7, '#3a2a1a'); break; case 'mg': gun(36, 9); break;
-    case 'launcher': case 'glauncher': ctx.fillStyle = '#3d4a2f'; ctx.fillRect(-6, 0, 46, 12); break;
-    case 'artillery': case 'mlrs': case 'naval': case 'missile':
-      ctx.fillStyle = '#4b5320'; ctx.fillRect(-14, -14, 26, 28); ctx.fillStyle = '#2b2f1a'; ctx.fillRect(4, -4, 44, 8); break;
-    case 'siege':
-      ctx.fillStyle = '#6b4a2a'; ctx.fillRect(-12, -12, 24, 24); ctx.strokeStyle = '#8b6a3a'; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(46, 0); ctx.stroke(); break;
-    case 'sword':
-      ctx.strokeStyle = '#d7dde3'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(14, 8); ctx.lineTo(48, 8); ctx.stroke();
-      ctx.strokeStyle = '#8b6a3a'; ctx.beginPath(); ctx.moveTo(12, 3); ctx.lineTo(12, 13); ctx.stroke(); break;
-    case 'polearm':
-      ctx.strokeStyle = '#7a5a3a'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(-10, 7); ctx.lineTo(62, 7); ctx.stroke();
-      ctx.fillStyle = '#ccd'; ctx.beginPath(); ctx.moveTo(62, 1); ctx.lineTo(76, 7); ctx.lineTo(62, 13); ctx.fill(); break;
-    case 'blunt':
-      ctx.strokeStyle = '#7a5a3a'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(12, 7); ctx.lineTo(40, 7); ctx.stroke();
-      ctx.fillStyle = '#777'; ctx.beginPath(); ctx.arc(42, 7, 8, 0, 7); ctx.fill(); break;
-    case 'dagger':
-      ctx.strokeStyle = '#d7dde3'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(15, 8); ctx.lineTo(30, 8); ctx.stroke(); break;
-    case 'bow':
-      ctx.strokeStyle = '#8b5a2b'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(10, 0, 20, -1.2, 1.2); ctx.stroke();
-      ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(10 + Math.cos(-1.2) * 20, Math.sin(-1.2) * 20); ctx.lineTo(10 + Math.cos(1.2) * 20, Math.sin(1.2) * 20); ctx.stroke(); break;
-    case 'throwing':
-      ctx.fillStyle = '#bbb'; ctx.beginPath(); ctx.arc(18, 8, 5, 0, 7); ctx.fill(); break;
+    case 'pistol':
+      // Tactical Handgun (Glock 17 / Desert Eagle)
+      ctx.fillStyle = '#1e2229';
+      ctx.fillRect(8, -3, 16, 6);
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(8, 0, 10, 6);
+      ctx.fillStyle = '#64748b';
+      ctx.fillRect(23, -2, 2, 4);
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(13, -3, 4, 2);
+      break;
+    case 'smg':
+      // Tactical Submachine Gun (MP5 / Vector)
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(6, -4, 24, 7);
+      ctx.fillStyle = '#0f172a';
+      ctx.beginPath(); ctx.moveTo(14, 3); ctx.quadraticCurveTo(18, 12, 22, 14); ctx.lineWidth = 3; ctx.strokeStyle = '#0f172a'; ctx.stroke();
+      ctx.fillStyle = '#475569';
+      ctx.fillRect(28, -2, 6, 3);
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(12, -6, 8, 2);
+      break;
+    case 'ar':
+      // Assault Rifle (AK-47 / M4A1)
+      ctx.fillStyle = '#181d24';
+      ctx.fillRect(6, -4, 26, 7);
+      ctx.fillStyle = '#6d4c41';
+      ctx.fillRect(16, -3, 12, 5);
+      ctx.fillStyle = '#2b2f38';
+      ctx.fillRect(30, -2, 10, 3);
+      ctx.fillStyle = '#d97706';
+      ctx.fillRect(39, -3, 3, 5);
+      ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(16, 3); ctx.quadraticCurveTo(20, 14, 26, 17); ctx.stroke();
+      break;
+    case 'sniper':
+      // Heavy Sniper Rifle (Barrett .50 / AWM)
+      ctx.fillStyle = '#1e232d';
+      ctx.fillRect(4, -4, 30, 7);
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(32, -2, 24, 4);
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(54, -4, 6, 8);
+      ctx.fillStyle = '#090d14'; ctx.fillRect(12, -8, 18, 4);
+      ctx.fillStyle = '#38bdf8'; ctx.fillRect(28, -8, 2, 4);
+      ctx.fillStyle = '#475569'; ctx.fillRect(10, -9, 3, 6); ctx.fillRect(28, -9, 3, 6);
+      break;
+    case 'shotgun':
+      // Combat Shotgun (SPAS-12 / Remington)
+      ctx.fillStyle = '#242b35';
+      ctx.fillRect(6, -4, 22, 8);
+      ctx.fillStyle = '#452c1e';
+      ctx.fillRect(18, 1, 10, 5);
+      ctx.fillStyle = '#475569';
+      ctx.fillRect(26, -3.5, 16, 6);
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(28, -5, 14, 2);
+      break;
+    case 'mg':
+      // Heavy Machine Gun (M249 SAW / Minigun)
+      ctx.fillStyle = '#1e2430';
+      ctx.fillRect(6, -5, 30, 10);
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(34, -3, 16, 6);
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(14, 5, 8, 6);
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(12, 10, 12, 8);
+      break;
+    case 'launcher': case 'glauncher':
+      // RPG-7 Rocket Launcher
+      ctx.fillStyle = '#364935';
+      ctx.fillRect(-2, -5, 38, 9);
+      ctx.fillStyle = '#4b5563';
+      ctx.beginPath(); ctx.moveTo(36, -6); ctx.lineTo(48, 0); ctx.lineTo(36, 6); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath(); ctx.arc(46, 0, 2, 0, 7); ctx.fill();
+      ctx.fillStyle = '#1f2937';
+      ctx.fillRect(6, 4, 4, 6); ctx.fillRect(22, 4, 4, 6);
+      break;
     case 'special':
-      if (w.beam) { ctx.fillStyle = '#555'; ctx.fillRect(4, -6, 40, 14); ctx.fillStyle = '#ff3b3b'; ctx.fillRect(40, -2, 6, 6); }
-      else if (w.mode === 'flame') { gun(30, 8, '#5a3a1a'); ctx.fillStyle = '#c33'; ctx.fillRect(-14, -8, 10, 16); }
-      else if (w.mode === 'cone') { ctx.fillStyle = '#556'; ctx.fillRect(4, -10, 30, 20); ctx.fillStyle = '#9cf'; ctx.fillRect(32, -8, 6, 16); }
-      else { ctx.fillStyle = '#4b5320'; ctx.beginPath(); ctx.arc(18, 8, 6, 0, 7); ctx.fill(); }
+      // Exotic DragonFire Laser / Plasma Rifle
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(6, -5, 32, 9);
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(14, -3, 14, 5);
+      ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 1.5;
+      ctx.strokeRect(14, -3, 14, 5);
+      ctx.fillStyle = '#00e5ff';
+      ctx.fillRect(36, -4, 4, 7);
+      break;
+    case 'sword':
+      // Masterwork Katana
+      ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.moveTo(14, 7); ctx.lineTo(46, 7); ctx.stroke();
+      ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(16, 5.5); ctx.lineTo(44, 5.5); ctx.stroke();
+      ctx.fillStyle = '#ffd700';
+      ctx.fillRect(12, 3, 3, 9);
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(4, 5.5, 8, 3.5);
+      break;
+    case 'dagger':
+      // Combat Fighting Knife (Fairbairn-Sykes / Tanto)
+      ctx.fillStyle = '#e2e8f0';
+      ctx.beginPath(); ctx.moveTo(14, 6); ctx.lineTo(30, 7); ctx.lineTo(14, 9); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffd700';
+      ctx.fillRect(13, 3, 2.5, 8);
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(6, 5.5, 7, 3);
+      break;
+    case 'polearm':
+      ctx.strokeStyle = '#78350f'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(-10, 7); ctx.lineTo(60, 7); ctx.stroke();
+      ctx.fillStyle = '#cbd5e1'; ctx.beginPath(); ctx.moveTo(60, 2); ctx.lineTo(76, 7); ctx.lineTo(60, 12); ctx.fill();
+      break;
+    case 'blunt':
+      ctx.strokeStyle = '#78350f'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(10, 7); ctx.lineTo(38, 7); ctx.stroke();
+      ctx.fillStyle = '#475569'; ctx.fillRect(38, 2, 12, 10);
+      break;
+    case 'bow':
+      ctx.strokeStyle = '#78350f'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(10, 0, 22, -1.2, 1.2); ctx.stroke();
+      ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(10 + Math.cos(-1.2) * 22, Math.sin(-1.2) * 22); ctx.lineTo(10 + Math.cos(1.2) * 22, Math.sin(1.2) * 22); ctx.stroke();
+      break;
+    default:
+      ctx.fillStyle = '#1b1b1b'; ctx.fillRect(8, 2, 18, 5);
       break;
   }
+  ctx.restore();
 }
 
 function drawZombie(z, x, y, a, now) {
@@ -2478,44 +2900,44 @@ function bar(x, y, w, h, v, col, label) {
 }
 
 function drawHUD(now, selfX, selfY, inVeh, b) {
+  if (!latest || !me) return;
   ctx.textBaseline = 'middle';
 
   const wm = worldMouse();
   const playerHeading = inVeh ? inVeh.a : Math.atan2(wm.y - selfY, wm.x - selfX);
 
-  // ───────── 1. TOP 360° TACTICAL COMPASS TAPE ─────────
-  const compW = Math.min(540, VW - 580);
-  if (compW > 260) {
-    const compX = VW / 2 - compW / 2, compY = 8, compH = 34;
+  // ───────── 1. THIN, MINIMALIST 360° COMPASS RIBBON WITH ARROWS ─────────
+  const compW = Math.min(460, VW - 520);
+  if (compW > 240) {
+    const compX = Math.round(VW / 2 - compW / 2), compY = 8, compH = 22;
     ctx.save();
-    // Glass dark backing with subtle cyan border
-    ctx.fillStyle = 'rgba(8, 12, 18, 0.88)';
+    // Sleek translucent glass background
+    ctx.fillStyle = 'rgba(6, 10, 16, 0.78)';
     ctx.fillRect(compX, compY, compW, compH);
-    ctx.strokeStyle = 'rgba(0, 229, 255, 0.35)';
-    ctx.lineWidth = 1.2;
-    ctx.strokeRect(compX, compY, compW, compH);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(compX + 0.5, compY + 0.5, compW - 1, compH - 1);
 
-    // Degree numbers and cardinal directions
-    const viewDegRange = 100; // degrees visible on tape
+    const viewDegRange = 90;
     let currentDeg = (playerHeading * 180 / Math.PI + 90) % 360;
     if (currentDeg < 0) currentDeg += 360;
 
     ctx.save();
-    ctx.beginPath(); ctx.rect(compX + 2, compY + 2, compW - 4, compH - 4); ctx.clip();
+    ctx.beginPath(); ctx.rect(compX + 1, compY + 1, compW - 2, compH - 2); ctx.clip();
 
-    // Draw degree ticks
+    // Degree ticks
     for (let d = 0; d < 360; d += 15) {
       let diff = d - currentDeg;
       while (diff < -180) diff += 360;
       while (diff > 180) diff -= 360;
       if (Math.abs(diff) <= viewDegRange / 2) {
-        const tx = compX + compW / 2 + (diff / (viewDegRange / 2)) * (compW / 2 - 16);
+        const tx = compX + compW / 2 + (diff / (viewDegRange / 2)) * (compW / 2 - 14);
         const isMajor = d % 45 === 0;
-        ctx.strokeStyle = isMajor ? '#00e5ff' : 'rgba(255,255,255,0.25)';
-        ctx.lineWidth = isMajor ? 2 : 1;
+        ctx.strokeStyle = isMajor ? 'rgba(0, 229, 255, 0.8)' : 'rgba(255, 255, 255, 0.2)';
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(tx, compY + compH - (isMajor ? 14 : 8));
-        ctx.lineTo(tx, compY + compH - 2);
+        ctx.moveTo(tx, compY + compH - (isMajor ? 8 : 4));
+        ctx.lineTo(tx, compY + compH - 1);
         ctx.stroke();
 
         if (isMajor) {
@@ -2528,274 +2950,332 @@ function drawHUD(now, selfX, selfY, inVeh, b) {
           else if (d === 225) label = 'SW';
           else if (d === 270) label = 'W';
           else if (d === 315) label = 'NW';
-          ctx.fillStyle = (label === 'N' || label === 'S' || label === 'E' || label === 'W') ? '#ffd700' : '#00e5ff';
-          ctx.font = 'bold 11px system-ui';
+          ctx.fillStyle = label === 'N' ? '#ff5252' : isMajor && label.length === 1 ? '#ffd700' : '#94a3b8';
+          ctx.font = 'bold 9px system-ui';
           ctx.textAlign = 'center';
-          ctx.fillText(label, tx, compY + 11);
+          ctx.fillText(label, tx, compY + 8);
         }
       }
     }
 
-    // Pins for all 16 shelters on the Compass Tape!
+    // Integrated minimalist arrow indicators directly on compass tape
+    // 1. Nearest Shelter (Gold arrow ▲)
+    let cPlot = null, cDist = Infinity;
     for (const plot of shelterPlots) {
-      const pAngle = Math.atan2(plot.y - selfY, plot.x - selfX);
+      const d = Math.hypot(plot.x - selfX, plot.y - selfY);
+      if (d < cDist) { cDist = d; cPlot = plot; }
+    }
+    if (cPlot) {
+      const pAngle = Math.atan2(cPlot.y - selfY, cPlot.x - selfX);
       let pDeg = (pAngle * 180 / Math.PI + 90) % 360;
       if (pDeg < 0) pDeg += 360;
       let diff = pDeg - currentDeg;
       while (diff < -180) diff += 360;
       while (diff > 180) diff -= 360;
       if (Math.abs(diff) <= viewDegRange / 2) {
-        const px = compX + compW / 2 + (diff / (viewDegRange / 2)) * (compW / 2 - 16);
-        const dist = Math.round(Math.hypot(plot.x - selfX, plot.y - selfY));
+        const px = compX + compW / 2 + (diff / (viewDegRange / 2)) * (compW / 2 - 14);
         ctx.fillStyle = '#ffd700';
-        ctx.beginPath(); ctx.arc(px, compY + 8, 3, 0, 7); ctx.fill();
-        ctx.font = 'bold 9px system-ui';
-        ctx.textAlign = 'center';
-        const shortName = plot.name.replace('Shelter ', '');
-        ctx.fillText(`🏰${shortName} ${dist}m`, px, compY + 20);
+        ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'center';
+        ctx.fillText(`▲ [${Math.round(cDist)}m] Shelter`, px, compY + 11);
       }
     }
 
-    // Nearest vehicle pin on compass
-    if (!me.veh && latest && latest.V.size > 0) {
-      let closestV = null, bestVD = 1200;
-      for (const v of latest.V.values()) {
-        const vd = Math.hypot(v[2] - selfX, v[3] - selfY);
-        if (vd < bestVD) { bestVD = vd; closestV = v; }
-      }
-      if (closestV) {
-        const vAngle = Math.atan2(closestV[3] - selfY, closestV[2] - selfX);
-        let vDeg = (vAngle * 180 / Math.PI + 90) % 360;
-        if (vDeg < 0) vDeg += 360;
-        let diff = vDeg - currentDeg;
+    // 2. Player's Base (Emerald arrow ▲)
+    if (me.plotId && (!cPlot || cPlot.id !== me.plotId)) {
+      const myPlot = shelterPlots.find(p => p.id === me.plotId);
+      if (myPlot) {
+        const pAngle = Math.atan2(myPlot.y - selfY, myPlot.x - selfX);
+        let pDeg = (pAngle * 180 / Math.PI + 90) % 360;
+        if (pDeg < 0) pDeg += 360;
+        let diff = pDeg - currentDeg;
         while (diff < -180) diff += 360;
         while (diff > 180) diff -= 360;
         if (Math.abs(diff) <= viewDegRange / 2) {
-          const vx = compX + compW / 2 + (diff / (viewDegRange / 2)) * (compW / 2 - 16);
-          ctx.fillStyle = '#00e5ff';
-          ctx.beginPath(); ctx.arc(vx, compY + 8, 3, 0, 7); ctx.fill();
-          ctx.font = 'bold 9px system-ui';
-          ctx.textAlign = 'center';
-          ctx.fillText(`🚗${Math.round(bestVD)}m`, vx, compY + 20);
+          const px = compX + compW / 2 + (diff / (viewDegRange / 2)) * (compW / 2 - 14);
+          ctx.fillStyle = '#4ade80';
+          ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'center';
+          ctx.fillText(`▲ [${Math.round(Math.hypot(myPlot.x - selfX, myPlot.y - selfY))}m] Base`, px, compY + 11);
         }
       }
     }
 
-    ctx.restore();
-
-    // Central alignment chevron
-    ctx.fillStyle = '#ffd700';
-    ctx.beginPath();
-    ctx.moveTo(compX + compW / 2 - 5, compY + 1);
-    ctx.lineTo(compX + compW / 2 + 5, compY + 1);
-    ctx.lineTo(compX + compW / 2, compY + 7);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  // ───────── 2. TOP-CENTER OPERATION EXODUS MISSION TRACKER ─────────
-  const ow = Math.min(480, VW - 560), oh = 48, ox = VW / 2 - ow / 2, oy = 46;
-  ctx.save();
-  ctx.fillStyle = 'rgba(10, 16, 26, 0.9)';
-  ctx.fillRect(ox, oy, ow, oh);
-  ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 1.5; ctx.strokeRect(ox, oy, ow, oh);
-
-  ctx.fillStyle = '#ffd700'; ctx.font = 'bold 12px system-ui';
-  ctx.textAlign = 'left';
-  ctx.fillText('🎯 OPERATION EXODUS: ESCAPE THE DEAD ZONE', ox + 14, oy + 15);
-
-  let missionStage = 'Stage 1/5 · Scavenge Scrap & Claim 1 of 16 Shelters (Press T)';
-  let progressStep = 1;
-  if (me.beacon) {
-    if (me.evacTimer > 0) {
-      missionStage = `Stage 4/5 · EXTRACTION HELICOPTER INCOMING: ${me.evacTimer}s!`;
-      progressStep = 4;
-    } else {
-      missionStage = 'Stage 5/5 · BOARD EXTRACTION HELICOPTER AT THE BEACON!';
-      progressStep = 5;
+    // 3. Waypoint (Cyan arrow ▲)
+    if (waypoint) {
+      const wAngle = Math.atan2(waypoint.y - selfY, waypoint.x - selfX);
+      let wDeg = (wAngle * 180 / Math.PI + 90) % 360;
+      if (wDeg < 0) wDeg += 360;
+      let diff = wDeg - currentDeg;
+      while (diff < -180) diff += 360;
+      while (diff > 180) diff -= 360;
+      if (Math.abs(diff) <= viewDegRange / 2) {
+        const wx = compX + compW / 2 + (diff / (viewDegRange / 2)) * (compW / 2 - 14);
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'center';
+        ctx.fillText(`▲ [${Math.round(Math.hypot(waypoint.x - selfX, waypoint.y - selfY))}m] Pin`, wx, compY + 11);
+      }
     }
-  } else if (me.plotId) {
-    missionStage = 'Stage 2/5 · Upgrade Sentry Turrets & Construct Exodus Beacon [T]';
-    progressStep = 2;
-  }
 
-  ctx.fillStyle = '#ffffff'; ctx.font = '600 12px system-ui';
-  ctx.fillText(missionStage, ox + 14, oy + 32);
+    ctx.restore();
 
-  // 5-segment mission progress dots
-  for (let s = 1; s <= 5; s++) {
-    const dotX = ox + ow - 75 + s * 12, dotY = oy + 15;
-    ctx.fillStyle = s <= progressStep ? '#ffd700' : 'rgba(255,255,255,0.2)';
-    ctx.beginPath(); ctx.arc(dotX, dotY, 4, 0, 7); ctx.fill();
-  }
-  ctx.restore();
-
-  // ───────── 3. OFF-SCREEN / HUD POINTER TO NEAREST SHELTER ─────────
-  let nearestPlot = null, minPlotDist = Infinity;
-  for (const p of shelterPlots) {
-    const d = Math.hypot(p.x - selfX, p.y - selfY);
-    if (d < minPlotDist) { minPlotDist = d; nearestPlot = p; }
-  }
-  if (nearestPlot) {
-    const pAngle = Math.atan2(nearestPlot.y - selfY, nearestPlot.x - selfX);
-    const dMeters = Math.round(minPlotDist);
-    // Draw glowing shelter navigation tag
-    ctx.save();
-    const tagX = VW / 2, tagY = oy + oh + 16;
-    ctx.font = 'bold 12px system-ui';
-    const tagText = `🏰 NEAREST SHELTER: ${nearestPlot.name.toUpperCase()} · ${dMeters}m · [Press T/P]`;
-    const tw = ctx.measureText(tagText).width + 36;
-    ctx.fillStyle = 'rgba(8, 12, 18, 0.88)';
-    ctx.fillRect(tagX - tw / 2, tagY - 12, tw, 24);
-    ctx.strokeStyle = '#ffd700'; ctx.lineWidth = 1.2;
-    ctx.strokeRect(tagX - tw / 2, tagY - 12, tw, 24);
-
-    // Directional chevron arrow on left
-    ctx.save();
-    ctx.translate(tagX - tw / 2 + 16, tagY);
-    ctx.rotate(pAngle);
+    // Center needle
     ctx.fillStyle = '#ffd700';
     ctx.beginPath();
-    ctx.moveTo(7, 0); ctx.lineTo(-5, -5); ctx.lineTo(-2, 0); ctx.lineTo(-5, 5); ctx.closePath();
+    ctx.moveTo(compX + compW / 2 - 4, compY);
+    ctx.lineTo(compX + compW / 2 + 4, compY);
+    ctx.lineTo(compX + compW / 2, compY + 5);
     ctx.fill();
     ctx.restore();
 
-    ctx.fillStyle = '#ffd700';
+    // Clean, single-line mission breadcrumb underneath compass
+    const mw = Math.min(380, VW - 540);
+    const mx = VW / 2 - mw / 2, my = compY + compH + 4;
+    ctx.save();
+    ctx.fillStyle = 'rgba(6, 10, 16, 0.72)';
+    ctx.fillRect(mx, my, mw, 20);
+    ctx.strokeStyle = 'rgba(255, 215, 0, 0.4)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(mx + 0.5, my + 0.5, mw - 1, 19);
+
+    let stageText = 'Stage 1/5 · Scavenge & Claim Shelter [T]';
+    if (me.beacon) {
+      stageText = me.evacTimer > 0 ? `Stage 4/5 · EVAC HELI INCOMING: ${me.evacTimer}s!` : 'Stage 5/5 · BOARD EXTRACTION HELI!';
+    } else if (me.plotId) {
+      stageText = 'Stage 2/5 · Upgrade Turrets & Build Beacon [T]';
+    }
+    ctx.font = 'bold 10px system-ui';
     ctx.textAlign = 'center';
-    ctx.fillText(tagText, tagX + 6, tagY);
+    ctx.fillStyle = '#ffd700';
+    ctx.fillText(`🎯 ${stageText}`, mx + mw / 2, my + 10);
     ctx.restore();
   }
 
-  // ───────── 4. TOP-LEFT SCRAP, QUANTUM CORES & SHELTER STATUS ─────────
+  // ───────── 2. TOP-LEFT SLEEK STATUS MICRO-DECK (NO CLUTTER) ─────────
   ctx.save();
-  ctx.fillStyle = 'rgba(10, 15, 24, 0.88)';
-  ctx.fillRect(16, 12, 310, 112);
-  ctx.strokeStyle = 'rgba(0, 229, 255, 0.25)'; ctx.lineWidth = 1.2;
-  ctx.strokeRect(16, 12, 310, 112);
+  const tlx = 16, tly = 10, tlw = 270, tlh = 46;
+  ctx.fillStyle = 'rgba(6, 10, 16, 0.8)';
+  ctx.fillRect(tlx, tly, tlw, tlh);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)'; ctx.lineWidth = 1;
+  ctx.strokeRect(tlx + 0.5, tly + 0.5, tlw - 1, tlh - 1);
 
-  ctx.fillStyle = '#00e5ff'; ctx.font = 'bold 13px system-ui'; ctx.textAlign = 'left';
-  ctx.fillText(`SECTOR ${gridName(selfX, selfY)} · ${regionName(selfX, selfY)}`, 26, 28);
+  // Line 1: Resources & Time
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#ffd700';
+  ctx.fillText(`⚙️ ${me.scrap || 0}`, tlx + 10, tly + 14);
 
-  ctx.font = '11px system-ui'; ctx.fillStyle = '#94a3b8';
-  ctx.fillText(`⏱️ ${clockStr()} · ☀️ Daylight ${Math.round(daylight() * 100)}%`, 26, 46);
+  ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#c084fc';
+  ctx.fillText(`⚛️ ${me.prestigeTokens || 0}`, tlx + 82, tly + 14);
 
-  ctx.font = 'bold 14px system-ui'; ctx.fillStyle = '#ffd700';
-  ctx.fillText(`⚙️ Scrap: ${me.scrap || 0} (${me.plotId ? '+Scrap/s Active' : 'No Plot Claimed'})`, 26, 68);
+  ctx.font = '10px system-ui'; ctx.fillStyle = '#94a3b8';
+  ctx.fillText(`⏱️ ${clockStr()}`, tlx + 140, tly + 14);
 
-  ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#c084fc';
-  const rbTier = me.rebirths || 0;
-  const rbText = rbTier > 0 ? `⚛️ Quantum Cores: ${me.prestigeTokens || 0} (Tier ${rbTier})` : `⚛️ Quantum Cores: ${me.prestigeTokens || 0} [Y]`;
-  ctx.fillText(rbText, 26, 88);
+  // Line 2: Sector & Shelter Status
+  ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#38bdf8';
+  ctx.fillText(`${gridName(selfX, selfY)} · ${regionName(selfX, selfY)}`, tlx + 10, tly + 32);
 
-  ctx.font = '600 11.5px system-ui'; ctx.fillStyle = '#4dff88';
-  const myPlotStr = me.plotId ? `🏰 Claimed Outpost Lv.${me.plotLv || 1} [T] · [P] Recall` : '🏰 Locate a Shelter Outpost [Press T/M]';
-  ctx.fillText(myPlotStr, 26, 108);
+  ctx.font = '600 10px system-ui'; ctx.fillStyle = me.plotId ? '#4ade80' : '#f59e0b';
+  ctx.fillText(me.plotId ? `🏰 Base Lv.${me.plotLv || 1} [T/P]` : '🏰 Open Shelter [T]', tlx + 160, tly + 32);
   ctx.restore();
 
-  // ───────── 5. BOTTOM-LEFT SURVIVOR BIOMETRICS ─────────
-  const bx = 16, by = VH - 120;
+  // ───────── 3. BOTTOM-LEFT SLEEK SURVIVOR BIOMETRICS ─────────
+  const bx = 18, by = VH - 108;
   const hasShield = me.hardlightShield > 0;
   ctx.save();
-  ctx.fillStyle = 'rgba(10, 15, 24, 0.85)';
-  ctx.fillRect(bx - 6, by - (hasShield ? 22 : 6), 252, hasShield ? 134 : 118);
-  ctx.strokeStyle = 'rgba(255,255,255,.15)'; ctx.strokeRect(bx - 6, by - (hasShield ? 22 : 6), 252, hasShield ? 134 : 118);
+  ctx.fillStyle = 'rgba(6, 10, 16, 0.85)';
+  const bioH = hasShield ? 104 : 90;
+  const bioY = hasShield ? by - 14 : by;
+  ctx.fillRect(bx, bioY, 230, bioH);
+  ctx.strokeStyle = me.hp < 30 ? '#ef4444' : 'rgba(255, 255, 255, 0.12)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(bx + 0.5, bioY + 0.5, 229, bioH - 1);
 
+  let curY = bioY + 6;
   if (hasShield) {
-    bar(bx, by - 16, 240, 12, (me.hardlightShield / 150) * 100, '#38bdf8', `🛡️ Shield ${Math.round(me.hardlightShield)}`);
+    bar(bx + 8, curY, 214, 10, (me.hardlightShield / 150) * 100, '#38bdf8', `🛡️ Shield ${Math.round(me.hardlightShield)}`);
+    curY += 13;
   }
-  bar(bx, by, 240, 16, me.hp, '#e63946', '❤ Vital Signs');
-  bar(bx, by + 20, 240, 12, me.st, '#f4d35e', '⚡ Kinetic Stamina');
-  bar(bx, by + 36, 118, 12, me.hu, '#f4a261', '🍖 Food');
-  bar(bx + 122, by + 36, 118, 12, me.th, '#4cc9f0', '💧 Water');
-  if (me.inf > 0) bar(bx, by + 52, 240, 12, me.inf, '#8ac926', '☣ Infection');
+  bar(bx + 8, curY, 214, 16, me.hp, me.hp < 30 ? '#dc2626' : '#ef4444', `❤ HP ${Math.round(me.hp)}`);
+  curY += 19;
+  bar(bx + 8, curY, 214, 11, me.st, '#eab308', `⚡ STAMINA ${Math.round(me.st)}%`);
+  curY += 14;
+  bar(bx + 8, curY, 105, 10, me.hu, '#f97316', `🍖 ${Math.round(me.hu)}%`);
+  bar(bx + 117, curY, 105, 10, me.th, '#06b6d4', `💧 ${Math.round(me.th)}%`);
+  curY += 13;
+  if (me.inf > 0) {
+    bar(bx + 8, curY, 214, 10, me.inf, '#84cc16', `☣ Infection ${Math.round(me.inf)}%`);
+    curY += 13;
+  }
 
+  // Status badges
   const st = [];
-  if (me.bl) st.push(['BLEEDING', '#ff4d4d']);
-  if (me.fr) st.push(['FRACTURE', '#ffb347']);
-  if (me.inf > 0) st.push([me.b & 256 ? 'INFECTED (paused)' : 'INFECTED', '#8ac926']);
-  if (me.b & 32) st.push(['BURNING', '#ff8c1a']);
-  if (me.b & 1) st.push(['PAINKILLERS', '#9ad1ff']);
-  if (me.b & 2) st.push(['ADRENALINE', '#ffd166']);
-  ctx.font = '700 11px system-ui';
-  let sx = bx;
-  for (const [t, c] of st) {
-    const w = ctx.measureText(t).width + 12;
-    ctx.fillStyle = 'rgba(0,0,0,.75)'; ctx.fillRect(sx, by + 72, w, 16);
-    ctx.fillStyle = c; ctx.textAlign = 'left'; ctx.fillText(t, sx + 6, by + 81);
-    sx += w + 4;
+  if (me.bl) st.push(['BLEED', '#ef4444']);
+  if (me.fr) st.push(['FRACTURE', '#f59e0b']);
+  if (me.b & 32) st.push(['BURNING', '#f97316']);
+  if (me.b & 1) st.push(['PAINKILLER', '#38bdf8']);
+  if (me.b & 2) st.push(['ADRENALINE', '#eab308']);
+  if (st.length > 0) {
+    ctx.font = 'bold 9px system-ui';
+    let sx = bx + 8;
+    for (const [t, c] of st) {
+      const w = ctx.measureText(t).width + 8;
+      ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(sx, curY + 2, w, 13);
+      ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.strokeRect(sx, curY + 2, w, 13);
+      ctx.fillStyle = c; ctx.textAlign = 'left'; ctx.fillText(t, sx + 4, curY + 9);
+      sx += w + 4;
+    }
   }
   ctx.restore();
 
-  // ───────── 6. BOTTOM-CENTER HOTBAR ─────────
-  if (inv) {
-    const sw = 118, sh = 46, hx = VW / 2 - (sw * 5 + 16) / 2, hy = VH - sh - 14;
+  // ───────── 4. BOTTOM-CENTER UNIFIED WEAPON SWITCH DOCK & AMMO COUNTER ─────────
+  if (!me.veh) {
+    const hbList = (inv && inv.hb) ? inv.hb : [
+      [KNIFE || 0, 0, 0],
+      [GLOCK || 1, 17, 0],
+      null, null, null
+    ];
+
+    // Determine current active weapon
+    let curW = null, curSlot = null;
+    if (inv && inv.hb && inv.hb[me.sel]) {
+      curSlot = inv.hb[me.sel];
+      curW = WBY[curSlot[0]];
+    } else {
+      curW = me.sel === 0 ? WBY[KNIFE] : (me.sel === 1 ? WBY[GLOCK] : null);
+    }
+
+    const sw = 84, sh = 42, gap = 4;
+    const totalW = 5 * sw + 4 * gap;
+    const hx = Math.round(VW / 2 - totalW / 2);
+    const hy = VH - sh - 12;
+
+    // Munitions & Ammo Bar attached right above active weapon dock
+    ctx.save();
+    const ammoBarW = totalW;
+    const ammoBarH = 28;
+    const ammoBarY = hy - ammoBarH - 4;
+    ctx.fillStyle = 'rgba(6, 10, 16, 0.88)';
+    ctx.fillRect(hx, ammoBarY, ammoBarW, ammoBarH);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(hx + 0.5, ammoBarY + 0.5, ammoBarW - 1, ammoBarH - 1);
+
+    if (curW) {
+      // Weapon icon & name on left
+      ctx.textAlign = 'left';
+      ctx.font = '14px sans-serif';
+      ctx.fillText(W_IC[curW.cat] || '🔫', hx + 8, ammoBarY + ammoBarH / 2);
+      ctx.font = 'bold 12px system-ui';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(curW.name, hx + 28, ammoBarY + ammoBarH / 2);
+
+      // Ammo numerals on right
+      if (curW.mag) {
+        const mag = me.mag !== undefined ? me.mag : (curSlot ? curSlot[1] : curW.mag);
+        const res = me.res >= 0 ? me.res : 0;
+        ctx.textAlign = 'right';
+        ctx.font = '900 18px monospace';
+        ctx.fillStyle = mag > 0 ? '#ffd700' : '#ef4444';
+        ctx.fillText(String(mag), hx + ammoBarW - 90, ammoBarY + ammoBarH / 2 + 1);
+
+        ctx.font = 'bold 11px monospace'; ctx.fillStyle = '#94a3b8';
+        ctx.fillText(`/ ${curW.mag}`, hx + ammoBarW - 65, ammoBarY + ammoBarH / 2);
+
+        ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#38bdf8';
+        ctx.fillText(`+${res}`, hx + ammoBarW - 24, ammoBarY + ammoBarH / 2);
+
+        ctx.font = '9px system-ui'; ctx.fillStyle = '#64748b'; ctx.textAlign = 'center';
+        ctx.fillText(`[R] Reload`, hx + ammoBarW / 2 + 20, ammoBarY + ammoBarH / 2);
+      } else if (curW.count) {
+        ctx.textAlign = 'right';
+        ctx.font = '900 16px monospace'; ctx.fillStyle = '#ffd700';
+        ctx.fillText(`×${me.n || (curSlot ? curSlot[2] : 1)}`, hx + ammoBarW - 14, ammoBarY + ammoBarH / 2);
+      } else {
+        ctx.textAlign = 'right';
+        ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#ffd700';
+        ctx.fillText('MELEE · UNLIMITED', hx + ammoBarW - 14, ammoBarY + ammoBarH / 2);
+      }
+
+      // Reloading progress overlay
+      if (me.rl > 0 && me.rlT > 0) {
+        const prog = clamp(1 - me.rl / me.rlT, 0, 1);
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.4)';
+        ctx.fillRect(hx + 1, ammoBarY + 1, (ammoBarW - 2) * prog, ammoBarH - 2);
+        ctx.fillStyle = '#ffd700'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center';
+        ctx.fillText(`RELOADING ${Math.round(prog * 100)}%`, hx + ammoBarW / 2, ammoBarY + ammoBarH / 2);
+      }
+    } else {
+      ctx.textAlign = 'center'; ctx.font = 'italic 11px system-ui'; ctx.fillStyle = '#64748b';
+      ctx.fillText('Unarmed (Press 1 or 2 to equip weapon)', hx + ammoBarW / 2, ammoBarY + ammoBarH / 2);
+    }
+    ctx.restore();
+
+    // 5-Slot Weapon Hotbar
     for (let i = 0; i < 5; i++) {
-      const s = inv.hb[i], x = hx + i * (sw + 4), sel = me.sel === i;
-      ctx.fillStyle = sel ? 'rgba(201,48,44,.45)' : 'rgba(0,0,0,.7)';
+      const s = hbList[i], x = hx + i * (sw + gap), sel = me.sel === i;
+      ctx.save();
+      ctx.fillStyle = sel ? 'rgba(30, 41, 59, 0.95)' : 'rgba(6, 10, 16, 0.75)';
       ctx.fillRect(x, hy, sw, sh);
-      ctx.strokeStyle = sel ? '#ffd166' : 'rgba(255,255,255,.15)'; ctx.lineWidth = sel ? 2 : 1;
+      ctx.strokeStyle = sel ? '#ffd700' : 'rgba(255, 255, 255, 0.15)';
+      ctx.lineWidth = sel ? 1.5 : 1;
       ctx.strokeRect(x + 0.5, hy + 0.5, sw - 1, sh - 1);
-      ctx.fillStyle = '#9aa4b1'; ctx.font = '10px system-ui'; ctx.textAlign = 'left';
-      ctx.fillText(String(i + 1), x + 4, hy + 9);
-      if (!s) continue;
-      const w = WBY[s[0]];
-      ctx.font = '18px sans-serif'; ctx.fillText(W_IC[w.cat], x + 6, hy + 28);
-      ctx.fillStyle = '#fff'; ctx.font = '600 11px system-ui';
-      let nm = w.name;
-      while (ctx.measureText(nm).width > sw - 36 && nm.length > 4) nm = nm.slice(0, -2);
-      if (nm !== w.name) nm += '…';
-      ctx.fillText(nm, x + 30, hy + 18);
-      ctx.fillStyle = '#ffd166'; ctx.font = '11px system-ui';
-      const mag = sel ? me.mag : s[1], cnt = sel ? me.n : s[2];
-      ctx.fillText(w.count ? `×${cnt}` : w.mag ? `${mag}/${w.mag}${sel && me.res >= 0 ? ' · ' + me.res : ''}` : (w.mode === 'melee' ? 'melee' : '∞'), x + 30, hy + 34);
+
+      // Slot digit
+      ctx.fillStyle = sel ? '#ffd700' : '#64748b';
+      ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'left';
+      ctx.fillText(`[${i + 1}]`, x + 4, hy + 8);
+
+      if (s) {
+        const w = WBY[s[0]] || (s[0] === 0 ? WBY[KNIFE] : (s[0] === 1 ? WBY[GLOCK] : null));
+        if (w) {
+          ctx.font = '14px sans-serif'; ctx.textAlign = 'left';
+          ctx.fillText(W_IC[w.cat] || '🔫', x + 5, hy + 26);
+
+          ctx.fillStyle = sel ? '#ffffff' : '#cbd5e1';
+          ctx.font = 'bold 10px system-ui';
+          let nm = w.name;
+          if (nm.length > 8) nm = nm.slice(0, 7) + '…';
+          ctx.fillText(nm, x + 24, hy + 19);
+
+          ctx.fillStyle = sel ? '#ffd700' : '#94a3b8';
+          ctx.font = 'bold 9px monospace';
+          const mag = sel ? me.mag : s[1], cnt = sel ? me.n : s[2];
+          ctx.fillText(w.count ? `×${cnt}` : w.mag ? `${mag}/${w.mag}` : 'melee', x + 24, hy + 32);
+        }
+      }
+      ctx.restore();
     }
   }
 
-  // ───────── 7. BOTTOM-RIGHT VEHICLE TELEMETRY & SPEEDOMETER ─────────
+  // ───────── 5. SLEEK VEHICLE TELEMETRY (WHEN DRIVING) ─────────
   if (me.veh && inVeh) {
     const d = D.VEH[D.VLIST[inVeh.v[1]]];
-    const px = VW - 270, py = VH - 160;
+    const px = VW / 2 - 140, py = VH - 64;
     ctx.save();
-    ctx.fillStyle = 'rgba(8, 12, 18, 0.88)'; ctx.fillRect(px, py, 256, 146);
-    ctx.strokeStyle = 'rgba(0, 229, 255, 0.3)'; ctx.lineWidth = 1.2;
-    ctx.strokeRect(px, py, 256, 146);
+    ctx.fillStyle = 'rgba(6, 10, 16, 0.88)';
+    ctx.fillRect(px, py, 280, 52);
+    ctx.strokeStyle = 'rgba(0, 229, 255, 0.3)'; ctx.lineWidth = 1;
+    ctx.strokeRect(px + 0.5, py + 0.5, 279, 51);
 
-    ctx.textAlign = 'left'; ctx.fillStyle = '#00e5ff'; ctx.font = 'bold 13px system-ui';
-    ctx.fillText(`${d.n} ${me.seat === 0 ? '(Driver)' : '(Passenger)'}`, px + 12, py + 18);
-
-    // Speedometer dial
     const spd = Math.round(inVeh.v[8] / 10);
-    const dialX = px + 190, dialY = py + 74, dialR = 36;
-    ctx.beginPath(); ctx.arc(dialX, dialY, dialR, 0.8 * Math.PI, 2.2 * Math.PI);
-    ctx.strokeStyle = '#222'; ctx.lineWidth = 7; ctx.stroke();
-
-    const speedFrac = clamp(spd / 140, 0, 1);
-    ctx.beginPath(); ctx.arc(dialX, dialY, dialR, 0.8 * Math.PI, (0.8 + speedFrac * 1.4) * Math.PI);
-    ctx.strokeStyle = speedFrac > 0.85 ? '#ff4d4d' : speedFrac > 0.5 ? '#ffd166' : '#00e5ff';
-    ctx.lineWidth = 7; ctx.stroke();
-
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 16px system-ui'; ctx.textAlign = 'center';
-    ctx.fillText(String(spd), dialX, dialY - 2);
-    ctx.font = '9px system-ui'; ctx.fillStyle = '#94a3b8';
-    ctx.fillText('MPH', dialX, dialY + 12);
-
-    // Hull and Fuel bars
-    ctx.textAlign = 'left';
-    bar(px + 12, py + 36, 120, 12, me.vh, '#7bd389', 'Hull');
-    bar(px + 12, py + 54, 120, 12, me.vf, '#f4a261', 'Fuel');
-
-    // Transmission & Nitro status
-    ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#ffd166';
+    const isBraking = !!(keys.Space || keys.KeyS || keys.ArrowDown);
     const isBoosting = !!(keys.ShiftLeft || keys.ShiftRight);
-    ctx.fillText(`GEAR: ${spd > 0 ? 'D' : 'N'} ${isBoosting ? '· ⚡ NITRO BOOST' : ''}`, px + 12, py + 82);
 
-    ctx.font = '10px system-ui'; ctx.fillStyle = '#94a3b8';
-    ctx.fillText('W/S drive/brake · A/D steer · E exit', px + 12, py + 104);
-    ctx.fillText('Shift boost · H horn · X seat', px + 12, py + 122);
+    // Speedometer text
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#00e5ff'; ctx.font = 'bold 11px system-ui';
+    ctx.fillText(`${d.n} · GEAR: ${spd < -2 ? 'R' : spd > 2 ? 'D' : 'N'}`, px + 10, py + 14);
+
+    ctx.fillStyle = isBraking ? '#ef4444' : '#ffffff';
+    ctx.font = '900 18px monospace';
+    ctx.fillText(`${Math.abs(spd)} MPH ${isBraking ? '[BRAKE]' : isBoosting ? '[NITRO]' : ''}`, px + 10, py + 34);
+
+    // Hull & Fuel mini bars
+    ctx.textAlign = 'right';
+    bar(px + 170, py + 8, 100, 12, me.vh, '#4ade80', 'Hull');
+    bar(px + 170, py + 26, 100, 12, me.vf, '#f59e0b', 'Fuel');
     ctx.restore();
   }
 
-  // ───────── 8. TACTICAL RADAR MINIMAP (TOP-RIGHT) ─────────
+  // ───────── 9. TACTICAL RADAR MINIMAP (TOP-RIGHT) ─────────
   const mmR = 104, mmcx = VW - mmR - 18, mmcy = mmR + 18;
   const range = 4200, scale = (mmR * 2) / range;
 
@@ -2803,14 +3283,12 @@ function drawHUD(now, selfX, selfY, inVeh, b) {
   ctx.beginPath(); ctx.arc(mmcx, mmcy, mmR, 0, 7); ctx.clip();
   ctx.fillStyle = '#080d14'; ctx.fillRect(mmcx - mmR, mmcy - mmR, mmR * 2, mmR * 2);
 
-  // Terrain slice
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(mini, (selfX - range / 2) / TS, (selfY - range / 2) / TS, range / TS, range / TS, mmcx - mmR, mmcy - mmR, mmR * 2, mmR * 2);
   ctx.imageSmoothingEnabled = true;
 
   const mm = (x, y) => [mmcx + (x - selfX) * scale, mmcy + (y - selfY) * scale];
 
-  // Rotating radar sweep line
   const sweepAngle = (now / 600) % (Math.PI * 2);
   const sweepGrad = ctx.createRadialGradient(mmcx, mmcy, 0, mmcx, mmcy, mmR);
   sweepGrad.addColorStop(0, 'rgba(0, 229, 255, 0.35)'); sweepGrad.addColorStop(1, 'rgba(0, 229, 255, 0)');
@@ -2837,11 +3315,10 @@ function drawHUD(now, selfX, selfY, inVeh, b) {
     }
   }
 
-  // Golden Shelter Plots on minimap (prominent icons + pulse ring)
+  // Golden Shelter Plots on minimap (all 16 shelters with plot numbers)
   for (const plot of shelterPlots) {
     let [px, py] = mm(plot.x, plot.y);
     const distToCenter = Math.hypot(px - mmcx, py - mmcy);
-    // If shelter is beyond radar border, clamp it to edge so survivor can still see the direction!
     if (distToCenter > mmR - 6) {
       const edgeAngle = Math.atan2(py - mmcy, px - mmcx);
       px = mmcx + Math.cos(edgeAngle) * (mmR - 8);
@@ -2849,12 +3326,10 @@ function drawHUD(now, selfX, selfY, inVeh, b) {
     }
     ctx.fillStyle = '#ffd700'; ctx.beginPath(); ctx.arc(px, py, 4.5, 0, 7); ctx.fill();
     ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.stroke();
-    // Glowing pulse
     ctx.strokeStyle = 'rgba(255, 215, 0, 0.5)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.arc(px, py, 7 + Math.sin(now / 200) * 2, 0, 7); ctx.stroke();
   }
 
-  // Waypoint marker
   if (waypoint) {
     const [wx, wy] = mm(waypoint.x, waypoint.y);
     ctx.fillStyle = '#ff00ff'; ctx.beginPath(); ctx.arc(wx, wy, 5, 0, 7); ctx.fill();
@@ -2862,7 +3337,6 @@ function drawHUD(now, selfX, selfY, inVeh, b) {
 
   ctx.restore();
 
-  // Radar perimeter ring & Compass points
   ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 2.5;
   ctx.beginPath(); ctx.arc(mmcx, mmcy, mmR, 0, 7); ctx.stroke();
   ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#00e5ff'; ctx.textAlign = 'center';
@@ -2871,18 +3345,16 @@ function drawHUD(now, selfX, selfY, inVeh, b) {
   ctx.fillText('W', mmcx - mmR + 8, mmcy + 3);
   ctx.fillText('E', mmcx + mmR - 8, mmcy + 3);
 
-  // Player arrow
   ctx.save(); ctx.translate(mmcx, mmcy);
   ctx.rotate(playerHeading);
   ctx.fillStyle = '#ffd166'; ctx.beginPath();
   ctx.moveTo(10, 0); ctx.lineTo(-6, -6); ctx.lineTo(-3, 0); ctx.lineTo(-6, 6); ctx.fill();
   ctx.restore();
 
-  // Coordinates readout
   ctx.fillStyle = '#cbd5e1'; ctx.font = '11px system-ui'; ctx.textAlign = 'right';
   ctx.fillText(`${gridName(selfX, selfY)} · (${Math.round(selfX)}, ${Math.round(selfY)}) · ${ping}ms`, VW - 18, mmcy + mmR + 14);
 
-  // ───────── 9. INTERACTION HINT ─────────
+  // ───────── 10. INTERACTION HINT ─────────
   const hint = interactionHint(selfX, selfY);
   if (hint) {
     ctx.textAlign = 'center'; ctx.font = 'bold 13px system-ui';
@@ -2892,18 +3364,40 @@ function drawHUD(now, selfX, selfY, inVeh, b) {
     ctx.fillStyle = '#ffd700'; ctx.fillText(hint, VW / 2, VH / 2 + 70);
   }
 
-  // ───────── 10. CROSSHAIR ─────────
+  // ───────── 11. PRECISION TACTICAL CROSSHAIR ─────────
   if (!uiBlock()) {
     const cx = mouse.x, cy = mouse.y;
-    ctx.strokeStyle = mode ? '#ffd166' : '#fff'; ctx.lineWidth = 2;
+    ctx.save();
+    const sp = (keys.ShiftLeft || keys.ShiftRight) ? 14 : 7;
+    ctx.strokeStyle = mode ? '#ffd166' : '#ffffff';
+    ctx.lineWidth = 1.8;
+
+    // 4 Crosshair hash marks
     ctx.beginPath();
-    ctx.moveTo(cx - 12, cy); ctx.lineTo(cx - 4, cy); ctx.moveTo(cx + 4, cy); ctx.lineTo(cx + 12, cy);
-    ctx.moveTo(cx, cy - 12); ctx.lineTo(cx, cy - 4); ctx.moveTo(cx, cy + 4); ctx.lineTo(cx, cy + 12);
+    ctx.moveTo(cx - sp - 8, cy); ctx.lineTo(cx - sp, cy);
+    ctx.moveTo(cx + sp, cy); ctx.lineTo(cx + sp + 8, cy);
+    ctx.moveTo(cx, cy - sp - 8); ctx.lineTo(cx, cy - sp);
+    ctx.moveTo(cx, cy + sp); ctx.lineTo(cx, cy + sp + 8);
     ctx.stroke();
-    if (me.rl > 0) {
+
+    // Center precision dot
+    ctx.fillStyle = mode ? '#ffd166' : '#00e5ff';
+    ctx.beginPath(); ctx.arc(cx, cy, 1.8, 0, 7); ctx.fill();
+
+    // Small outer reticle ring
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, sp + 9, 0, 7); ctx.stroke();
+
+    // Reload circular meter
+    if (me.rl > 0 && me.rlT > 0) {
       ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(cx, cy, 18, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - me.rl / me.rlT)); ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(cx, cy, sp + 13, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - me.rl / me.rlT));
+      ctx.stroke();
+      ctx.font = 'bold 9px system-ui'; ctx.fillStyle = '#ffd166'; ctx.textAlign = 'center';
+      ctx.fillText('RELOAD', cx, cy + sp + 22);
     }
+    ctx.restore();
   }
 }
 

@@ -24,6 +24,17 @@ const PLOTS = [
 const UPGRADES = [
   // ── 1. DEFENSE & FORTIFICATIONS ──
   {
+    key: 'compound_expansion',
+    name: 'Compound Fortress Expansion',
+    cat: 'Defense',
+    icon: '📐',
+    desc: 'Physically expands the shelter perimeter walls and territory, creating a larger fortified fortress courtyard.',
+    maxLv: 5,
+    baseCost: 150,
+    costMult: 2.2,
+    stat: ['+80px Compound Perimeter Size', '+160px Compound Size + Reinforced Courtyard', '+240px Compound Size + Twin Sentry Racks', '+320px Compound Size + Outer Bastions', '+400px Mega Stronghold Citadel']
+  },
+  {
     key: 'walls',
     name: 'Reinforced Perimeter Walls',
     cat: 'Defense',
@@ -649,6 +660,14 @@ function computePlotLevel(upgrades) {
   return Math.max(1, Math.floor(total / 4) + 1);
 }
 
+// Helper to compute physical compound dimension (expandable by upgrades and level)
+function computePlotSize(plotOrUpgrades) {
+  const up = plotOrUpgrades ? (plotOrUpgrades.upgrades || plotOrUpgrades) : null;
+  const exp = up ? (up.compound_expansion || 0) : 0;
+  const lv = up ? computePlotLevel(up) : 1;
+  return 320 + exp * 70 + Math.min(100, (lv - 1) * 15);
+}
+
 // Compute upgrade cost
 function getUpgradeCost(upg, currentLevel) {
   const lv = currentLevel || 0;
@@ -661,5 +680,6 @@ module.exports = {
   UPGRADES,
   REBORN_PERKS,
   computePlotLevel,
+  computePlotSize,
   getUpgradeCost
 };

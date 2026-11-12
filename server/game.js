@@ -10,7 +10,7 @@ const {SKY, COSMIC, FXD} = require('./data/sky');
 const LOOT = require('./data/loot');
 
 const accounts = require('./accounts');
-const {PLOTS, UPGRADES, REBORN_PERKS, computePlotLevel, getUpgradeCost} = require('./data/shelter');
+const {PLOTS, UPGRADES, REBORN_PERKS, computePlotLevel, computePlotSize, getUpgradeCost} = require('./data/shelter');
 
 const THEME_DENS = {city:16,gov:14,culture:14,sports:14,historic:12,rural:10,alpine:8,volcanic:8,karst:8,coast:8,desert:8,saltflat:6,canyon:8,lakes:8,reef:5};
 const MAXZ = 280;
@@ -38,6 +38,29 @@ function circleBuildingCollide(x, y, r, q) {
   if (leftW > 0 && circleRect(x, y, r, bx, by + bh - th, leftW, th)) return true; // Bottom-left wall
   if (leftW > 0 && circleRect(x, y, r, cx + halfDoor, by + bh - th, leftW, th)) return true; // Bottom-right wall
   return false; // Interior and doorway are open and enterable
+}
+
+function circleShelterCollide(x, y, r, plot, isAuth) {
+  const S = computePlotSize(plot);
+  const x0 = plot.x - S / 2, y0 = plot.y - S / 2;
+  const T = 20;
+  if (x + r < x0 || x - r > x0 + S || y + r < y0 || y - r > y0 + S) return false;
+  const gateW = 100;
+  const gateX0 = plot.x - gateW / 2;
+  const gateX1 = plot.x + gateW / 2;
+  // 1. Solid perimeter walls
+  if (circleRect(x, y, r, x0, y0, S, T)) return true; // Top wall
+  if (circleRect(x, y, r, x0, y0, T, S)) return true; // Left wall
+  if (circleRect(x, y, r, x0 + S - T, y0, T, S)) return true; // Right wall
+  if (circleRect(x, y, r, x0, y0 + S - T, gateX0 - x0, T)) return true; // Bottom left wing
+  if (circleRect(x, y, r, gateX1, y0 + S - T, (x0 + S) - gateX1, T)) return true; // Bottom right wing
+  // 2. Airlock blast gate (opens only for authorized survivors approaching doorway)
+  const nearAirlock = Math.abs(x - plot.x) <= gateW / 2 + 30 && Math.abs(y - (y0 + S)) <= 120;
+  const gateOpen = (isAuth || !plot.owner) && nearAirlock;
+  if (!gateOpen && circleRect(x, y, r, gateX0, y0 + S - T, gateW, T)) return true;
+  // 3. Central command console / core
+  if (circleRect(x, y, r, plot.x - 28, plot.y - 28, 56, 56)) return true;
+  return false;
 }
 
 class Game {
@@ -93,7 +116,7 @@ class Game {
   randomPlayer() { const a = [...this.players.values()].filter(p => !p.dead); return a.length ? a[Math.floor(rnd() * a.length)] : null; }
 
   // ───────── collision ─────────
-  blockedAt(x, y, r, kind) {
+  blockedAt(x, y, r, kind, entity) {
     if (x < r || y < r || x > this.WP - r || y > this.HP - r) return HIT_OOB;
     if (kind === 'fly') return null;
     const TS = this.TS, W = this.W, tl = this.tiles;
@@ -107,15 +130,21 @@ class Game {
     for (const q of tmpA) if (circleBuildingCollide(x, y, r, q)) return HIT_RECT;
     tmpB.length = 0; this.sh.query(x, y, r + 100, tmpB);
     for (const s of tmpB) { if (s.def.block === 0 || (s.def.door && s.open)) continue; if (circleRect(x, y, r, s.x - s.w / 2, s.y - s.h / 2, s.w, s.h)) return s; }
+    // 16 Designated Shelter Tycoon Plots (walls and airlock gates)
+    for (const plot of this.plots.values()) {
+      if (Math.abs(plot.x - x) > 550 || Math.abs(plot.y - y) > 550) continue;
+      const isAuth = entity && (entity.id === plot.owner || (plot.team > 0 && entity.team === plot.team) || !plot.owner);
+      if (circleShelterCollide(x, y, r, plot, isAuth)) return HIT_RECT;
+    }
     return null;
   }
   moveCircle(e, dx, dy, r, kind) {
     const dist = Math.abs(dx) + Math.abs(dy); if (dist < 0.01) return null;
-    if (this.blockedAt(e.x, e.y, r, kind)) { e.x = clamp(e.x + dx, r, this.WP - r); e.y = clamp(e.y + dy, r, this.HP - r); return null; }
+    if (this.blockedAt(e.x, e.y, r, kind, e)) { e.x = clamp(e.x + dx, r, this.WP - r); e.y = clamp(e.y + dy, r, this.HP - r); return null; }
     const steps = Math.max(1, Math.ceil(dist / (r * 0.6))), sx = dx / steps, sy = dy / steps; let hit = null;
     for (let i = 0; i < steps; i++) {
-      let h = this.blockedAt(e.x + sx, e.y, r, kind); if (!h) e.x += sx; else if (!hit || h.def) hit = h;
-      h = this.blockedAt(e.x, e.y + sy, r, kind); if (!h) e.y += sy; else if (!hit || h.def) hit = h;
+      let h = this.blockedAt(e.x + sx, e.y, r, kind, e); if (!h) e.x += sx; else if (!hit || h.def) hit = h;
+      h = this.blockedAt(e.x, e.y + sy, r, kind, e); if (!h) e.y += sy; else if (!hit || h.def) hit = h;
     }
     return hit;
   }
@@ -182,6 +211,8 @@ class Game {
     this.respawnPlayer(p);
     ws.send(JSON.stringify({t: 'init', id: p.id, map: JSON.parse(this.mapJSON), defs: JSON.parse(this.defsJSON), settings: this.settings, plots: this.getPlotsSummary()}));
     this.sendSky(p);
+    this.send(p, this.invMsg(p));
+    p.dirty = false;
     this.feed(`${p.name} joined the wasteland${p.team ? ' [' + TEAM_NAMES[p.team] + ']' : ''}`);
     this.sendBoard();
     this.broadcastPlots();
@@ -314,7 +345,7 @@ class Game {
     if (!m || typeof m.t !== 'string') return;
     switch (m.t) {
       case 'in': {
-        const i = p.input; i.mx = clamp(+m.mx || 0, -1, 1); i.my = clamp(+m.my || 0, -1, 1); i.ax = +m.ax || 0; i.ay = +m.ay || 0; i.fire = !!m.f; i.alt = !!m.al; i.sprint = !!m.sp;
+        const i = p.input; i.mx = clamp(+m.mx || 0, -1, 1); i.my = clamp(+m.my || 0, -1, 1); i.ax = +m.ax || 0; i.ay = +m.ay || 0; i.fire = !!m.f; i.alt = !!m.al; i.sprint = !!m.sp; i.brake = !!m.brk;
         if (!p.dead && !p.veh && m.ps === p.ps && Number.isFinite(m.x) && Number.isFinite(m.y)) this.validatePos(p, m.x, m.y);
         break;
       }
@@ -409,7 +440,7 @@ class Game {
     const dist = Math.hypot(x - p.x, y - p.y);
     if (dist < 0.01) return;
     if (dist > p.mb + 50) { this.forcePos(p); return; }
-    if (this.blockedAt(x, y, p.r - 5, 'walk') && !this.blockedAt(p.x, p.y, p.r - 5, 'walk')) { this.forcePos(p); return; }
+    if (this.blockedAt(x, y, p.r - 5, 'walk', p) && !this.blockedAt(p.x, p.y, p.r - 5, 'walk', p)) { this.forcePos(p); return; }
     p.mb = Math.max(0, p.mb - dist); p.x = x; p.y = y;
   }
   chat(p, t) {
@@ -1133,9 +1164,9 @@ class Game {
       const occ = v.seats.some(s => s);
       if (!occ && Math.abs(v.sp) < 1 && Math.abs(v.vx) + Math.abs(v.vy) < 2 && v.alt <= 0) { v.sp = 0; v.vx = 0; v.vy = 0; continue; }
       const drv = v.seats[0] ? this.players.get(v.seats[0]) : null;
-      let thr = 0, steer = 0, boost = false;
-      if (drv && !drv.dead) { thr = -drv.input.my; steer = drv.input.mx; boost = drv.input.sprint; }
-      const disabled = v.broken || v.fuel <= 0 || v.emp > now || empAll; if (disabled) thr = 0;
+      let thr = 0, steer = 0, boost = false, braking = false;
+      if (drv && !drv.dead) { thr = -drv.input.my; steer = drv.input.mx; boost = drv.input.sprint; braking = !!drv.input.brake; }
+      const disabled = v.broken || v.fuel <= 0 || v.emp > now || empAll; if (disabled) { thr = 0; boost = false; }
       const heli = d.kind === 'heli';
       if (heli) v.alt = (drv && !disabled) ? Math.min(1, v.alt + dt * 0.8) : Math.max(0, v.alt - dt * 0.4);
       const tile = this.tileAt(v.x, v.y), P = PROPS[tile];
@@ -1143,18 +1174,48 @@ class Game {
       if (heli) tm = v.alt > 0.6 ? 1 : 0.25;
       else if (d.kind === 'boat') tm = P.water ? 1 : 0.05;
       else if (d.kind === 'hover') tm = P.water ? 1 : Math.max(0.5, P.veh);
-      else tm = (d.terrain && d.terrain[tile] !== undefined) ? d.terrain[tile] : P.veh;
-      const maxS = d.speed * tm * (boost && !disabled ? 1.2 : 1);
-      if (thr > 0) v.sp += d.accel * thr * dt * (v.sp < 0 ? 2.5 : 1);
-      else if (thr < 0) v.sp += (v.sp > 0 ? d.accel * 2.2 : d.accel * 0.6) * thr * dt;
-      else v.sp -= v.sp * Math.min(1, (heli ? 1.2 : 1.6) * dt);
-      if (v.sp > maxS) v.sp -= (v.sp - maxS) * Math.min(1, 3 * dt);
-      if (v.sp < -maxS * 0.4) v.sp = -maxS * 0.4;
-      const tf = heli ? 1 : clamp(Math.abs(v.sp) / 140, 0, 1);
+      else {
+        // Road surface gives significant speed and traction boost
+        const isRoad = tile === 5 || tile === 20 || tile === 24 || tile === 6;
+        tm = isRoad ? 1.35 : (d.terrain && d.terrain[tile] !== undefined ? d.terrain[tile] : P.veh);
+      }
+      const maxS = d.speed * tm * (boost && !disabled ? 1.3 : 1);
+      
+      // Acceleration, smart braking, and reverse handling
+      if (thr > 0) {
+        v.sp += d.accel * thr * dt * (v.sp < 0 ? 3.6 : 1.15);
+      } else if (thr < 0) {
+        if (v.sp > 15) {
+          // Pressing S while moving forward applies high-friction disc brakes!
+          v.sp -= Math.min(v.sp, d.accel * 4.2 * dt);
+        } else {
+          // Reverse gear acceleration
+          v.sp += d.accel * thr * dt * 1.5;
+        }
+      } else {
+        // Terrain-aware rolling drag
+        const rollingDrag = (P.drag || 1.0) * (heli ? 1.0 : 1.8);
+        v.sp -= v.sp * Math.min(1, rollingDrag * dt);
+      }
+
+      if (braking && d.kind === 'car') {
+        v.sp *= Math.pow(0.12, dt);
+      }
+      if (v.sp > maxS) v.sp -= (v.sp - maxS) * Math.min(1, 4 * dt);
+      if (v.sp < -maxS * 0.6) v.sp = -maxS * 0.6;
+
+      // High-authority responsive steering at all speeds with natural reverse inversion
+      const tf = heli ? 1 : Math.max(0.68, Math.min(1.25, 0.45 + Math.abs(v.sp) / 100));
       v.a += steer * d.turn * tf * dt * (v.sp < -5 && !heli ? -1 : 1);
-      const grip = (d.kind === 'car' ? (P.grip || 1) : 1) * (d.grip || 1), g = Math.min(1, grip * 9 * dt);
-      v.vx += (Math.cos(v.a) * v.sp - v.vx) * g; v.vy += (Math.sin(v.a) * v.sp - v.vy) * g;
-      if (!disabled && drv) v.fuel = Math.max(0, v.fuel - d.burn * (Math.abs(thr) + (heli && v.alt > 0 ? 0.35 : 0)) * (boost ? 1.5 : 1) * dt);
+
+      // Tire grip, handbrake drift, and slide physics
+      let effectiveGrip = (d.kind === 'car' ? (P.grip || 1) : 1) * (d.grip || 1);
+      if (braking) effectiveGrip *= 0.32; // Power slide
+      const g = Math.min(1, effectiveGrip * 10 * dt);
+      v.vx += (Math.cos(v.a) * v.sp - v.vx) * g;
+      v.vy += (Math.sin(v.a) * v.sp - v.vy) * g;
+
+      if (!disabled && drv) v.fuel = Math.max(0, v.fuel - d.burn * (Math.abs(thr) + (heli && v.alt > 0 ? 0.35 : 0)) * (boost ? 1.6 : 1) * dt);
       const ck = heli ? (v.alt > 0.6 ? 'fly' : 'car') : d.kind;
       const spd = Math.hypot(v.vx, v.vy);
       if (spd > 0.5) {
@@ -1547,36 +1608,67 @@ class Game {
         }
       }
 
-      // Defensive turrets & Tesla Spire
-      const hasTurret = up.turret_pistol || up.turret_mg || up.turret_shotgun || up.turret_sniper || up.turret_rocket || up.turret_laser || up.turret_cryo || up.turret_flame || up.tesla_spire;
-      if (hasTurret && now - (plot.lastTurretFire || 0) > 350) {
-        let targetZ = null, minD = 750 * 750;
-        for (const z of this.zh.query(plot.x, plot.y, 800, [])) {
+      // Dynamic compound size and corner tower calculation
+      const S = computePlotSize(plot);
+      plot.radius = S * 0.55;
+      const x0 = plot.x - S / 2, y0 = plot.y - S / 2;
+      const corners = [
+        [x0 + 28, y0 + 28],
+        [x0 + S - 28, y0 + 28],
+        [x0 + 28, y0 + S - 28],
+        [x0 + S - 28, y0 + S - 28]
+      ];
+
+      // Perimeter spikes damage infected touching the boundary
+      if (up.spikes) {
+        const spikeDmg = [0, 20, 40, 70, 110, 180][up.spikes] || 20;
+        for (const z of this.zh.query(plot.x, plot.y, plot.radius + 30, [])) {
+          if (z.hp <= 0) continue;
+          const zd = Math.hypot(z.x - plot.x, z.y - plot.y);
+          if (zd >= plot.radius - 25 && zd <= plot.radius + 30) {
+            this.hitZombie(z, spikeDmg * dt, null, {knock: 50});
+          }
+        }
+      }
+
+      // Automated Defensive Turrets & Tesla Spire (active baseline for all claimed shelters!)
+      const turretCooldown = up.turret_mg ? 180 : up.turret_laser ? 220 : up.turret_sniper ? 900 : 340;
+      if (now - (plot.lastTurretFire || 0) > turretCooldown) {
+        let targetZ = null, minD = (850 + (up.radar_spire || 0) * 150) ** 2;
+        for (const z of this.zh.query(plot.x, plot.y, 900, [])) {
           if (z.hp <= 0) continue;
           const dd = d2(z.x, z.y, plot.x, plot.y);
           if (dd < minD) { minD = dd; targetZ = z; }
         }
         if (targetZ) {
           plot.lastTurretFire = now;
-          let turretDmg = 35;
-          if (up.turret_pistol) turretDmg += up.turret_pistol * 18;
-          if (up.turret_mg) turretDmg += up.turret_mg * 30;
-          if (up.turret_sniper) turretDmg += up.turret_sniper * 65;
-          if (up.turret_laser) turretDmg += up.turret_laser * 60;
-          if (up.turret_cryo) { targetZ.stun = now + 1200; turretDmg += up.turret_cryo * 20; }
-          if (up.turret_flame) { targetZ.burn = now + 4000; turretDmg += up.turret_flame * 25; }
+          let turretDmg = 40;
+          if (up.turret_pistol) turretDmg += up.turret_pistol * 22;
+          if (up.turret_mg) turretDmg += up.turret_mg * 35;
+          if (up.turret_sniper) turretDmg += up.turret_sniper * 85;
+          if (up.turret_laser) turretDmg += up.turret_laser * 75;
+          if (up.turret_cryo) { targetZ.stun = now + 1400; turretDmg += up.turret_cryo * 25; }
+          if (up.turret_flame) { targetZ.burn = now + 4500; turretDmg += up.turret_flame * 30; }
           const ownerPlayer = this.players.get(plot.owner) || null;
-          this.hitZombie(targetZ, turretDmg, ownerPlayer, {knock: 120});
-          this.ev.push({x: plot.x, y: plot.y, d: ['tr', Math.round(plot.x), Math.round(plot.y), Math.round(targetZ.x), Math.round(targetZ.y), up.turret_laser ? 2 : up.turret_mg ? 3 : 1]});
+          
+          // Select nearest corner turret tower
+          let bestCorner = corners[0], bestCD = Infinity;
+          for (const [cx, cy] of corners) {
+            const cd = d2(cx, cy, targetZ.x, targetZ.y);
+            if (cd < bestCD) { bestCD = cd; bestCorner = [cx, cy]; }
+          }
+
+          this.hitZombie(targetZ, turretDmg, ownerPlayer, {knock: 140});
+          this.ev.push({x: bestCorner[0], y: bestCorner[1], d: ['tr', Math.round(bestCorner[0]), Math.round(bestCorner[1]), Math.round(targetZ.x), Math.round(targetZ.y), up.turret_laser ? 2 : up.turret_mg ? 3 : 1]});
           if (up.turret_rocket) {
-            this.explode(targetZ.x, targetZ.y, 90 + up.turret_rocket * 25, 140, ownerPlayer, {fx: 'frag'});
+            this.explode(targetZ.x, targetZ.y, 110 + up.turret_rocket * 30, 160, ownerPlayer, {fx: 'frag'});
           }
           if (up.tesla_spire) {
             let hitCount = 0;
-            for (const otherZ of this.zh.query(targetZ.x, targetZ.y, 250, [])) {
+            for (const otherZ of this.zh.query(targetZ.x, targetZ.y, 300, [])) {
               if (otherZ !== targetZ && otherZ.hp > 0 && hitCount < 2 + up.tesla_spire) {
                 hitCount++;
-                this.hitZombie(otherZ, 60 * up.tesla_spire, ownerPlayer, {knock: 80});
+                this.hitZombie(otherZ, 70 * up.tesla_spire, ownerPlayer, {knock: 90});
                 this.ev.push({x: targetZ.x, y: targetZ.y, d: ['zp', Math.round(targetZ.x), Math.round(targetZ.y), Math.round(otherZ.x), Math.round(otherZ.y)]});
               }
             }
