@@ -34,6 +34,7 @@ let ws = null, D = null, M = null, myId = 0, settings = {}, me = null, inv = nul
 let tiles, region, TS = 80, MW = 0, MH = 0, WP = 0, HP = 0, WBY = {};
 const snaps = []; let latest = null; const items = new Map(), structs = new Map(); let effects = [];
 const pred = {x: 0, y: 0, ps: -1};
+const vehPred = {id: 0, x: 0, y: 0, a: 0, sp: 0, vx: 0, vy: 0, steerAngle: 0, active: false};
 let zoom = 1, userZoom = 1, camX = 0, camY = 0, shake = 0, frameN = 0, gameTime = 0.3, lastSend = 0;
 const keys = {}; const mouse = {x: 0, y: 0, l: false, r: false};
 let mode = null, waypoint = null, chatOpen = false, masterVol = +(localStorage.getItem('dw_vol') || 0.6);
@@ -1394,8 +1395,21 @@ function handleEvent(d) {
     case 'tr': {
       const heavy = d[5] === 3;
       addFx({k: 'tr', x1: d[1], y1: d[2], x2: d[3], y2: d[4], kind: d[5], life: d[5] === 2 ? 70 : 90});
-      addFx({k: 'flash', x: d[1], y: d[2], r: heavy ? 120 : 70, life: 60});
+      addFx({k: 'flash', x: d[1], y: d[2], r: heavy ? 140 : 80, life: 65});
       sfx(d[5] === 2 ? 'beam' : heavy ? 'heavy' : 'shot', d[1], d[2]);
+      const sAng = Math.atan2(d[4] - d[2], d[3] - d[1]);
+      if (d[5] !== 2) {
+        const eAng = sAng - Math.PI / 2 + (Math.random() - 0.5) * 0.4;
+        particles.push({
+          x: d[1] + Math.cos(sAng) * 14,
+          y: d[2] + Math.sin(sAng) * 14,
+          vx: Math.cos(eAng) * (70 + Math.random() * 45),
+          vy: Math.sin(eAng) * (70 + Math.random() * 45),
+          life: 450, t: 450, col: '#facc15', size: 2.2
+        });
+      }
+      burst(d[1] + Math.cos(sAng) * 18, d[2] + Math.sin(sAng) * 18, 2, 'rgba(210,215,225,0.65)', 35, 220, 3.5);
+      burst(d[3], d[4], 3, '#ffd166', 75, 200, 2.5);
       break;
     }
     case 'ex': {
@@ -1411,13 +1425,14 @@ function handleEvent(d) {
       break;
     }
     case 'bl':
-      burst(d[1], d[2], 4, '#8a0f0f', 120, 400, 3);
-      if (Math.random() < 0.4) addDecal(d[1] + (Math.random() - 0.5) * 20, d[2] + (Math.random() - 0.5) * 20, 'blood', 8 + Math.random() * 10);
+      burst(d[1], d[2], 6, '#dc2626', 150, 450, 3.5);
+      addDecal(d[1] + (Math.random() - 0.5) * 14, d[2] + (Math.random() - 0.5) * 14, 'blood', 10 + Math.random() * 12);
       sfx('hit', d[1], d[2], 0.6);
       break;
     case 'zd':
       addDecal(d[1], d[2], 'corpse', D.ZD[D.ZLIST[d[3]]].r);
-      burst(d[1], d[2], 8, '#5a0b0b', 160, 500, 4);
+      addDecal(d[1], d[2], 'blood', 18 + Math.random() * 12);
+      burst(d[1], d[2], 12, '#991b1b', 180, 550, 4.5);
       break;
     case 'sw': {
       const p = latest && latest.P.get(d[1]);
@@ -1468,6 +1483,8 @@ function frame() {
     if (latest && me) {
       updateLocal(dt, now);
       render(now, dt);
+      const inVeh = me.veh ? myVehicle(now) : null;
+      updateDomHUD(now, inVeh);
     }
   } catch (e) {
     console.error(e);
@@ -1485,16 +1502,94 @@ function updateLocal(dt, now) {
   const sprint = !!(keys.ShiftLeft || keys.ShiftRight);
   const brake = !!(keys.Space);
   if (!me.dead && !me.veh) {
+    vehPred.active = false; vehPred.id = 0;
     const l = Math.hypot(mx, my), nx = l ? mx / l : 0, ny = l ? my / l : 0;
     const tileProp = D.TILES[tileAt(pred.x, pred.y)];
     const walk = (tileProp && tileProp.walk) || 1;
     const spd = me.spd * walk * (sprint && me.st > 1 && l ? 1.45 : 1);
     moveCircle(pred, nx * spd * dt + me.pl[0] * dt, ny * spd * dt + me.pl[1] * dt, 16);
-  } else if (me.veh && latest) {
-    const iv = myVehicle(now);
-    if (iv) {
-      pred.x = iv.x;
-      pred.y = iv.y;
+  } else if (me.veh && latest && latest.V) {
+    const sv = latest.V.get(me.veh);
+    if (sv) {
+      const isDriver = sv[6] === myId;
+      const t = D.VLIST[sv[1]], d = D.VEH[t];
+      if (isDriver && d) {
+        if (!vehPred.active || vehPred.id !== me.veh) {
+          vehPred.id = me.veh;
+          vehPred.x = sv[2];
+          vehPred.y = sv[3];
+          vehPred.a = sv[4] / 100;
+          vehPred.sp = sv[8];
+          vehPred.vx = sv[10] !== undefined ? sv[10] : Math.cos(vehPred.a) * vehPred.sp;
+          vehPred.vy = sv[11] !== undefined ? sv[11] : Math.sin(vehPred.a) * vehPred.sp;
+          vehPred.steerAngle = 0;
+          vehPred.active = true;
+        }
+
+        // ── 0ms Drive Lag: Immediate client-predicted physics ──
+        const thr = -my, steer = mx, boost = sprint, braking = brake;
+        const heli = d.kind === 'heli';
+        const tile = tileAt(vehPred.x, vehPred.y);
+        const P = D.PROPS ? D.PROPS[tile] : null;
+        const isRoad = tile === 5 || tile === 20 || tile === 24 || tile === 6;
+        const tm = isRoad ? 1.35 : (d.terrain && d.terrain[tile] !== undefined ? d.terrain[tile] : (P && P.veh ? P.veh : 1));
+        const maxS = d.speed * tm * (boost ? 1.3 : 1);
+
+        // Instant steering response
+        const tf = heli ? 1 : Math.max(0.72, Math.min(1.3, 0.45 + Math.abs(vehPred.sp) / 100));
+        vehPred.a += steer * d.turn * tf * dt * (vehPred.sp < -5 && !heli ? -1 : 1);
+        vehPred.steerAngle = lerp(vehPred.steerAngle, steer * 0.48, Math.min(1, dt * 18));
+
+        // Instant acceleration & braking
+        if (thr > 0) {
+          vehPred.sp += d.accel * thr * dt * (vehPred.sp < 0 ? 3.6 : 1.15);
+        } else if (thr < 0) {
+          if (vehPred.sp > 15) {
+            vehPred.sp -= Math.min(vehPred.sp, d.accel * 4.2 * dt);
+          } else {
+            vehPred.sp += d.accel * thr * dt * 1.5;
+          }
+        } else {
+          vehPred.sp -= vehPred.sp * Math.min(1, (heli ? 1.0 : 1.8) * dt);
+        }
+
+        if (braking && d.kind === 'car') vehPred.sp *= Math.pow(0.12, dt);
+        if (vehPred.sp > maxS) vehPred.sp -= (vehPred.sp - maxS) * Math.min(1, 4 * dt);
+        if (vehPred.sp < -maxS * 0.6) vehPred.sp = -maxS * 0.6;
+
+        let effectiveGrip = (d.grip || 1);
+        if (braking) effectiveGrip *= 0.32;
+        const g = Math.min(1, effectiveGrip * 10 * dt);
+        vehPred.vx += (Math.cos(vehPred.a) * vehPred.sp - vehPred.vx) * g;
+        vehPred.vy += (Math.sin(vehPred.a) * vehPred.sp - vehPred.vy) * g;
+
+        const ck = heli ? (d.alt > 0.6 ? 'fly' : 'car') : d.kind;
+        moveCircle(vehPred, vehPred.vx * dt, vehPred.vy * dt, d.r, ck);
+
+        // Soft exponential error reconciliation with server (zero pop / snap)
+        const sX = sv[2], sY = sv[3], sA = sv[4] / 100, sSp = sv[8];
+        const distErr = Math.hypot(vehPred.x - sX, vehPred.y - sY);
+        if (distErr > 260) {
+          vehPred.x = sX; vehPred.y = sY; vehPred.a = sA; vehPred.sp = sSp;
+        } else if (distErr > 1) {
+          vehPred.x = lerp(vehPred.x, sX, Math.min(1, dt * 6));
+          vehPred.y = lerp(vehPred.y, sY, Math.min(1, dt * 6));
+          vehPred.a = angLerp(vehPred.a, sA, Math.min(1, dt * 8));
+        }
+
+        pred.x = vehPred.x; pred.y = vehPred.y;
+
+        // Tire skid marks & smoke
+        if (Math.abs(vehPred.sp) > 150 && (braking || Math.abs(steer) > 0.25)) {
+          if (Math.random() < 0.4) {
+            addDecal(vehPred.x - Math.cos(vehPred.a) * 18, vehPred.y - Math.sin(vehPred.a) * 18, 'skid', 16, vehPred.a);
+            burst(vehPred.x - Math.cos(vehPred.a) * 22, vehPred.y - Math.sin(vehPred.a) * 22, 2, 'rgba(160,160,160,0.5)', 40, 300, 3.5);
+          }
+        }
+      } else {
+        const iv = myVehicle(now);
+        if (iv) { pred.x = iv.x; pred.y = iv.y; }
+      }
     }
   }
   if (now - lastSend >= 33) {
@@ -1510,9 +1605,24 @@ function updateLocal(dt, now) {
   }
 }
 
-// Enhanced vehicle state with velocity extrapolation
+// Client vehicle state with 0ms prediction & steering angle
 function myVehicle(now) {
-  const v = latest.V.get(me.veh); if (!v) return null;
+  const v = latest && latest.V ? latest.V.get(me.veh) : null;
+  if (!v) return null;
+  if (vehPred.active && vehPred.id === me.veh && v[6] === myId) {
+    const spd = Math.hypot(vehPred.vx, vehPred.vy);
+    return {
+      x: vehPred.x,
+      y: vehPred.y,
+      a: vehPred.a,
+      steerAngle: vehPred.steerAngle,
+      v,
+      vx: vehPred.vx,
+      vy: vehPred.vy,
+      speed: spd,
+      sp: vehPred.sp
+    };
+  }
   const age = Math.min(0.12, (now - latest.t) / 1000);
   const a = v[4] / 100;
   const vx = v[10] !== undefined ? v[10] : Math.cos(a) * v[8];
@@ -1520,7 +1630,11 @@ function myVehicle(now) {
   return {
     x: v[2] + vx * age,
     y: v[3] + vy * age,
-    a, v, vx, vy, speed: Math.hypot(vx, vy)
+    a,
+    steerAngle: 0,
+    v, vx, vy,
+    speed: Math.hypot(vx, vy),
+    sp: v[8]
   };
 }
 
@@ -1560,9 +1674,15 @@ function render(now, dt) {
   if (scoped) zt *= 0.68;
   zoom = lerp(zoom, zt, Math.min(1, dt * 4));
   let tx = selfX, ty = selfY;
-  if (scoped) { tx += (mouse.x - VW / 2) / zoom * 0.7; ty += (mouse.y - VH / 2) / zoom * 0.7; }
-  camX = lerp(camX || tx, tx, Math.min(1, dt * (scoped ? 6 : 14)));
-  camY = lerp(camY || ty, ty, Math.min(1, dt * (scoped ? 6 : 14)));
+  if (scoped) {
+    tx += (mouse.x - VW / 2) / zoom * 0.7; ty += (mouse.y - VH / 2) / zoom * 0.7;
+  } else if (inVeh && inVeh.speed > 30) {
+    const lead = Math.min(220, inVeh.speed * 0.28);
+    tx += Math.cos(inVeh.a) * lead;
+    ty += Math.sin(inVeh.a) * lead;
+  }
+  camX = lerp(camX || tx, tx, Math.min(1, dt * (scoped ? 6 : inVeh ? 10 : 14)));
+  camY = lerp(camY || ty, ty, Math.min(1, dt * (scoped ? 6 : inVeh ? 10 : 14)));
   if (Math.hypot(camX - tx, camY - ty) > 1500) { camX = tx; camY = ty; }
 
   shake *= Math.pow(0.02, dt);
@@ -1720,7 +1840,7 @@ function render(now, dt) {
     if (!inView(x, y, 120)) continue;
     vlist.push([v, x, y, an]);
   }
-  for (const [v, x, y, an] of vlist) if (!(v[7] & 8)) drawVehicle(v, x, y, an, now, selfX, selfY);
+  for (const [v, x, y, an] of vlist) if (!(v[7] & 8)) drawVehicle(v, x, y, an, now, selfX, selfY, (v[0] === me.veh ? inVeh : null));
 
   // Zombies
   for (const [id, z] of b.Z) {
@@ -1752,7 +1872,7 @@ function render(now, dt) {
   }
 
   // Flying helicopters
-  for (const [v, x, y, an] of vlist) if (v[7] & 8) drawVehicle(v, x, y, an, now, selfX, selfY);
+  for (const [v, x, y, an] of vlist) if (v[7] & 8) drawVehicle(v, x, y, an, now, selfX, selfY, (v[0] === me.veh ? inVeh : null));
 
   // Particles
   for (let i = particles.length - 1; i >= 0; i--) {
@@ -2595,8 +2715,12 @@ function drawZombie(z, x, y, a, now) {
   }
 }
 
-function drawVehicle(v, x, y, a, now, selfX, selfY) {
+function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh) {
   const t = D.VLIST[v[1]], d = D.VEH[t], f = v[7], L = d.len, Wd = d.wid, dead = f & 32, fly = f & 8;
+  const steerAng = currentInVeh ? currentInVeh.steerAngle : 0;
+  const isBraking = currentInVeh && (keys.Space || (keys.KeyS && currentInVeh.sp > 15));
+  const isReversing = currentInVeh && keys.KeyS && currentInVeh.sp <= 15;
+  const isBoosting = currentInVeh && (keys.ShiftLeft || keys.ShiftRight);
   ctx.save(); ctx.translate(x, y);
   if (fly) {
     ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.save(); ctx.translate(40, 60); ctx.rotate(a);
@@ -2605,6 +2729,13 @@ function drawVehicle(v, x, y, a, now, selfX, selfY) {
     ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.save(); ctx.rotate(a); ctx.fillRect(-L / 2 + 5, -Wd / 2 + 6, L, Wd); ctx.restore();
   }
   ctx.rotate(a);
+
+  // Dynamic suspension body roll in turns
+  if (currentInVeh && Math.abs(steerAng) > 0.02) {
+    const roll = -steerAng * Math.min(1, currentInVeh.speed / 380) * 0.08;
+    ctx.rotate(roll);
+  }
+
   const body = dead ? '#2a2725' : d.c;
   if (d.kind === 'boat') {
     ctx.fillStyle = body; ctx.beginPath();
@@ -2638,11 +2769,26 @@ function drawVehicle(v, x, y, a, now, selfX, selfY) {
     if (tracked) {
       ctx.fillRect(-L / 2, -Wd / 2 - 4, L, 10); ctx.fillRect(-L / 2, Wd / 2 - 6, L, 10);
     } else if (t !== 'motorcycle') {
-      const wl = 12, ww = 6;
-      for (const [wx, wy] of [[L * 0.3, -Wd / 2], [L * 0.3, Wd / 2], [-L * 0.3, -Wd / 2], [-L * 0.3, Wd / 2]])
-        ctx.fillRect(wx - wl / 2, wy - ww / 2, wl, ww);
+      const wl = 13, ww = 7;
+      // Rear straight wheels
+      for (const [wx, wy] of [[-L * 0.32, -Wd / 2], [-L * 0.32, Wd / 2]]) {
+        ctx.save(); ctx.translate(wx, wy);
+        ctx.fillStyle = '#111'; ctx.fillRect(-wl / 2, -ww / 2, wl, ww);
+        ctx.fillStyle = '#475569'; ctx.fillRect(-wl / 4, -ww / 4, wl / 2, ww / 2);
+        ctx.restore();
+      }
+      // Front steered wheels (0ms steering response!)
+      for (const [wx, wy] of [[L * 0.32, -Wd / 2], [L * 0.32, Wd / 2]]) {
+        ctx.save(); ctx.translate(wx, wy); ctx.rotate(steerAng);
+        ctx.fillStyle = '#111'; ctx.fillRect(-wl / 2, -ww / 2, wl, ww);
+        ctx.fillStyle = '#475569'; ctx.fillRect(-wl / 4, -ww / 4, wl / 2, ww / 2);
+        ctx.restore();
+      }
     } else {
-      ctx.fillRect(L / 2 - 10, -3, 10, 6); ctx.fillRect(-L / 2, -3, 10, 6);
+      ctx.save(); ctx.translate(L / 2 - 8, 0); ctx.rotate(steerAng);
+      ctx.fillStyle = '#111'; ctx.fillRect(-6, -3, 12, 6);
+      ctx.restore();
+      ctx.fillStyle = '#111'; ctx.fillRect(-L / 2 + 2, -3, 12, 6);
     }
     ctx.fillStyle = body; ctx.beginPath();
     ctx.roundRect ? ctx.roundRect(-L / 2, -Wd / 2, L, Wd, 6) : ctx.rect(-L / 2, -Wd / 2, L, Wd);
@@ -2672,9 +2818,42 @@ function drawVehicle(v, x, y, a, now, selfX, selfY) {
         ctx.fillRect(L / 2 - 2, -Wd * 0.38, 4, 6);
         ctx.fillRect(L / 2 - 2, Wd * 0.38 - 6, 4, 6);
       }
-      ctx.fillStyle = '#ef4444';
-      ctx.fillRect(-L / 2 - 1, -Wd * 0.4, 3, 5);
-      ctx.fillRect(-L / 2 - 1, Wd * 0.4 - 5, 3, 5);
+
+      // Taillights with dynamic brake and reverse lighting
+      if (isBraking) {
+        ctx.fillStyle = '#ff1e1e';
+        ctx.fillRect(-L / 2 - 3, -Wd * 0.44, 5, 8);
+        ctx.fillRect(-L / 2 - 3, Wd * 0.44 - 8, 5, 8);
+        ctx.fillStyle = 'rgba(255, 30, 30, 0.45)';
+        ctx.beginPath();
+        ctx.arc(-L / 2 - 6, -Wd * 0.4, 14, 0, 7);
+        ctx.arc(-L / 2 - 6, Wd * 0.4, 14, 0, 7);
+        ctx.fill();
+      } else if (isReversing) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(-L / 2 - 2, -Wd * 0.28, 4, 6);
+        ctx.fillRect(-L / 2 - 2, Wd * 0.28 - 6, 4, 6);
+      } else {
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(-L / 2 - 1, -Wd * 0.4, 3, 5);
+        ctx.fillRect(-L / 2 - 1, Wd * 0.4 - 5, 3, 5);
+      }
+
+      // Twin nitro exhaust flames
+      if (isBoosting && (v[8] > 40 || (currentInVeh && currentInVeh.speed > 40))) {
+        const flen = 18 + Math.random() * 14;
+        ctx.fillStyle = Math.random() < 0.5 ? '#38bdf8' : '#fb923c';
+        ctx.beginPath();
+        ctx.moveTo(-L / 2, -Wd * 0.22);
+        ctx.lineTo(-L / 2 - flen, -Wd * 0.22);
+        ctx.lineTo(-L / 2, -Wd * 0.22 + 5);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(-L / 2, Wd * 0.22);
+        ctx.lineTo(-L / 2 - flen, Wd * 0.22);
+        ctx.lineTo(-L / 2, Wd * 0.22 - 5);
+        ctx.fill();
+      }
     }
 
     if (!tracked && t !== 'motorcycle' && t !== 'quad' && t !== 'golfcart' && t !== 'tractor' && t !== 'snowmobile' && t !== 'f1' && t !== 'dunebuggy') {
@@ -3076,283 +3255,13 @@ function drawHUD(now, selfX, selfY, inVeh, b) {
   ctx.fillText(me.plotId ? `🏰 Base Lv.${me.plotLv || 1} [T/P]` : '🏰 Open Shelter [T]', tlx + 160, tly + 32);
   ctx.restore();
 
-  // ───────── 3. BOTTOM-LEFT SLEEK SURVIVOR BIOMETRICS ─────────
-  const bx = 18, by = VH - 108;
-  const hasShield = me.hardlightShield > 0;
-  ctx.save();
-  ctx.fillStyle = 'rgba(6, 10, 16, 0.85)';
-  const bioH = hasShield ? 104 : 90;
-  const bioY = hasShield ? by - 14 : by;
-  ctx.fillRect(bx, bioY, 230, bioH);
-  ctx.strokeStyle = me.hp < 30 ? '#ef4444' : 'rgba(255, 255, 255, 0.12)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(bx + 0.5, bioY + 0.5, 229, bioH - 1);
+  // ───────── 3. BOTTOM-LEFT BIOMETRICS, HOTBAR & VEHICLE COCKPIT ARE MANAGED BY DOM HUD ─────────
+  // updateDomHUD(now, inVeh) dynamically renders high-DPI health bar, shield, stamina, selected gun, ammo, and vehicle gauges.
 
-  let curY = bioY + 6;
-  if (hasShield) {
-    bar(bx + 8, curY, 214, 10, (me.hardlightShield / 150) * 100, '#38bdf8', `🛡️ Shield ${Math.round(me.hardlightShield)}`);
-    curY += 13;
-  }
-  bar(bx + 8, curY, 214, 16, me.hp, me.hp < 30 ? '#dc2626' : '#ef4444', `❤ HP ${Math.round(me.hp)}`);
-  curY += 19;
-  bar(bx + 8, curY, 214, 11, me.st, '#eab308', `⚡ STAMINA ${Math.round(me.st)}%`);
-  curY += 14;
-  bar(bx + 8, curY, 105, 10, me.hu, '#f97316', `🍖 ${Math.round(me.hu)}%`);
-  bar(bx + 117, curY, 105, 10, me.th, '#06b6d4', `💧 ${Math.round(me.th)}%`);
-  curY += 13;
-  if (me.inf > 0) {
-    bar(bx + 8, curY, 214, 10, me.inf, '#84cc16', `☣ Infection ${Math.round(me.inf)}%`);
-    curY += 13;
-  }
-
-  // Status badges
-  const st = [];
-  if (me.bl) st.push(['BLEED', '#ef4444']);
-  if (me.fr) st.push(['FRACTURE', '#f59e0b']);
-  if (me.b & 32) st.push(['BURNING', '#f97316']);
-  if (me.b & 1) st.push(['PAINKILLER', '#38bdf8']);
-  if (me.b & 2) st.push(['ADRENALINE', '#eab308']);
-  if (st.length > 0) {
-    ctx.font = 'bold 9px system-ui';
-    let sx = bx + 8;
-    for (const [t, c] of st) {
-      const w = ctx.measureText(t).width + 8;
-      ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(sx, curY + 2, w, 13);
-      ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.strokeRect(sx, curY + 2, w, 13);
-      ctx.fillStyle = c; ctx.textAlign = 'left'; ctx.fillText(t, sx + 4, curY + 9);
-      sx += w + 4;
-    }
-  }
-  ctx.restore();
-
-  // ───────── 4. BOTTOM-CENTER UNIFIED WEAPON SWITCH DOCK & AMMO COUNTER ─────────
-  if (!me.veh) {
-    const hbList = (inv && inv.hb) ? inv.hb : [
-      [KNIFE || 0, 0, 0],
-      [GLOCK || 1, 17, 0],
-      null, null, null
-    ];
-
-    // Determine current active weapon
-    let curW = null, curSlot = null;
-    if (inv && inv.hb && inv.hb[me.sel]) {
-      curSlot = inv.hb[me.sel];
-      curW = WBY[curSlot[0]];
-    } else {
-      curW = me.sel === 0 ? WBY[KNIFE] : (me.sel === 1 ? WBY[GLOCK] : null);
-    }
-
-    const sw = 84, sh = 42, gap = 4;
-    const totalW = 5 * sw + 4 * gap;
-    const hx = Math.round(VW / 2 - totalW / 2);
-    const hy = VH - sh - 12;
-
-    // Munitions & Ammo Bar attached right above active weapon dock
-    ctx.save();
-    const ammoBarW = totalW;
-    const ammoBarH = 28;
-    const ammoBarY = hy - ammoBarH - 4;
-    ctx.fillStyle = 'rgba(6, 10, 16, 0.88)';
-    ctx.fillRect(hx, ammoBarY, ammoBarW, ammoBarH);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(hx + 0.5, ammoBarY + 0.5, ammoBarW - 1, ammoBarH - 1);
-
-    if (curW) {
-      // Weapon icon & name on left
-      ctx.textAlign = 'left';
-      ctx.font = '14px sans-serif';
-      ctx.fillText(W_IC[curW.cat] || '🔫', hx + 8, ammoBarY + ammoBarH / 2);
-      ctx.font = 'bold 12px system-ui';
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(curW.name, hx + 28, ammoBarY + ammoBarH / 2);
-
-      // Ammo numerals on right
-      if (curW.mag) {
-        const mag = me.mag !== undefined ? me.mag : (curSlot ? curSlot[1] : curW.mag);
-        const res = me.res >= 0 ? me.res : 0;
-        ctx.textAlign = 'right';
-        ctx.font = '900 18px monospace';
-        ctx.fillStyle = mag > 0 ? '#ffd700' : '#ef4444';
-        ctx.fillText(String(mag), hx + ammoBarW - 90, ammoBarY + ammoBarH / 2 + 1);
-
-        ctx.font = 'bold 11px monospace'; ctx.fillStyle = '#94a3b8';
-        ctx.fillText(`/ ${curW.mag}`, hx + ammoBarW - 65, ammoBarY + ammoBarH / 2);
-
-        ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#38bdf8';
-        ctx.fillText(`+${res}`, hx + ammoBarW - 24, ammoBarY + ammoBarH / 2);
-
-        ctx.font = '9px system-ui'; ctx.fillStyle = '#64748b'; ctx.textAlign = 'center';
-        ctx.fillText(`[R] Reload`, hx + ammoBarW / 2 + 20, ammoBarY + ammoBarH / 2);
-      } else if (curW.count) {
-        ctx.textAlign = 'right';
-        ctx.font = '900 16px monospace'; ctx.fillStyle = '#ffd700';
-        ctx.fillText(`×${me.n || (curSlot ? curSlot[2] : 1)}`, hx + ammoBarW - 14, ammoBarY + ammoBarH / 2);
-      } else {
-        ctx.textAlign = 'right';
-        ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#ffd700';
-        ctx.fillText('MELEE · UNLIMITED', hx + ammoBarW - 14, ammoBarY + ammoBarH / 2);
-      }
-
-      // Reloading progress overlay
-      if (me.rl > 0 && me.rlT > 0) {
-        const prog = clamp(1 - me.rl / me.rlT, 0, 1);
-        ctx.fillStyle = 'rgba(245, 158, 11, 0.4)';
-        ctx.fillRect(hx + 1, ammoBarY + 1, (ammoBarW - 2) * prog, ammoBarH - 2);
-        ctx.fillStyle = '#ffd700'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center';
-        ctx.fillText(`RELOADING ${Math.round(prog * 100)}%`, hx + ammoBarW / 2, ammoBarY + ammoBarH / 2);
-      }
-    } else {
-      ctx.textAlign = 'center'; ctx.font = 'italic 11px system-ui'; ctx.fillStyle = '#64748b';
-      ctx.fillText('Unarmed (Press 1 or 2 to equip weapon)', hx + ammoBarW / 2, ammoBarY + ammoBarH / 2);
-    }
-    ctx.restore();
-
-    // 5-Slot Weapon Hotbar
-    for (let i = 0; i < 5; i++) {
-      const s = hbList[i], x = hx + i * (sw + gap), sel = me.sel === i;
-      ctx.save();
-      ctx.fillStyle = sel ? 'rgba(30, 41, 59, 0.95)' : 'rgba(6, 10, 16, 0.75)';
-      ctx.fillRect(x, hy, sw, sh);
-      ctx.strokeStyle = sel ? '#ffd700' : 'rgba(255, 255, 255, 0.15)';
-      ctx.lineWidth = sel ? 1.5 : 1;
-      ctx.strokeRect(x + 0.5, hy + 0.5, sw - 1, sh - 1);
-
-      // Slot digit
-      ctx.fillStyle = sel ? '#ffd700' : '#64748b';
-      ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'left';
-      ctx.fillText(`[${i + 1}]`, x + 4, hy + 8);
-
-      if (s) {
-        const w = WBY[s[0]] || (s[0] === 0 ? WBY[KNIFE] : (s[0] === 1 ? WBY[GLOCK] : null));
-        if (w) {
-          ctx.font = '14px sans-serif'; ctx.textAlign = 'left';
-          ctx.fillText(W_IC[w.cat] || '🔫', x + 5, hy + 26);
-
-          ctx.fillStyle = sel ? '#ffffff' : '#cbd5e1';
-          ctx.font = 'bold 10px system-ui';
-          let nm = w.name;
-          if (nm.length > 8) nm = nm.slice(0, 7) + '…';
-          ctx.fillText(nm, x + 24, hy + 19);
-
-          ctx.fillStyle = sel ? '#ffd700' : '#94a3b8';
-          ctx.font = 'bold 9px monospace';
-          const mag = sel ? me.mag : s[1], cnt = sel ? me.n : s[2];
-          ctx.fillText(w.count ? `×${cnt}` : w.mag ? `${mag}/${w.mag}` : 'melee', x + 24, hy + 32);
-        }
-      }
-      ctx.restore();
-    }
-  }
-
-  // ───────── 5. SLEEK VEHICLE TELEMETRY (WHEN DRIVING) ─────────
-  if (me.veh && inVeh) {
-    const d = D.VEH[D.VLIST[inVeh.v[1]]];
-    const px = VW / 2 - 140, py = VH - 64;
-    ctx.save();
-    ctx.fillStyle = 'rgba(6, 10, 16, 0.88)';
-    ctx.fillRect(px, py, 280, 52);
-    ctx.strokeStyle = 'rgba(0, 229, 255, 0.3)'; ctx.lineWidth = 1;
-    ctx.strokeRect(px + 0.5, py + 0.5, 279, 51);
-
-    const spd = Math.round(inVeh.v[8] / 10);
-    const isBraking = !!(keys.Space || keys.KeyS || keys.ArrowDown);
-    const isBoosting = !!(keys.ShiftLeft || keys.ShiftRight);
-
-    // Speedometer text
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#00e5ff'; ctx.font = 'bold 11px system-ui';
-    ctx.fillText(`${d.n} · GEAR: ${spd < -2 ? 'R' : spd > 2 ? 'D' : 'N'}`, px + 10, py + 14);
-
-    ctx.fillStyle = isBraking ? '#ef4444' : '#ffffff';
-    ctx.font = '900 18px monospace';
-    ctx.fillText(`${Math.abs(spd)} MPH ${isBraking ? '[BRAKE]' : isBoosting ? '[NITRO]' : ''}`, px + 10, py + 34);
-
-    // Hull & Fuel mini bars
-    ctx.textAlign = 'right';
-    bar(px + 170, py + 8, 100, 12, me.vh, '#4ade80', 'Hull');
-    bar(px + 170, py + 26, 100, 12, me.vf, '#f59e0b', 'Fuel');
-    ctx.restore();
-  }
 
   // ───────── 9. TACTICAL RADAR MINIMAP (TOP-RIGHT) ─────────
-  const mmR = 104, mmcx = VW - mmR - 18, mmcy = mmR + 18;
-  const range = 4200, scale = (mmR * 2) / range;
+  // Now managed crisply by renderMinimapDOM in the top-right high-tech HUD dock.
 
-  ctx.save();
-  ctx.beginPath(); ctx.arc(mmcx, mmcy, mmR, 0, 7); ctx.clip();
-  ctx.fillStyle = '#080d14'; ctx.fillRect(mmcx - mmR, mmcy - mmR, mmR * 2, mmR * 2);
-
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(mini, (selfX - range / 2) / TS, (selfY - range / 2) / TS, range / TS, range / TS, mmcx - mmR, mmcy - mmR, mmR * 2, mmR * 2);
-  ctx.imageSmoothingEnabled = true;
-
-  const mm = (x, y) => [mmcx + (x - selfX) * scale, mmcy + (y - selfY) * scale];
-
-  const sweepAngle = (now / 600) % (Math.PI * 2);
-  const sweepGrad = ctx.createRadialGradient(mmcx, mmcy, 0, mmcx, mmcy, mmR);
-  sweepGrad.addColorStop(0, 'rgba(0, 229, 255, 0.35)'); sweepGrad.addColorStop(1, 'rgba(0, 229, 255, 0)');
-  ctx.fillStyle = sweepGrad;
-  ctx.beginPath(); ctx.moveTo(mmcx, mmcy);
-  ctx.arc(mmcx, mmcy, mmR, sweepAngle - 0.45, sweepAngle);
-  ctx.closePath(); ctx.fill();
-
-  // Red Zombie blips
-  ctx.fillStyle = '#ff3b3b';
-  for (const z of b.Z.values()) {
-    const [zx, zy] = mm(z[2], z[3]);
-    if (Math.hypot(zx - mmcx, zy - mmcy) < mmR - 2) {
-      ctx.beginPath(); ctx.arc(zx, zy, 2.5, 0, 7); ctx.fill();
-    }
-  }
-
-  // Cyan Vehicle blips
-  ctx.fillStyle = '#00e5ff';
-  for (const v of b.V.values()) {
-    const [vx2, vy2] = mm(v[2], v[3]);
-    if (Math.hypot(vx2 - mmcx, vy2 - mmcy) < mmR - 2) {
-      ctx.beginPath(); ctx.arc(vx2, vy2, 3.5, 0, 7); ctx.fill();
-    }
-  }
-
-  // Golden Shelter Plots on minimap (all 16 shelters with plot numbers)
-  for (const plot of shelterPlots) {
-    let [px, py] = mm(plot.x, plot.y);
-    const distToCenter = Math.hypot(px - mmcx, py - mmcy);
-    if (distToCenter > mmR - 6) {
-      const edgeAngle = Math.atan2(py - mmcy, px - mmcx);
-      px = mmcx + Math.cos(edgeAngle) * (mmR - 8);
-      py = mmcy + Math.sin(edgeAngle) * (mmR - 8);
-    }
-    ctx.fillStyle = '#ffd700'; ctx.beginPath(); ctx.arc(px, py, 4.5, 0, 7); ctx.fill();
-    ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.strokeStyle = 'rgba(255, 215, 0, 0.5)'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.arc(px, py, 7 + Math.sin(now / 200) * 2, 0, 7); ctx.stroke();
-  }
-
-  if (waypoint) {
-    const [wx, wy] = mm(waypoint.x, waypoint.y);
-    ctx.fillStyle = '#ff00ff'; ctx.beginPath(); ctx.arc(wx, wy, 5, 0, 7); ctx.fill();
-  }
-
-  ctx.restore();
-
-  ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 2.5;
-  ctx.beginPath(); ctx.arc(mmcx, mmcy, mmR, 0, 7); ctx.stroke();
-  ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#00e5ff'; ctx.textAlign = 'center';
-  ctx.fillText('N', mmcx, mmcy - mmR + 12);
-  ctx.fillText('S', mmcx, mmcy + mmR - 6);
-  ctx.fillText('W', mmcx - mmR + 8, mmcy + 3);
-  ctx.fillText('E', mmcx + mmR - 8, mmcy + 3);
-
-  ctx.save(); ctx.translate(mmcx, mmcy);
-  ctx.rotate(playerHeading);
-  ctx.fillStyle = '#ffd166'; ctx.beginPath();
-  ctx.moveTo(10, 0); ctx.lineTo(-6, -6); ctx.lineTo(-3, 0); ctx.lineTo(-6, 6); ctx.fill();
-  ctx.restore();
-
-  ctx.fillStyle = '#cbd5e1'; ctx.font = '11px system-ui'; ctx.textAlign = 'right';
-  ctx.fillText(`${gridName(selfX, selfY)} · (${Math.round(selfX)}, ${Math.round(selfY)}) · ${ping}ms`, VW - 18, mmcy + mmR + 14);
 
   // ───────── 10. INTERACTION HINT ─────────
   const hint = interactionHint(selfX, selfY);
@@ -3446,6 +3355,534 @@ function interactionHint(x, y) {
   }
   return '';
 }
+
+// ───────── VECTOR WEAPON SILHOUETTES LIBRARY ─────────
+function getWeaponSvg(cat, isBig = false) {
+  const w = isBig ? 54 : 26;
+  const h = isBig ? 28 : 14;
+  switch (cat) {
+    case 'ar':
+      return `<svg viewBox="0 0 64 24" width="${w}" height="${h}" fill="currentColor"><path d="M2 13h10v-2h8V9h4v2h22l2-3h8v6l-4 4h-8v-3h-6l-2 5h-4l1-5h-10v2l-4 2H8l-6-4z"/></svg>`;
+    case 'smg':
+      return `<svg viewBox="0 0 54 24" width="${w}" height="${h}" fill="currentColor"><path d="M4 14h8v-3h16v-2h8v5h6v4l-4 3h-6v-3h-4l-2 5h-4l1-5h-8v2l-4 1H6z"/></svg>`;
+    case 'sniper':
+      return `<svg viewBox="0 0 70 20" width="${w}" height="${h}" fill="currentColor"><path d="M2 11h24V8h12v3h26v2H46v2l-2 3h-4l1-3h-14v2h-10l-9-4zM26 6h16v2H26z"/></svg>`;
+    case 'pistol':
+      return `<svg viewBox="0 0 40 24" width="${w}" height="${h}" fill="currentColor"><path d="M6 8h24v7h-6l-4 7h-6l2-7H8l-2-3z"/></svg>`;
+    case 'shotgun':
+      return `<svg viewBox="0 0 64 20" width="${w}" height="${h}" fill="currentColor"><path d="M2 11h34v-2h22v4H46v2l-4 2h-6l-2-2H14l-12-4zM24 13h12v2H24z"/></svg>`;
+    case 'mg':
+      return `<svg viewBox="0 0 64 24" width="${w}" height="${h}" fill="currentColor"><path d="M2 12h14v-3h20v2h22v3H48v2h-4v4h-6v-4h-8v2h-14l-14-6zM38 7h4v2h-4z"/></svg>`;
+    case 'dagger':
+    case 'knife':
+      return `<svg viewBox="0 0 44 20" width="${w}" height="${h}" fill="currentColor"><path d="M4 11l6-3 20-1 10 3-8 4-22 1-6-2v-2zM4 9h6v4H4z"/></svg>`;
+    case 'sword':
+      return `<svg viewBox="0 0 54 18" width="${w}" height="${h}" fill="currentColor"><path d="M2 9l8-2 34-1 6 3-8 2-32 1-8-1v-2zM4 6h3v8H4z"/></svg>`;
+    case 'polearm':
+      return `<svg viewBox="0 0 56 16" width="${w}" height="${h}" fill="currentColor"><path d="M2 8h42l4-4 8 4-8 4-4-4H2z"/></svg>`;
+    case 'bow':
+      return `<svg viewBox="0 0 40 24" width="${w}" height="${h}" fill="currentColor"><path d="M12 2c8 6 12 12 12 20-3-7-7-13-12-20zM6 11h26v2H6z"/></svg>`;
+    case 'blunt':
+      return `<svg viewBox="0 0 44 24" width="${w}" height="${h}" fill="currentColor"><path d="M4 10h24v-6h12v16H28v-6H4z"/></svg>`;
+    case 'launcher':
+      return `<svg viewBox="0 0 64 24" width="${w}" height="${h}" fill="currentColor"><path d="M2 10h12l4-3h26l4 3h12v4H46l-4 3H18l-4-3H2zM28 17h4v5h-4z"/></svg>`;
+    case 'glauncher':
+    case 'special':
+    case 'throwing':
+      return `<svg viewBox="0 0 32 32" width="${w}" height="${h}" fill="currentColor"><path d="M14 4h4v3h-4zM10 9h12a8 8 0 0 1 8 8c0 4.4-3.6 8-8 8H10a8 8 0 0 1-8-8c0-4.4 3.6-8 8-8z"/></svg>`;
+    default:
+      return `<svg viewBox="0 0 32 24" width="${w}" height="${h}" fill="currentColor"><path d="M6 6h16a4 4 0 0 1 4 4v4a4 4 0 0 1-4 4H10l-4-4V6z"/></svg>`;
+  }
+}
+
+// ───────── TOP-RIGHT TACTICAL RADAR MINIMAP CONTROLLER ─────────
+let minimapRange = 3600;
+function renderMinimapDOM(now) {
+  const mmCv = $('minimap-canvas');
+  if (!mmCv || !latest || !me) return;
+  const mmCtx = mmCv.getContext('2d');
+  const w = mmCv.width, h = mmCv.height;
+  const cx = w / 2, cy = h / 2, r = w / 2;
+  const selfX = pred.x, selfY = pred.y;
+  const scale = w / minimapRange;
+
+  mmCtx.save();
+  mmCtx.clearRect(0, 0, w, h);
+
+  // Circular clip
+  mmCtx.beginPath();
+  mmCtx.arc(cx, cy, r, 0, Math.PI * 2);
+  mmCtx.clip();
+
+  // Background radar dark grid
+  mmCtx.fillStyle = '#060a12';
+  mmCtx.fillRect(0, 0, w, h);
+
+  // Render terrain texture from procedural world minimap
+  if (mini) {
+    mmCtx.imageSmoothingEnabled = false;
+    mmCtx.drawImage(
+      mini,
+      (selfX - minimapRange / 2) / TS,
+      (selfY - minimapRange / 2) / TS,
+      minimapRange / TS,
+      minimapRange / TS,
+      0,
+      0,
+      w,
+      h
+    );
+    mmCtx.imageSmoothingEnabled = true;
+  }
+
+  // Tactical dark contrast glaze
+  mmCtx.fillStyle = 'rgba(6, 10, 18, 0.45)';
+  mmCtx.fillRect(0, 0, w, h);
+
+  const worldToMm = (x, y) => [cx + (x - selfX) * scale, cy + (y - selfY) * scale];
+
+  // Concentric radar distance rings (25%, 50%, 75%)
+  mmCtx.strokeStyle = 'rgba(0, 229, 255, 0.22)';
+  mmCtx.lineWidth = 1;
+  for (const f of [0.25, 0.5, 0.75]) {
+    mmCtx.beginPath();
+    mmCtx.arc(cx, cy, r * f, 0, Math.PI * 2);
+    mmCtx.stroke();
+  }
+
+  // Crosshairs
+  mmCtx.beginPath();
+  mmCtx.moveTo(cx, 0); mmCtx.lineTo(cx, h);
+  mmCtx.moveTo(0, cy); mmCtx.lineTo(w, cy);
+  mmCtx.stroke();
+
+  // Rotating radar sweep cone
+  const sweepAngle = (now / 700) % (Math.PI * 2);
+  const sweepGrad = mmCtx.createRadialGradient(cx, cy, 0, cx, cy, r);
+  sweepGrad.addColorStop(0, 'rgba(0, 229, 255, 0.35)');
+  sweepGrad.addColorStop(1, 'rgba(0, 229, 255, 0)');
+  mmCtx.fillStyle = sweepGrad;
+  mmCtx.beginPath();
+  mmCtx.moveTo(cx, cy);
+  mmCtx.arc(cx, cy, r, sweepAngle - 0.5, sweepAngle);
+  mmCtx.closePath();
+  mmCtx.fill();
+
+  // Red Zombie blips
+  mmCtx.fillStyle = '#ff3b3b';
+  for (const z of latest.Z.values()) {
+    const [zx, zy] = worldToMm(z[2], z[3]);
+    if (Math.hypot(zx - cx, zy - cy) < r - 4) {
+      mmCtx.beginPath();
+      mmCtx.arc(zx, zy, 2.8, 0, Math.PI * 2);
+      mmCtx.fill();
+    }
+  }
+
+  // Cyan Vehicle blips
+  mmCtx.fillStyle = '#00e5ff';
+  for (const v of latest.V.values()) {
+    const [vx, vy] = worldToMm(v[2], v[3]);
+    if (Math.hypot(vx - cx, vy - cy) < r - 4) {
+      mmCtx.beginPath();
+      mmCtx.arc(vx, vy, 3.8, 0, Math.PI * 2);
+      mmCtx.fill();
+    }
+  }
+
+  // Golden Shelter Plots with pulsing rings
+  for (const plot of shelterPlots) {
+    let [px, py] = worldToMm(plot.x, plot.y);
+    const dCenter = Math.hypot(px - cx, py - cy);
+    if (dCenter > r - 8) {
+      const ang = Math.atan2(py - cy, px - cx);
+      px = cx + Math.cos(ang) * (r - 9);
+      py = cy + Math.sin(ang) * (r - 9);
+    }
+    mmCtx.fillStyle = '#ffd700';
+    mmCtx.beginPath();
+    mmCtx.arc(px, py, 4.5, 0, Math.PI * 2);
+    mmCtx.fill();
+    mmCtx.strokeStyle = '#000';
+    mmCtx.lineWidth = 1.5;
+    mmCtx.stroke();
+  }
+
+  // Waypoint blip
+  if (waypoint) {
+    const [wx, wy] = worldToMm(waypoint.x, waypoint.y);
+    mmCtx.fillStyle = '#ff00ff';
+    mmCtx.beginPath();
+    mmCtx.arc(wx, wy, 5, 0, Math.PI * 2);
+    mmCtx.fill();
+    mmCtx.strokeStyle = '#fff';
+    mmCtx.lineWidth = 1;
+    mmCtx.stroke();
+  }
+
+  // Center player survivor arrowhead rotated to aim heading
+  const aimA = me.veh ? (vehPred.a || pred.a) : pred.a;
+  mmCtx.save();
+  mmCtx.translate(cx, cy);
+  mmCtx.rotate(aimA);
+  mmCtx.fillStyle = '#ffd166';
+  mmCtx.beginPath();
+  mmCtx.moveTo(11, 0);
+  mmCtx.lineTo(-7, -6);
+  mmCtx.lineTo(-3, 0);
+  mmCtx.lineTo(-7, 6);
+  mmCtx.closePath();
+  mmCtx.fill();
+  mmCtx.strokeStyle = '#000';
+  mmCtx.lineWidth = 1.5;
+  mmCtx.stroke();
+  mmCtx.restore();
+
+  mmCtx.restore();
+
+  // Compass Bearing & Coordinates in DOM
+  const bearingEl = $('mm-bearing');
+  if (bearingEl) {
+    let deg = Math.round(((aimA * 180 / Math.PI) % 360 + 360) % 360);
+    const cardinals = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    const card = cardinals[Math.round(deg / 45) % 8];
+    bearingEl.textContent = `${String(deg).padStart(3, '0')}° ${card}`;
+  }
+
+  const coordsEl = $('mm-coords');
+  if (coordsEl) {
+    coordsEl.textContent = `X: ${Math.round(selfX)} · Y: ${Math.round(selfY)}`;
+  }
+
+  const rangeEl = $('mm-range-text');
+  if (rangeEl) {
+    rangeEl.textContent = `${Math.round(minimapRange / 36)}M`;
+  }
+}
+
+// ───────── TACTICAL DOM HUD CONTROLLER ─────────
+let domHudInited = false;
+function initDomHUDButtons() {
+  if (domHudInited) return;
+  domHudInited = true;
+  const btnShelter = $('hud-btn-shelter');
+  if (btnShelter) btnShelter.onclick = () => { if (typeof toggleShelterTycoon === 'function') toggleShelterTycoon(); };
+  const btnReborn = $('hud-btn-reborn');
+  if (btnReborn) btnReborn.onclick = () => { if (typeof toggleRebornModal === 'function') toggleRebornModal(); };
+  const btnMap = $('hud-btn-map');
+  if (btnMap) btnMap.onclick = () => toggleMap();
+
+  // Minimap controls
+  const mmZoomIn = $('mm-zoom-in');
+  if (mmZoomIn) mmZoomIn.onclick = () => {
+    minimapRange = Math.max(1800, minimapRange - 800);
+  };
+  const mmZoomOut = $('mm-zoom-out');
+  if (mmZoomOut) mmZoomOut.onclick = () => {
+    minimapRange = Math.min(6400, minimapRange + 800);
+  };
+  const mmBtnMap = $('mm-btn-map');
+  if (mmBtnMap) mmBtnMap.onclick = () => toggleMap();
+}
+
+function updateDomHUD(now, inVeh) {
+  if (!me) return;
+  initDomHUDButtons();
+
+  const hudEl = $('hud');
+  if (!hudEl || hudEl.hidden) return;
+
+  // Render Top-Right Minimap Canvas
+  renderMinimapDOM(now);
+
+  // 1. Top bar resources & sector
+  const scrapVal = $('hud-scrap');
+  if (scrapVal) scrapVal.textContent = `${me.scrap || 0}`;
+  const coresVal = $('hud-cores');
+  if (coresVal) coresVal.textContent = `${me.prestigeTokens || 0}`;
+  const clockVal = $('hud-clock');
+  if (clockVal) clockVal.textContent = `⏱️ ${clockStr()}`;
+  const sectorVal = $('hud-sector');
+  if (sectorVal) sectorVal.textContent = `${gridName(pred.x, pred.y)} · ${regionName(pred.x, pred.y)}`;
+
+  // 2. Biometrics: Health, Shield, Stamina, Vitals, Badges
+  const shieldWrap = $('hud-shield-wrap');
+  if (shieldWrap) {
+    if (me.hardlightShield > 0) {
+      shieldWrap.hidden = false;
+      const shieldVal = $('hud-shield-val');
+      const shieldFill = $('hud-shield-fill');
+      if (shieldVal) shieldVal.textContent = `${Math.round(me.hardlightShield)} / 150`;
+      if (shieldFill) shieldFill.style.width = `${clamp((me.hardlightShield / 150) * 100, 0, 100)}%`;
+    } else {
+      shieldWrap.hidden = true;
+    }
+  }
+
+  const hpVal = $('hud-hp-val');
+  const hpFill = $('hud-hp-fill');
+  if (hpVal) hpVal.textContent = `${Math.max(0, Math.round(me.hp))} / 100`;
+  if (hpFill) {
+    const hpPct = clamp(me.hp, 0, 100);
+    hpFill.style.width = `${hpPct}%`;
+    hpFill.classList.toggle('critical', me.hp < 30);
+  }
+
+  const stVal = $('hud-st-val');
+  const stFill = $('hud-st-fill');
+  if (stVal) stVal.textContent = `${Math.round(me.st)}%`;
+  if (stFill) stFill.style.width = `${clamp(me.st, 0, 100)}%`;
+
+  const foodVal = $('hud-food-val');
+  if (foodVal) foodVal.textContent = `${Math.round(me.hu || 0)}%`;
+  const waterVal = $('hud-water-val');
+  if (waterVal) waterVal.textContent = `${Math.round(me.th || 0)}%`;
+
+  const infectMini = $('hud-infect-mini');
+  const infectVal = $('hud-infect-val');
+  if (infectMini && infectVal) {
+    if (me.inf > 0) {
+      infectMini.hidden = false;
+      infectVal.textContent = `${Math.round(me.inf)}%`;
+    } else {
+      infectMini.hidden = true;
+    }
+  }
+
+  // Status Badges
+  const badgesBox = $('hud-status-badges');
+  if (badgesBox) {
+    let bHtml = '';
+    if (me.dead) bHtml += '<span class="status-badge dead">KIA</span>';
+    if (me.bl) bHtml += '<span class="status-badge bleed">BLEED</span>';
+    if (me.fr) bHtml += '<span class="status-badge fracture">FRACTURE</span>';
+    if (me.b & 32) bHtml += '<span class="status-badge burn">BURNING</span>';
+    if (me.b & 1) bHtml += '<span class="status-badge buff">MEDS</span>';
+    if (me.b & 2) bHtml += '<span class="status-badge buff">STIM</span>';
+    if (me.b & 128) bHtml += '<span class="status-badge buff">NVG</span>';
+    badgesBox.innerHTML = bHtml;
+  }
+
+  // Screen Damage Vignette
+  const vignette = $('hud-vignette');
+  if (vignette) {
+    vignette.classList.toggle('low-hp', me.hp < 30 && !me.dead);
+    vignette.classList.toggle('bleeding', !!me.bl);
+  }
+
+  // 3. Vehicle Cockpit Telemetry vs Foot Weapon Deck
+  const vehDock = $('hud-vehicle-dock');
+  const wpnDeck = $('hud-weapon-deck');
+
+  if (me.veh && inVeh && D && D.VEH && D.VLIST) {
+    if (wpnDeck) wpnDeck.hidden = true;
+    if (vehDock) {
+      vehDock.hidden = false;
+      const d = D.VEH[D.VLIST[inVeh.v[1]]];
+      if (d) {
+        const iconEl = $('veh-hud-icon');
+        if (iconEl) iconEl.textContent = d.cat === 'heli' ? '🚁' : d.cat === 'boat' ? '🚤' : '🚗';
+        const nameEl = $('veh-hud-name');
+        if (nameEl) nameEl.textContent = d.n ? d.n.toUpperCase() : 'VEHICLE';
+
+        const spd = Math.round(inVeh.v[8] / 10);
+        const speedEl = $('veh-hud-speed');
+        if (speedEl) speedEl.textContent = `${Math.abs(spd)}`;
+
+        const gearEl = $('veh-hud-gear');
+        if (gearEl) {
+          if (keys.Space) gearEl.textContent = 'HANDBRAKE [P]';
+          else if (spd < -2) gearEl.textContent = 'REVERSE [R]';
+          else if (spd > 2) gearEl.textContent = 'DRIVE [D]';
+          else gearEl.textContent = 'NEUTRAL [N]';
+        }
+
+        const hullVal = $('veh-hull-val');
+        const hullFill = $('veh-hull-fill');
+        if (hullVal) hullVal.textContent = `${Math.round(me.vh || 0)}%`;
+        if (hullFill) hullFill.style.width = `${clamp(me.vh || 0, 0, 100)}%`;
+
+        const fuelVal = $('veh-fuel-val');
+        const fuelFill = $('veh-fuel-fill');
+        if (fuelVal) fuelVal.textContent = `${Math.round(me.vf || 0)}%`;
+        if (fuelFill) fuelFill.style.width = `${clamp(me.vf || 0, 0, 100)}%`;
+
+        const nitroChip = $('veh-nitro-chip');
+        if (nitroChip) {
+          const isBoosting = !!(keys.ShiftLeft || keys.ShiftRight);
+          nitroChip.classList.toggle('active', isBoosting);
+        }
+      }
+    }
+  } else {
+    // On foot: Show Weapon Deck & Active Gun Card anchored on Bottom-Right
+    if (vehDock) vehDock.hidden = true;
+    if (wpnDeck) {
+      wpnDeck.hidden = false;
+
+      // Active weapon resolution
+      let curW = null, curSlot = null;
+      if (inv && inv.hb && inv.hb[me.sel]) {
+        curSlot = inv.hb[me.sel];
+        curW = WBY[curSlot[0]];
+      } else {
+        curW = me.sel === 0 ? WBY[KNIFE] : (me.sel === 1 ? WBY[GLOCK] : null);
+      }
+
+      const gunCat = $('hud-gun-cat');
+      const gunIcon = $('hud-gun-icon');
+      const gunName = $('hud-gun-name');
+      const gunMeta = $('hud-gun-meta');
+      const ammoDisp = $('hud-ammo-display');
+      const ammoCur = $('hud-ammo-cur');
+      const ammoRes = $('hud-ammo-res');
+      const ammoLabel = $('hud-ammo-label');
+      const magFill = $('hud-mag-fill');
+      const reloadWrap = $('hud-reload-bar-wrap');
+      const reloadFill = $('hud-reload-fill');
+      const reloadText = $('hud-reload-text');
+
+      const modeSemi = $('mode-semi');
+      const modeBurst = $('mode-burst');
+      const modeAuto = $('mode-auto');
+
+      if (curW) {
+        if (gunCat) gunCat.textContent = `${curW.cat.toUpperCase()} // ${curW.ammo ? curW.ammo.toUpperCase() : 'MELEE'}`;
+        if (gunIcon) gunIcon.innerHTML = getWeaponSvg(curW.cat, true);
+        if (gunName) gunName.textContent = curW.name.toUpperCase();
+        if (gunMeta) {
+          if (curW.mag) {
+            gunMeta.textContent = `${curW.ammo ? curW.ammo.toUpperCase() : 'STANDARD'} · ${curW.mag}-RND CAPACITY`;
+          } else if (curW.count) {
+            gunMeta.textContent = 'TACTICAL ORDNANCE · THROWABLE';
+          } else {
+            gunMeta.textContent = 'CLOSE QUARTERS COMBAT · SILENT';
+          }
+        }
+
+        // Fire selector active chips
+        if (modeSemi && modeBurst && modeAuto) {
+          modeSemi.classList.toggle('active', !curW.auto && !curW.burst);
+          modeBurst.classList.toggle('active', !!curW.burst);
+          modeAuto.classList.toggle('active', !!curW.auto);
+        }
+
+        if (ammoDisp) ammoDisp.hidden = false;
+
+        let mag = 0, res = 0, maxMag = curW.mag || 1;
+        if (curW.mag) {
+          mag = me.mag !== undefined ? me.mag : (curSlot ? curSlot[1] : curW.mag);
+          res = me.res >= 0 ? me.res : 0;
+          if (ammoCur) {
+            ammoCur.textContent = String(mag);
+            ammoCur.classList.toggle('empty', mag === 0);
+          }
+          if (ammoRes) ammoRes.textContent = String(res);
+          if (ammoLabel) ammoLabel.textContent = mag === 0 ? 'EMPTY [R]' : 'CHAMBERED';
+
+          // Visualizer bar
+          if (magFill) {
+            const magPct = clamp((mag / maxMag) * 100, 0, 100);
+            magFill.style.width = `${magPct}%`;
+            magFill.classList.toggle('low-ammo', mag <= Math.ceil(maxMag * 0.25));
+          }
+        } else if (curW.count) {
+          const cnt = me.n !== undefined ? me.n : (curSlot ? curSlot[2] : 1);
+          if (ammoCur) {
+            ammoCur.textContent = `×${cnt}`;
+            ammoCur.classList.remove('empty');
+          }
+          if (ammoRes) ammoRes.textContent = 'STK';
+          if (ammoLabel) ammoLabel.textContent = 'COUNT';
+          if (magFill) { magFill.style.width = '100%'; magFill.classList.remove('low-ammo'); }
+        } else {
+          if (ammoCur) {
+            ammoCur.textContent = '∞';
+            ammoCur.classList.remove('empty');
+          }
+          if (ammoRes) ammoRes.textContent = 'MELEE';
+          if (ammoLabel) ammoLabel.textContent = 'UNLIMITED';
+          if (magFill) { magFill.style.width = '100%'; magFill.classList.remove('low-ammo'); }
+        }
+
+        // Reload animation overlay
+        if (reloadWrap) {
+          if (me.rl > 0 && me.rlT > 0) {
+            reloadWrap.hidden = false;
+            const prog = clamp((1 - me.rl / me.rlT) * 100, 0, 100);
+            if (reloadFill) reloadFill.style.width = `${prog}%`;
+            if (reloadText) reloadText.textContent = `RELOADING... ${Math.round(prog)}% [R]`;
+          } else {
+            reloadWrap.hidden = true;
+          }
+        }
+      } else {
+        if (gunCat) gunCat.textContent = 'UNARMED';
+        if (gunIcon) gunIcon.innerHTML = getWeaponSvg('default', true);
+        if (gunName) gunName.textContent = 'FISTS';
+        if (gunMeta) gunMeta.textContent = 'NO WEAPON EQUIPPED · PRESS [1]-[5]';
+        if (ammoDisp) ammoDisp.hidden = true;
+        if (ammoLabel) ammoLabel.textContent = 'UNARMED';
+        if (reloadWrap) reloadWrap.hidden = true;
+        if (magFill) magFill.style.width = '0%';
+      }
+
+      // Hotbar 5 slots (Positioned right above weapon card on bottom-right)
+      const hotbarEl = $('hud-hotbar');
+      if (hotbarEl) {
+        const hbList = (inv && inv.hb) ? inv.hb : [
+          [KNIFE || 0, 0, 0],
+          [GLOCK || 1, 17, 0],
+          null, null, null
+        ];
+
+        let hbHtml = '';
+        for (let i = 0; i < 5; i++) {
+          const s = hbList[i];
+          const isSelected = me.sel === i;
+          let label = 'Empty', ammoStr = '', svgIcon = getWeaponSvg('default', false);
+          if (s) {
+            const wObj = WBY[s[0]] || (s[0] === 0 ? WBY[KNIFE] : (s[0] === 1 ? WBY[GLOCK] : null));
+            if (wObj) {
+              label = wObj.name;
+              svgIcon = getWeaponSvg(wObj.cat, false);
+              if (wObj.count) {
+                const cnt = isSelected ? (me.n !== undefined ? me.n : s[2]) : s[2];
+                ammoStr = `×${cnt}`;
+              } else if (wObj.mag) {
+                const curM = isSelected ? (me.mag !== undefined ? me.mag : s[1]) : s[1];
+                ammoStr = `${curM}/${wObj.mag}`;
+              } else {
+                ammoStr = 'melee';
+              }
+            }
+          }
+
+          hbHtml += `
+            <div class="hud-slot ${isSelected ? 'active-slot' : ''} ${s ? 'has-weapon' : 'empty-slot'}" data-slot="${i}">
+              <div class="slot-num">[${i + 1}]</div>
+              <div class="slot-icon">${svgIcon}</div>
+              <div class="slot-name">${label}</div>
+              <div class="slot-ammo">${ammoStr}</div>
+            </div>`;
+        }
+        hotbarEl.innerHTML = hbHtml;
+
+        // Attach click handlers to slots for instant weapon switching
+        const slotNodes = hotbarEl.querySelectorAll('.hud-slot');
+        slotNodes.forEach(node => {
+          node.onclick = () => {
+            const slotIdx = +node.dataset.slot;
+            if (slotIdx >= 0 && slotIdx <= 4) {
+              send({ t: 'slot', v: slotIdx });
+            }
+          };
+        });
+      }
+    }
+  }
+}
+
 
 // ───────── big map ─────────
 const bm = $('bigmap'), bmx = bm.getContext('2d');

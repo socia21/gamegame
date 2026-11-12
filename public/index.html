@@ -110,6 +110,189 @@
   <div id="toasts"></div>
   <div id="feed"></div>
   <div id="banner"></div>
+
+  <!-- Low Health Red Vignette Flash -->
+  <div id="hud-vignette" class="hud-vignette" hidden></div>
+
+  <!-- Top Status Banner (Positioned top-left / center to leave top-right open for Minimap) -->
+  <div id="hud-topbar" class="hud-topbar">
+    <div class="hud-top-content">
+      <div class="hud-sector-badge" id="hud-sector">SECTOR A1 · WASTELANDS</div>
+      <div class="hud-clock" id="hud-clock">⏱️ 12:00</div>
+      <div class="hud-scrap-chip"><span class="chip-icon">⚙️</span><span id="hud-scrap">0</span> SCRAP</div>
+      <div class="hud-cores-chip"><span class="chip-icon">⚛️</span><span id="hud-cores">0</span> CORES</div>
+    </div>
+  </div>
+
+  <!-- Top-Right: High-Tech Radar Minimap -->
+  <div id="hud-minimap-dock" class="hud-minimap-dock">
+    <div class="minimap-bezel">
+      <div class="minimap-header">
+        <div class="mm-title-row">
+          <span class="mm-radar-dot"></span>
+          <span class="mm-title-text">TACTICAL RADAR</span>
+          <span class="mm-range-chip" id="mm-range-text">100M</span>
+        </div>
+        <div class="mm-bearing-text" id="mm-bearing">360° N</div>
+      </div>
+      <div class="minimap-glass">
+        <canvas id="minimap-canvas" width="220" height="220"></canvas>
+        <div class="minimap-reticle-ring"></div>
+        <div class="minimap-sweep"></div>
+        <div class="minimap-cardinal n">N</div>
+        <div class="minimap-cardinal e">E</div>
+        <div class="minimap-cardinal s">S</div>
+        <div class="minimap-cardinal w">W</div>
+      </div>
+      <div class="minimap-footer">
+        <div class="minimap-coords" id="mm-coords">X: 16000 · Y: 16000</div>
+        <div class="minimap-controls">
+          <button type="button" class="mm-btn" id="mm-zoom-out" title="Zoom Out [-]">−</button>
+          <button type="button" class="mm-btn" id="mm-zoom-in" title="Zoom In [+]">+</button>
+          <button type="button" class="mm-btn mm-map-btn" id="mm-btn-map" title="World Map [M]">MAP</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom-Left Biometrics: Health, Shield, Stamina -->
+  <div id="hud-biometrics" class="hud-biometrics">
+    <!-- Hardlight Shield Bar (when active) -->
+    <div id="hud-shield-wrap" class="hud-bar-wrap shield-wrap" hidden>
+      <div class="hud-bar-label">
+        <span class="bar-title">
+          <svg class="hud-svg-icon cyan" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l7 3v6c0 5.25-3.5 10-7 11-3.5-1-7-5.75-7-11V5l7-3z"/></svg>
+          SHIELD
+        </span>
+        <span class="bar-num" id="hud-shield-val">150 / 150</span>
+      </div>
+      <div class="hud-bar-track">
+        <div id="hud-shield-fill" class="hud-bar-fill shield-fill" style="width: 100%;"></div>
+      </div>
+    </div>
+
+    <!-- Health Bar with animated ECG heartbeat line -->
+    <div class="hud-bar-wrap health-wrap">
+      <div class="hud-bar-label">
+        <span class="bar-title">
+          <svg class="hud-svg-icon red pulse-ecg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M2 12h4l2.5-6 3.5 12 3-8 2 4h5"/></svg>
+          HEALTH
+        </span>
+        <span class="bar-num" id="hud-hp-val">100 / 100</span>
+      </div>
+      <div class="hud-bar-track health-track">
+        <div id="hud-hp-fill" class="hud-bar-fill health-fill" style="width: 100%;"></div>
+      </div>
+    </div>
+
+    <!-- Stamina Bar -->
+    <div class="hud-bar-wrap stamina-wrap">
+      <div class="hud-bar-label">
+        <span class="bar-title">
+          <svg class="hud-svg-icon amber" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M13 2L3 14h7v8l10-12h-7z"/></svg>
+          STAMINA
+        </span>
+        <span class="bar-num" id="hud-st-val">100%</span>
+      </div>
+      <div class="hud-bar-track stamina-track">
+        <div id="hud-st-fill" class="hud-bar-fill stamina-fill" style="width: 100%;"></div>
+      </div>
+    </div>
+
+    <!-- Sub-Vitals & Status Badges -->
+    <div class="hud-sub-vitals">
+      <div class="vital-mini" title="Nourishment">
+        <svg class="hud-svg-icon orange" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 4h14v2H5zm1 4h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2zm4 4v6m4-6v6"/></svg>
+        <span id="hud-food-val">100%</span>
+      </div>
+      <div class="vital-mini" title="Hydration">
+        <svg class="hud-svg-icon cyan" viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>
+        <span id="hud-water-val">100%</span>
+      </div>
+      <div id="hud-infect-mini" class="vital-mini infect" hidden title="Infection Level">
+        <svg class="hud-svg-icon lime" viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="6" r="2.5"/><circle cx="6.5" cy="15.5" r="2.5"/><circle cx="17.5" cy="15.5" r="2.5"/></svg>
+        <span id="hud-infect-val">0%</span>
+      </div>
+      <div id="hud-status-badges" class="status-badges"></div>
+    </div>
+  </div>
+
+  <!-- Bottom-Right: Tactical Weapon Hotbar & Ammo Counter -->
+  <div id="hud-weapon-deck" class="hud-weapon-deck">
+    <!-- 5-Slot Weapon Switcher Hotbar (Anchored above active gun card) -->
+    <div id="hud-hotbar" class="hud-hotbar">
+      <!-- 5 hotbar slots populated dynamically -->
+    </div>
+
+    <!-- Active Gun Munitions Card -->
+    <div id="hud-active-gun-card" class="hud-active-gun-card">
+      <div class="gun-card-top">
+        <div class="gun-cat-tag" id="hud-gun-cat">PRIMARY WEAPON</div>
+        <div class="gun-fire-modes" id="hud-fire-modes">
+          <span class="fire-mode-pip active" id="mode-semi">SEMI</span>
+          <span class="fire-mode-pip" id="mode-burst">BURST</span>
+          <span class="fire-mode-pip" id="mode-auto">AUTO</span>
+        </div>
+      </div>
+
+      <div class="gun-card-main">
+        <div class="gun-icon-box" id="hud-gun-icon">
+          <!-- Vector SVG silhouette inserted dynamically -->
+        </div>
+        <div class="gun-info-block">
+          <div class="gun-name" id="hud-gun-name">TACTICAL GLOCK 17</div>
+          <div class="gun-caliber" id="hud-gun-meta">9×19mm Parabellum · Standard</div>
+        </div>
+        <div class="gun-ammo-block">
+          <div class="ammo-display" id="hud-ammo-display">
+            <span class="ammo-current" id="hud-ammo-cur">17</span>
+            <span class="ammo-slash">/</span>
+            <span class="ammo-reserve" id="hud-ammo-res">68</span>
+          </div>
+          <div class="ammo-label" id="hud-ammo-label">CHAMBERED</div>
+        </div>
+      </div>
+
+      <!-- Segmented Magazine Rounds Visualizer Bar -->
+      <div class="mag-visualizer" id="hud-mag-visualizer">
+        <div class="mag-visualizer-fill" id="hud-mag-fill" style="width: 100%;"></div>
+      </div>
+
+      <!-- Reload Progress Bar Indicator -->
+      <div id="hud-reload-bar-wrap" class="hud-reload-bar-wrap" hidden>
+        <div id="hud-reload-fill" class="hud-reload-fill"></div>
+        <span class="reload-text" id="hud-reload-text">RELOADING [R]</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Vehicle Telemetry Cockpit (When Driving) -->
+  <div id="hud-vehicle-dock" class="hud-vehicle-dock" hidden>
+    <div class="veh-dock-header">
+      <span class="veh-icon" id="veh-hud-icon">🚗</span>
+      <span class="veh-title" id="veh-hud-name">INTERCEPTOR PATROL CAR</span>
+      <span class="veh-gear" id="veh-hud-gear">DRIVE</span>
+    </div>
+    <div class="veh-gauges">
+      <div class="veh-speed-box">
+        <span class="speed-num" id="veh-hud-speed">0</span>
+        <span class="speed-unit">KM/H</span>
+      </div>
+      <div class="veh-bars">
+        <div class="veh-bar-row">
+          <span class="v-bar-lbl">🛡️ HULL</span>
+          <div class="v-track"><div id="veh-hull-fill" class="v-fill hull-fill" style="width: 100%;"></div></div>
+          <span class="v-val" id="veh-hull-val">100%</span>
+        </div>
+        <div class="veh-bar-row">
+          <span class="v-bar-lbl">⛽ FUEL</span>
+          <div class="v-track"><div id="veh-fuel-fill" class="v-fill fuel-fill" style="width: 100%;"></div></div>
+          <span class="v-val" id="veh-fuel-val">100%</span>
+        </div>
+      </div>
+      <div class="veh-nitro-chip" id="veh-nitro-chip">⚡ NITRO [Shift]</div>
+    </div>
+  </div>
 </div>
 
 <!-- Shelter Tycoon Modal -->

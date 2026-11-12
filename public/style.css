@@ -176,3 +176,152 @@ table{width:100%;border-collapse:collapse}td,th{padding:6px 8px;text-align:left;
 .rb-btn.need-cores{background:#1e293b;color:#64748b;cursor:not-allowed}
 .rb-btn.unlocked-btn{background:#065f46;color:#6ee7b7;cursor:default}
 
+/* ═════════════════ TACTICAL SURVIVAL HUD SYSTEM ═════════════════ */
+.hud-vignette{position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at center,transparent 52%,rgba(220,38,38,.5) 100%);z-index:9;animation:vignettePulse 1s infinite alternate}
+@keyframes vignettePulse{0%{opacity:.4}100%{opacity:.95}}
+@keyframes hpBlink{0%{filter:brightness(1)}100%{filter:brightness(1.6);box-shadow:0 0 20px rgba(239,68,68,.95)}}
+@keyframes ecgBeat{0%{transform:scale(1)}20%{transform:scale(1.22);filter:drop-shadow(0 0 6px #ef4444)}40%{transform:scale(1)}100%{transform:scale(1)}}
+@keyframes radarSweepSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+
+/* Vector SVG Icon Styles */
+.hud-svg-icon{display:inline-block;vertical-align:middle;flex-shrink:0;transition:all .15s}
+.hud-svg-icon.red{color:#ef4444;filter:drop-shadow(0 0 4px rgba(239,68,68,.5))}
+.hud-svg-icon.pulse-ecg{animation:ecgBeat 1.1s infinite ease-in-out}
+.hud-svg-icon.cyan{color:#00e5ff;filter:drop-shadow(0 0 4px rgba(0,229,255,.5))}
+.hud-svg-icon.amber{color:#f59e0b;filter:drop-shadow(0 0 4px rgba(245,158,11,.5))}
+.hud-svg-icon.orange{color:#fb923c;filter:drop-shadow(0 0 4px rgba(251,146,60,.5))}
+.hud-svg-icon.lime{color:#84cc16;filter:drop-shadow(0 0 4px rgba(132,204,22,.5))}
+
+/* Top Status Banner (Aligned top-left / center) */
+.hud-topbar{position:fixed;top:14px;left:20px;z-index:10;pointer-events:none}
+.hud-top-content{display:flex;align-items:center;gap:12px;background:rgba(8,12,18,.88);border:1px solid rgba(255,255,255,.14);border-radius:24px;padding:6px 18px;backdrop-filter:blur(10px);box-shadow:0 6px 24px rgba(0,0,0,.6);font-size:11.5px;font-weight:700}
+.hud-sector-badge{color:#38bdf8;letter-spacing:.6px}
+.hud-clock{color:#94a3b8;font-family:ui-monospace,monospace}
+.hud-scrap-chip{display:flex;align-items:center;gap:5px;color:#ffd166}
+.hud-cores-chip{display:flex;align-items:center;gap:5px;color:#c084fc}
+
+/* ═════════════════ TOP-RIGHT TACTICAL RADAR MINIMAP ═════════════════ */
+.hud-minimap-dock{position:fixed;top:14px;right:20px;z-index:10;pointer-events:auto}
+.minimap-bezel{background:rgba(8,12,20,.92);border:1.5px solid rgba(0,229,255,.35);border-radius:14px;padding:8px 10px;box-shadow:0 8px 32px rgba(0,0,0,.75),0 0 16px rgba(0,229,255,.15);backdrop-filter:blur(12px);display:flex;flex-direction:column;align-items:center;width:236px}
+.minimap-header{display:flex;justify-content:space-between;align-items:center;width:100%;margin-bottom:6px;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:4px}
+.mm-title-row{display:flex;align-items:center;gap:5px}
+.mm-radar-dot{width:7px;height:7px;border-radius:50%;background:#00e5ff;box-shadow:0 0 8px #00e5ff;animation:radarDot 1.4s infinite alternate}
+@keyframes radarDot{0%{opacity:.4}100%{opacity:1}}
+.mm-title-text{font-size:10.5px;font-weight:900;color:#f8fafc;letter-spacing:.8px}
+.mm-range-chip{font-size:9px;font-weight:800;color:#00e5ff;background:rgba(0,229,255,.14);border:1px solid rgba(0,229,255,.3);padding:1px 5px;border-radius:4px}
+.mm-bearing-text{font-family:ui-monospace,monospace;font-size:10.5px;font-weight:800;color:#ffd166}
+
+.minimap-glass{position:relative;width:220px;height:220px;border-radius:50%;overflow:hidden;background:#05080f;border:1.5px solid rgba(0,229,255,.4);box-shadow:inset 0 0 20px rgba(0,0,0,.9),0 0 12px rgba(0,229,255,.2)}
+#minimap-canvas{display:block;width:220px;height:220px;border-radius:50%}
+.minimap-reticle-ring{position:absolute;inset:25px;border:1px dashed rgba(0,229,255,.22);border-radius:50%;pointer-events:none}
+.minimap-reticle-ring::before{content:'';position:absolute;inset:30px;border:1px solid rgba(0,229,255,.18);border-radius:50%}
+.minimap-cardinal{position:absolute;font-size:10px;font-weight:900;color:#00e5ff;pointer-events:none;text-shadow:0 0 4px #000,0 0 6px #00e5ff}
+.minimap-cardinal.n{top:4px;left:50%;transform:translateX(-50%);color:#ffd166}
+.minimap-cardinal.s{bottom:4px;left:50%;transform:translateX(-50%)}
+.minimap-cardinal.w{left:6px;top:50%;transform:translateY(-50%)}
+.minimap-cardinal.e{right:6px;top:50%;transform:translateY(-50%)}
+
+.minimap-footer{display:flex;justify-content:space-between;align-items:center;width:100%;margin-top:6px;padding-top:4px;border-top:1px solid rgba(255,255,255,.08)}
+.minimap-coords{font-family:ui-monospace,monospace;font-size:9.5px;font-weight:700;color:#94a3b8}
+.minimap-controls{display:flex;gap:4px}
+.mm-btn{background:rgba(15,23,42,.9);border:1px solid rgba(255,255,255,.15);border-radius:4px;color:#cbd5e1;font-size:11px;font-weight:800;padding:2px 7px;cursor:pointer;transition:all .15s}
+.mm-btn:hover{background:#00e5ff;color:#000;border-color:#00e5ff;box-shadow:0 0 8px rgba(0,229,255,.5)}
+.mm-map-btn{font-size:9.5px;letter-spacing:.5px;padding:2px 8px;background:rgba(0,229,255,.12);color:#00e5ff;border-color:rgba(0,229,255,.3)}
+
+/* ═════════════════ BOTTOM-LEFT BIOMETRICS ═════════════════ */
+.hud-biometrics{position:fixed;left:20px;bottom:20px;width:280px;z-index:10;pointer-events:none;display:flex;flex-direction:column;gap:6px}
+.hud-bar-wrap{background:rgba(8,12,20,.92);border:1px solid rgba(255,255,255,.14);border-radius:10px;padding:7px 12px;backdrop-filter:blur(12px);box-shadow:0 6px 24px rgba(0,0,0,.65)}
+.hud-bar-label{display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:800;letter-spacing:.6px;margin-bottom:4px}
+.health-wrap .bar-title{color:#ff4d4d;display:flex;align-items:center;gap:6px}
+.stamina-wrap .bar-title{color:#fbbf24;display:flex;align-items:center;gap:6px}
+.shield-wrap .bar-title{color:#00e5ff;display:flex;align-items:center;gap:6px}
+.bar-num{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;font-weight:800;color:#f8fafc}
+
+.hud-bar-track{height:13px;background:rgba(0,0,0,.75);border-radius:4px;overflow:hidden;position:relative;border:1px solid rgba(255,255,255,.08);box-shadow:inset 0 1px 4px rgba(0,0,0,.8)}
+.hud-bar-fill{height:100%;transition:width .12s cubic-bezier(0,0,.2,1);border-radius:3px}
+.health-fill{background:linear-gradient(90deg,#991b1b 0%,#ef4444 65%,#f87171 100%);box-shadow:0 0 12px rgba(239,68,68,.75)}
+.health-fill.critical{animation:hpBlink .45s infinite alternate}
+.stamina-fill{background:linear-gradient(90deg,#b45309 0%,#f59e0b 60%,#fde047 100%);box-shadow:0 0 12px rgba(245,158,11,.7)}
+.shield-fill{background:linear-gradient(90deg,#0369a1 0%,#00e5ff 100%);box-shadow:0 0 12px rgba(0,229,255,.75)}
+
+.hud-sub-vitals{display:flex;gap:10px;align-items:center;background:rgba(8,12,20,.88);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:5px 12px;backdrop-filter:blur(10px)}
+.vital-mini{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#cbd5e1}
+.vital-mini.infect{color:#a3e635}
+.status-badges{display:flex;gap:4px;margin-left:auto}
+.status-badge{font-size:9px;font-weight:900;padding:2px 6px;border-radius:4px;letter-spacing:.5px;border:1px solid currentColor}
+.status-badge.dead{background:rgba(239,68,68,.2);color:#ef4444;border-color:#ef4444}
+.status-badge.bleed{background:rgba(239,68,68,.2);color:#ff4d4d;border-color:#ff4d4d;animation:vignettePulse .8s infinite alternate}
+.status-badge.fracture{background:rgba(245,158,11,.2);color:#f59e0b;border-color:#f59e0b}
+.status-badge.burn{background:rgba(249,115,22,.2);color:#f97316;border-color:#f97316}
+.status-badge.buff{background:rgba(56,189,248,.2);color:#38bdf8;border-color:#38bdf8}
+
+/* ═════════════════ BOTTOM-RIGHT WEAPON SELECTION & AMMO HUD ═════════════════ */
+.hud-weapon-deck{position:fixed;right:20px;bottom:20px;left:auto;transform:none;display:flex;flex-direction:column;align-items:flex-end;gap:8px;z-index:10;pointer-events:auto}
+
+/* 5-Slot Equipment Selector Hotbar (Positioned above gun card on the right) */
+.hud-hotbar{display:flex;gap:6px;justify-content:flex-end}
+.hud-slot{width:72px;height:48px;background:rgba(8,12,20,.88);border:1.5px solid rgba(255,255,255,.12);border-radius:8px;padding:3px 6px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;transition:all .16s ease-out;position:relative;backdrop-filter:blur(8px);box-shadow:0 4px 16px rgba(0,0,0,.5)}
+.hud-slot:hover{border-color:#00e5ff;transform:translateY(-2px);background:rgba(16,24,38,.96);box-shadow:0 4px 20px rgba(0,229,255,.25)}
+.hud-slot.active-slot{border-color:#ffd166;background:rgba(26,35,52,.96);box-shadow:0 0 16px rgba(255,209,102,.5),inset 0 0 10px rgba(255,209,102,.2);transform:translateY(-3px)}
+.slot-num{font-size:9px;font-weight:900;color:#64748b}
+.hud-slot.active-slot .slot-num{color:#ffd166}
+.slot-icon{display:flex;align-items:center;justify-content:center;height:18px}
+.slot-icon svg{width:26px;height:14px;color:#cbd5e1}
+.hud-slot.active-slot .slot-icon svg{color:#ffd166;filter:drop-shadow(0 0 4px rgba(255,209,102,.6))}
+.slot-name{font-size:9.5px;font-weight:700;color:#cbd5e1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
+.slot-ammo{font-size:9px;font-family:ui-monospace,monospace;font-weight:700;color:#94a3b8;text-align:right}
+
+/* Active Gun Munitions Card */
+.hud-active-gun-card{width:380px;max-width:92vw;background:rgba(8,12,22,.94);border:1.5px solid rgba(0,229,255,.3);border-radius:12px;padding:10px 14px;backdrop-filter:blur(14px);position:relative;overflow:hidden;box-shadow:0 10px 36px rgba(0,0,0,.75),0 0 16px rgba(0,229,255,.1)}
+.gun-card-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:5px}
+.gun-cat-tag{font-size:9.5px;font-weight:900;color:#00e5ff;letter-spacing:1px;text-transform:uppercase}
+.gun-fire-modes{display:flex;gap:4px}
+.fire-mode-pip{font-size:8.5px;font-weight:900;letter-spacing:.5px;padding:1px 6px;border-radius:3px;background:rgba(255,255,255,.06);color:#64748b;border:1px solid rgba(255,255,255,.06)}
+.fire-mode-pip.active{background:rgba(0,229,255,.18);color:#00e5ff;border-color:rgba(0,229,255,.4);box-shadow:0 0 8px rgba(0,229,255,.4)}
+
+.gun-card-main{display:flex;align-items:center;gap:12px}
+.gun-icon-box{width:64px;height:38px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.08);border-radius:6px;flex-shrink:0}
+.gun-icon-box svg{width:56px;height:30px;color:#00e5ff;filter:drop-shadow(0 0 6px rgba(0,229,255,.5))}
+.gun-info-block{flex:1;min-width:0}
+.gun-name{font-size:14px;font-weight:900;color:#ffffff;letter-spacing:.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gun-caliber{font-size:10px;font-weight:700;color:#94a3b8;margin-top:2px}
+
+.gun-ammo-block{text-align:right;flex-shrink:0}
+.ammo-display{display:flex;align-items:baseline;justify-content:flex-end;gap:2px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.ammo-current{font-size:32px;font-weight:900;color:#ffd166;text-shadow:0 0 16px rgba(255,209,102,.5);line-height:1}
+.ammo-current.empty{color:#ef4444;text-shadow:0 0 16px rgba(239,68,68,.7);animation:hpBlink .5s infinite alternate}
+.ammo-slash{font-size:18px;color:#64748b;margin:0 2px}
+.ammo-reserve{font-size:15px;font-weight:800;color:#94a3b8}
+.ammo-label{font-size:8.5px;font-weight:900;color:#64748b;letter-spacing:1px;margin-top:2px}
+
+/* Magazine Capacity Visualizer Bar */
+.mag-visualizer{height:4px;background:rgba(0,0,0,.6);border-radius:2px;overflow:hidden;margin-top:8px;border:1px solid rgba(255,255,255,.06)}
+.mag-visualizer-fill{height:100%;background:linear-gradient(90deg,#00e5ff,#ffd166);border-radius:2px;transition:width .1s}
+.mag-visualizer-fill.low-ammo{background:linear-gradient(90deg,#b91c1c,#ef4444);box-shadow:0 0 8px rgba(239,68,68,.7)}
+
+.hud-reload-bar-wrap{position:absolute;inset:0;background:rgba(10,16,28,.95);display:flex;align-items:center;justify-content:center;z-index:5}
+.hud-reload-fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,rgba(245,158,11,.3),rgba(245,158,11,.75));transition:width .08s linear}
+.reload-text{position:relative;font-size:12.5px;font-weight:900;color:#ffd166;letter-spacing:1.8px}
+
+/* Vehicle Cockpit Dashboard (When driving) */
+.hud-vehicle-dock{position:fixed;right:20px;bottom:20px;width:380px;max-width:94vw;background:rgba(8,12,22,.94);border:1.5px solid rgba(0,229,255,.45);border-radius:12px;padding:10px 16px;backdrop-filter:blur(14px);box-shadow:0 10px 36px rgba(0,229,255,.2);z-index:10;pointer-events:none}
+.veh-dock-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:5px}
+.veh-icon{font-size:18px}
+.veh-title{font-size:12px;font-weight:800;color:#f8fafc;letter-spacing:.5px}
+.veh-gear{font-size:11px;font-weight:800;color:#00e5ff;background:rgba(0,229,255,.15);border:1px solid rgba(0,229,255,.3);padding:2px 8px;border-radius:12px}
+.veh-gauges{display:flex;align-items:center;gap:14px}
+.veh-speed-box{display:flex;flex-direction:column;align-items:center;min-width:68px;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:4px 8px}
+.speed-num{font-size:24px;font-weight:900;color:#00e5ff;font-family:ui-monospace,monospace;line-height:1}
+.speed-unit{font-size:9px;font-weight:800;color:#64748b;letter-spacing:1px}
+.veh-bars{flex:1;display:flex;flex-direction:column;gap:5px}
+.veh-bar-row{display:flex;align-items:center;gap:6px}
+.v-bar-lbl{font-size:9.5px;font-weight:700;color:#94a3b8;min-width:55px}
+.v-track{flex:1;height:8px;background:rgba(0,0,0,.6);border-radius:4px;overflow:hidden;border:1px solid rgba(255,255,255,.08)}
+.v-fill{height:100%;border-radius:3px;transition:width .1s}
+.hull-fill{background:linear-gradient(90deg,#10b981,#34d399)}
+.fuel-fill{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+.v-val{font-size:10px;font-family:ui-monospace,monospace;font-weight:700;color:#f8fafc;min-width:32px;text-align:right}
+.veh-nitro-chip{font-size:10px;font-weight:800;color:#a855f7;background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.35);padding:4px 8px;border-radius:6px;text-align:center}
+
+
+
