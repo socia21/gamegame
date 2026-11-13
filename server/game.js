@@ -11,6 +11,23 @@ const LOOT = require('./data/loot');
 
 const accounts = require('./accounts');
 const {PLOTS, UPGRADES, REBORN_PERKS, computePlotLevel, computePlotSize, getUpgradeCost} = require('./data/shelter');
+const {INTERIORS, RAID_BUNKERS} = require('./data/interiors');
+
+const CAMPAIGN = [
+  { id: 0, title: 'Ch. 1: First Blood', desc: 'Eliminate 5 Infected', evt: 'kill', target: 5, scrap: 120, cores: 2 },
+  { id: 1, title: 'Ch. 2: Mobile Survivor', desc: 'Find & Drive any Vehicle', evt: 'drive', target: 1, scrap: 150, cores: 2 },
+  { id: 2, title: 'Ch. 3: Claim Sanctuary', desc: 'Claim a Shelter Outpost [E]', evt: 'claim_plot', target: 1, scrap: 260, cores: 3 },
+  { id: 3, title: 'Ch. 4: Going Underground', desc: 'Enter Shelter Bunker or Raid Vault [E]', evt: 'enter_bunker', target: 1, scrap: 300, cores: 3 },
+  { id: 4, title: 'Ch. 5: Fortify & Automate', desc: 'Build 3 Shelter Upgrades [T]', evt: 'upgrade', target: 3, scrap: 480, cores: 4 },
+  { id: 5, title: 'Ch. 6: Wasteland Purge', desc: 'Slay 20 Infected (or 1 Boss)', evt: 'kill_elite', target: 20, scrap: 750, cores: 6 },
+  { id: 6, title: 'Ch. 7: Operation Exodus', desc: 'Build Exodus Beacon Stage 1+ [T]', evt: 'beacon', target: 1, scrap: 1500, cores: 12 }
+];
+const CONTRACTS = [
+  { id: 'c_kill', title: 'Infected Purge', desc: 'Eliminate 10 Infected', evt: 'kill', target: 10, scrap: 150, cores: 1 },
+  { id: 'c_loot', title: 'Scavenger Run', desc: 'Loot 5 Items or Crates', evt: 'loot', target: 5, scrap: 130, cores: 1 },
+  { id: 'c_road', title: 'Road Warrior', desc: 'Run over 4 Infected in a Vehicle', evt: 'roadkill', target: 4, scrap: 180, cores: 2 },
+  { id: 'c_vault', title: 'Bunker Ops', desc: 'Use Vault Locker or Upgrade Shelter', evt: 'bunker_op', target: 1, scrap: 220, cores: 2 }
+];
 
 const THEME_DENS = {city:16,gov:14,culture:14,sports:14,historic:12,rural:10,alpine:8,volcanic:8,karst:8,coast:8,desert:8,saltflat:6,canyon:8,lakes:8,reef:5};
 const MAXZ = 280;
@@ -104,7 +121,8 @@ class Game {
 
     this.mapJSON = JSON.stringify({W: M.W, H: M.H, TS: M.TS, tiles: Buffer.from(M.tiles).toString('base64'), region: Buffer.from(M.region).toString('base64'),
       rects: M.rects, styles: M.styles, landmarks: M.landmarks, zones: M.zones, themes: M.themes, rnames: M.rnames});
-    this.defsJSON = JSON.stringify({W: WLIST.map(k => WEAPONS[k]), AMMO, ITEMS, STRUCTS, RECIPES, VEH, VLIST, ZD, ZLIST, TILES: PROPS, TEAMS: TEAM_NAMES, PLOTS, UPGRADES, REBORN_PERKS});
+    this.defsJSON = JSON.stringify({W: WLIST.map(k => WEAPONS[k]), AMMO, ITEMS, STRUCTS, RECIPES, VEH, VLIST, ZD, ZLIST, TILES: PROPS, TEAMS: TEAM_NAMES, PLOTS, UPGRADES, REBORN_PERKS, INTERIORS, RAID_BUNKERS});
+    this.raidInit = {};
     this.initLoot(); this.initVehicles();
     console.log(`[game] ${this.items.size} ground items, ${this.vehicles.size} vehicles, ${this.plots.size} shelter plots. Init payload ${(this.mapJSON.length / 1024).toFixed(0)} KB`);
   }
@@ -112,11 +130,25 @@ class Game {
   tileAt(x, y) { const tx = Math.floor(x / this.TS), ty = Math.floor(y / this.TS); if (tx < 0 || ty < 0 || tx >= this.W || ty >= this.W) return 0; return this.tiles[ty * this.W + tx]; }
   themeAt(x, y) { const tx = clamp(Math.floor(x / this.TS), 0, this.W - 1), ty = clamp(Math.floor(y / this.TS), 0, this.W - 1); return this.M.themes[this.M.region[ty * this.W + tx]]; }
   gridName(x, y) { return String.fromCharCode(65 + clamp(Math.floor(x / 1600), 0, 19)) + (clamp(Math.floor(y / 1600), 0, 19) + 1); }
-  playerNear(x, y, r) { for (const p of this.players.values()) if (!p.dead && d2(p.x, p.y, x, y) < r * r) return true; return false; }
-  randomPlayer() { const a = [...this.players.values()].filter(p => !p.dead); return a.length ? a[Math.floor(rnd() * a.length)] : null; }
+  playerNear(x, y, r, zone = 'world') { for (const p of this.players.values()) if (!p.dead && (p.zone || 'world') === zone && d2(p.x, p.y, x, y) < r * r) return true; return false; }
+  randomPlayer() { const a = [...this.players.values()].filter(p => !p.dead && (p.zone || 'world') === 'world'); return a.length ? a[Math.floor(rnd() * a.length)] : null; }
 
   // ───────── collision ─────────
-  blockedAt(x, y, r, kind, entity) {
+  interiorDef(zone) {
+    if (!zone || zone === 'world') return null;
+    return zone.startsWith('raid_') ? INTERIORS.raid : INTERIORS.bunker;
+  }
+  blockedAt(x, y, r, kind, entity, forceZone) {
+    const zone = forceZone || (entity && entity.zone) || 'world';
+    if (zone !== 'world') {
+      const idef = this.interiorDef(zone);
+      if (!idef) return HIT_OOB;
+      if (x < 28 + r || y < 28 + r || x > idef.w - 28 - r || y > idef.h - 28 - r) return HIT_OOB;
+      for (const w of idef.walls) if (circleRect(x, y, r, w[0], w[1], w[2], w[3])) return HIT_RECT;
+      tmpB.length = 0; this.sh.query(x, y, r + 100, tmpB);
+      for (const s of tmpB) { if ((s.zone || 'world') !== zone) continue; if (s.def.block === 0 || (s.def.door && s.open)) continue; if (circleRect(x, y, r, s.x - s.w / 2, s.y - s.h / 2, s.w, s.h)) return s; }
+      return null;
+    }
     if (x < r || y < r || x > this.WP - r || y > this.HP - r) return HIT_OOB;
     if (kind === 'fly') return null;
     const TS = this.TS, W = this.W, tl = this.tiles;
@@ -129,7 +161,7 @@ class Game {
     tmpA.length = 0; this.rgrid.query(x - r, y - r, x + r, y + r, tmpA);
     for (const q of tmpA) if (circleBuildingCollide(x, y, r, q)) return HIT_RECT;
     tmpB.length = 0; this.sh.query(x, y, r + 100, tmpB);
-    for (const s of tmpB) { if (s.def.block === 0 || (s.def.door && s.open)) continue; if (circleRect(x, y, r, s.x - s.w / 2, s.y - s.h / 2, s.w, s.h)) return s; }
+    for (const s of tmpB) { if ((s.zone || 'world') !== 'world') continue; if (s.def.block === 0 || (s.def.door && s.open)) continue; if (circleRect(x, y, r, s.x - s.w / 2, s.y - s.h / 2, s.w, s.h)) return s; }
     // 16 Designated Shelter Tycoon Plots (walls and airlock gates)
     for (const plot of this.plots.values()) {
       if (Math.abs(plot.x - x) > 550 || Math.abs(plot.y - y) > 550) continue;
@@ -140,16 +172,55 @@ class Game {
   }
   moveCircle(e, dx, dy, r, kind) {
     const dist = Math.abs(dx) + Math.abs(dy); if (dist < 0.01) return null;
-    if (this.blockedAt(e.x, e.y, r, kind, e)) { e.x = clamp(e.x + dx, r, this.WP - r); e.y = clamp(e.y + dy, r, this.HP - r); return null; }
+    const zone = (e && e.zone) || 'world';
+    if (this.blockedAt(e.x, e.y, r, kind, e, zone)) {
+      if (zone === 'world') { e.x = clamp(e.x + dx, r, this.WP - r); e.y = clamp(e.y + dy, r, this.HP - r); }
+      return null;
+    }
     const steps = Math.max(1, Math.ceil(dist / (r * 0.6))), sx = dx / steps, sy = dy / steps; let hit = null;
     for (let i = 0; i < steps; i++) {
-      let h = this.blockedAt(e.x + sx, e.y, r, kind, e); if (!h) e.x += sx; else if (!hit || h.def) hit = h;
-      h = this.blockedAt(e.x, e.y + sy, r, kind, e); if (!h) e.y += sy; else if (!hit || h.def) hit = h;
+      let h = this.blockedAt(e.x + sx, e.y, r, kind, e, zone); if (!h) e.x += sx; else if (!hit || h.def) hit = h;
+      h = this.blockedAt(e.x, e.y + sy, r, kind, e, zone); if (!h) e.y += sy; else if (!hit || h.def) hit = h;
     }
     return hit;
   }
-  findFree(x, y, r, kind) {
-    for (let rad = 0; rad < 600; rad += 30) for (let k = 0; k < 12; k++) { const a = k / 12 * Math.PI * 2, px = x + Math.cos(a) * rad, py = y + Math.sin(a) * rad; if (!this.blockedAt(px, py, r, kind)) return [px, py]; }
+  moveVehicle(v, dx, dy, r, kind) {
+    const dist = Math.abs(dx) + Math.abs(dy); if (dist < 0.01) return {hit: null, bx: false, by: false};
+    if (this.blockedAt(v.x, v.y, r, kind, v, 'world')) {
+      let rescued = false;
+      for (const rad of [6, 14, 24, 38]) {
+        for (let k = 0; k < 8 && !rescued; k++) {
+          const ang = k * Math.PI * 0.25, px = v.x + Math.cos(ang) * rad, py = v.y + Math.sin(ang) * rad;
+          if (!this.blockedAt(px, py, r, kind, v, 'world')) { v.x = px; v.y = py; rescued = true; }
+        }
+        if (rescued) break;
+      }
+      if (!rescued) return {hit: HIT_RECT, bx: true, by: true};
+    }
+    const steps = Math.max(1, Math.ceil(dist / Math.max(6, r * 0.45))), sx = dx / steps, sy = dy / steps;
+    let hit = null, bx = false, by = false;
+    for (let i = 0; i < steps; i++) {
+      let h = this.blockedAt(v.x + sx, v.y, r, kind, v, 'world');
+      if (!h) v.x += sx;
+      else {
+        bx = true; if (!hit || h.def) hit = h;
+        const nudge = Math.abs(sx) * 0.55;
+        if (!this.blockedAt(v.x + sx, v.y + nudge, r, kind, v, 'world')) { v.x += sx; v.y += nudge; }
+        else if (!this.blockedAt(v.x + sx, v.y - nudge, r, kind, v, 'world')) { v.x += sx; v.y -= nudge; }
+      }
+      h = this.blockedAt(v.x, v.y + sy, r, kind, v, 'world');
+      if (!h) v.y += sy;
+      else {
+        by = true; if (!hit || h.def) hit = h;
+        const nudge = Math.abs(sy) * 0.55;
+        if (!this.blockedAt(v.x + nudge, v.y + sy, r, kind, v, 'world')) { v.x += nudge; v.y += sy; }
+        else if (!this.blockedAt(v.x - nudge, v.y + sy, r, kind, v, 'world')) { v.x -= nudge; v.y += sy; }
+      }
+    }
+    return {hit, bx, by};
+  }
+  findFree(x, y, r, kind, zone = 'world') {
+    for (let rad = 0; rad < 600; rad += 30) for (let k = 0; k < 12; k++) { const a = k / 12 * Math.PI * 2, px = x + Math.cos(a) * rad, py = y + Math.sin(a) * rad; if (!this.blockedAt(px, py, r, kind, null, zone)) return [px, py]; }
     return [x, y];
   }
   rectAtPoint(px, py) { tmpA.length = 0; this.rgrid.query(px, py, px, py, tmpA); for (const r of tmpA) if (px >= r[0] && px <= r[0] + r[2] && py >= r[1] && py <= r[1] + r[3]) return true; return false; }
@@ -198,7 +269,11 @@ class Game {
       rebornPerks: account ? (account.rebornPerks || {}) : {},
       hardlightShield: (account && account.rebornPerks && account.rebornPerks.hardlight_shield) ? 150 : 0,
       plotId: account ? account.plotId : null,
-      upgrades: account ? (account.upgrades || {}) : {}};
+      upgrades: account ? (account.upgrades || {}) : {},
+      zone: 'world', surfX: 0, surfY: 0,
+      missionStep: 0, missionProg: 0,
+      contractIdx: 0, contractProg: 0,
+      stationCD: {}};
 
     if (p.plotId && this.plots.has(p.plotId)) {
       const plot = this.plots.get(p.plotId);
@@ -234,14 +309,14 @@ class Game {
     this.recalcWear(p); this.invChanged(p);
   }
   respawnPlayer(p) {
-    Object.assign(p, {hp: 100, st: 100, hu: 100, th: 100, inf: 0, bleed: false, frac: false, buf: {}, dead: false, veh: null, seat: -1, spawnProt: this.now + 4000, reloadUntil: 0, light: false});
+    Object.assign(p, {hp: 100, st: 100, hu: 100, th: 100, inf: 0, bleed: false, frac: false, buf: {}, dead: false, veh: null, seat: -1, spawnProt: this.now + 4000, reloadUntil: 0, light: false, zone: 'world'});
     const [x, y] = this.spawnPos(p); p.x = x; p.y = y; this.forcePos(p); this.giveKit(p); p.dirty = true;
   }
   spawnPos(p) {
-    if (p.plot && !this.blockedAt(p.plot.x, p.plot.y, 18, 'walk')) return [p.plot.x + R(-30, 30), p.plot.y + R(-30, 30)];
+    if (p.plot && !this.blockedAt(p.plot.x, p.plot.y, 18, 'walk', null, 'world')) return [p.plot.x + R(-30, 30), p.plot.y + 70];
     let list = this.M.spawns; if (this.settings.mode === 'teams' && p.team > 0 && this.M.teamSpawns[p.team - 1].length) list = this.M.teamSpawns[p.team - 1];
-    for (let t = 0; t < 40; t++) { const s = list[Math.floor(rnd() * list.length)]; const x = s[0] + R(-60, 60), y = s[1] + R(-60, 60); if (!this.blockedAt(x, y, 18, 'walk')) return [x, y]; }
-    return this.findFree(list[0][0], list[0][1], 18, 'walk');
+    for (let t = 0; t < 40; t++) { const s = list[Math.floor(rnd() * list.length)]; const x = s[0] + R(-60, 60), y = s[1] + R(-60, 60); if (!this.blockedAt(x, y, 18, 'walk', null, 'world')) return [x, y]; }
+    return this.findFree(list[0][0], list[0][1], 18, 'walk', 'world');
   }
   forcePos(p) { p.ps++; p.mb = 0; }
   knockPlayer(p, kx, ky) { if (p.veh || p.dead) return; this.moveCircle(p, kx, ky, p.r, 'walk'); this.forcePos(p); }
@@ -297,6 +372,7 @@ class Game {
     this.msg(p, `🏰 Claimed ${pl.name}! Press [T] to build shelter upgrades.`);
     this.feed(`🏰 ${p.name} established a shelter at ${pl.name}!`);
     if (p.accountName) accounts.savePlotProgress(p.accountName, pl.id, pl.upgrades, p.scrap);
+    this.progressMission(p, 'claim_plot', 1);
     this.broadcastPlots();
     this.sendPlotDetail(p, pl.id);
   }
@@ -319,7 +395,12 @@ class Game {
     pl.level = computePlotLevel(pl.upgrades);
     p.upgrades = pl.upgrades;
     this.msg(p, `⚙️ Upgraded ${upg.name} to Level ${pl.upgrades[key]}!`);
-    this.ev.push({x: pl.x, y: pl.y, d: ['upg', Math.round(pl.x), Math.round(pl.y)]});
+    this.ev.push({x: pl.x, y: pl.y, zone: 'world', d: ['upg', Math.round(pl.x), Math.round(pl.y)]});
+    this.progressMission(p, 'upgrade', 1);
+    this.progressMission(p, 'bunker_op', 1);
+    if (key === 'evac_beacon') {
+      this.progressMission(p, 'beacon', 1);
+    }
     if (key === 'evac_beacon' && pl.upgrades[key] === 5) {
       pl.evacActive = true;
       pl.evacTimer = this.now + 180000;
@@ -330,15 +411,43 @@ class Game {
     this.broadcastPlots();
     this.sendPlotDetail(p, pl.id);
   }
-  awardScrap(p, amount, x, y) {
+  awardScrap(p, amount, x, y, zone) {
     if (!p) return;
     let mult = 1 + (p.rebirths || 0) * 0.25;
     if (p.rebornPerks && p.rebornPerks.quantum_scavenger) mult += p.rebornPerks.quantum_scavenger * 0.3;
     if (p.plot && p.plot.upgrades && p.plot.upgrades.scrap_smelter) mult += p.plot.upgrades.scrap_smelter * 0.25;
     const finalAmt = Math.max(1, Math.round(amount * mult));
     p.scrap = (p.scrap || 0) + finalAmt;
-    this.ev.push({x, y, d: ['sc_add', finalAmt, Math.round(x), Math.round(y)]});
+    this.ev.push({x, y, zone: zone || p.zone || 'world', d: ['sc_add', finalAmt, Math.round(x), Math.round(y)]});
     if (p.accountName && this.tickN % 15 === 0) accounts.savePlotProgress(p.accountName, p.plotId, p.plot ? p.plot.upgrades : p.upgrades, p.scrap);
+  }
+  progressMission(p, evt, amt = 1) {
+    if (!p || !amt) return;
+    const ch = CAMPAIGN[p.missionStep];
+    if (ch && ch.evt === evt) {
+      p.missionProg = Math.min(ch.target, (p.missionProg || 0) + amt);
+      if (p.missionProg >= ch.target) {
+        p.scrap = (p.scrap || 0) + ch.scrap;
+        p.prestigeTokens = (p.prestigeTokens || 0) + ch.cores;
+        this.send(p, {t: 'mission_done', title: ch.title, scrap: ch.scrap, cores: ch.cores});
+        this.msg(p, `🏆 ${ch.title} Complete! +${ch.scrap} Scrap · +${ch.cores} ⚛️ Cores`);
+        if (p.missionStep < CAMPAIGN.length - 1) {
+          p.missionStep++;
+          p.missionProg = 0;
+        }
+      }
+    }
+    const ct = CONTRACTS[p.contractIdx % CONTRACTS.length];
+    if (ct && ct.evt === evt) {
+      p.contractProg = Math.min(ct.target, (p.contractProg || 0) + amt);
+      if (p.contractProg >= ct.target) {
+        p.scrap = (p.scrap || 0) + ct.scrap;
+        p.prestigeTokens = (p.prestigeTokens || 0) + ct.cores;
+        this.msg(p, `📋 Contract Complete (${ct.title})! +${ct.scrap} Scrap · +${ct.cores} ⚛️`);
+        p.contractIdx = (p.contractIdx + 1) % CONTRACTS.length;
+        p.contractProg = 0;
+      }
+    }
   }
 
   onMessage(p, m) {
@@ -408,9 +517,10 @@ class Game {
       case 'quantum_recall': {
         if ((p.rebornPerks && p.rebornPerks.quantum_recall) || (p.plot && p.plot.upgrades && p.plot.upgrades.teleport_pad)) {
           if (!p.plot) { this.msg(p, 'You must claim a Shelter Plot to recall!'); return; }
-          p.x = p.plot.x; p.y = p.plot.y;
+          p.zone = 'world';
+          p.x = p.plot.x; p.y = p.plot.y + 70;
           this.forcePos(p);
-          this.ev.push({x: p.x, y: p.y, d: ['ring', Math.round(p.x), Math.round(p.y), 240, '#00e5ff']});
+          this.ev.push({x: p.x, y: p.y, zone: 'world', d: ['ring', Math.round(p.x), Math.round(p.y), 240, '#00e5ff']});
           this.msg(p, '🌀 Quantum Recall: Warped to Shelter!');
         } else {
           this.msg(p, 'Quantum Recall requires Quantum Recall Perk or Teleport Pad upgrade.');
@@ -498,7 +608,7 @@ class Game {
   countItem(p, k) { let c = 0; for (const it of p.inv) if (it.k === k) c += it.n; return c; }
   takeItem(p, k, n) { for (let i = p.inv.length - 1; i >= 0 && n > 0; i--) { const it = p.inv[i]; if (it.k !== k) continue; const a = Math.min(it.n, n); it.n -= a; n -= a; if (it.n <= 0) p.inv.splice(i, 1); } this.invChanged(p); }
   takeAt(p, i, n = 1) { const it = p.inv[i]; if (!it) return; it.n -= n; if (it.n <= 0) p.inv.splice(i, 1); this.invChanged(p); }
-  overflow(p) { while (p.inv.length > this.cap(p)) { const it = p.inv.pop(); this.createItem(p.x + R(-30, 30), p.y + R(-30, 30), {k: it.k, n: it.n}); } this.invChanged(p); }
+  overflow(p) { const zone = p.zone || 'world'; while (p.inv.length > this.cap(p)) { const it = p.inv.pop(); this.createItem(p.x + R(-30, 30), p.y + R(-30, 30), {k: it.k, n: it.n, zone}); } this.invChanged(p); }
 
   // ───────── weapons ─────────
   tryFire(p) {
@@ -567,59 +677,70 @@ class Game {
     }
   }
   ray(o, w, x, y, a, ignoreVeh) {
+    const zone = (o && o.zone) || 'world', idef = this.interiorDef(zone);
     const c = Math.cos(a), s = Math.sin(a), TS = this.TS, W = this.W, range = w.range || 800;
     let pierce = w.pierce || 1; const hit = new Set(); let ex = x, ey = y; const q = [];
     for (let d = 18; d <= range; d += 14) {
       const px = x + c * d, py = y + s * d; ex = px; ey = py;
-      if (px < 0 || py < 0 || px >= this.WP || py >= this.HP) break;
-      if (PROPS[this.tiles[Math.floor(py / TS) * W + Math.floor(px / TS)]].solid) break;
-      if (this.rectAtPoint(px, py)) break;
+      if (idef) {
+        if (px < 28 || py < 28 || px >= idef.w - 28 || py >= idef.h - 28) break;
+        let wallHit = false;
+        for (const wl of idef.walls) if (px >= wl[0] && px <= wl[0] + wl[2] && py >= wl[1] && py <= wl[1] + wl[3]) { wallHit = true; break; }
+        if (wallHit) break;
+      } else {
+        if (px < 0 || py < 0 || px >= this.WP || py >= this.HP) break;
+        if (PROPS[this.tiles[Math.floor(py / TS) * W + Math.floor(px / TS)]].solid) break;
+        if (this.rectAtPoint(px, py)) break;
+      }
       const st = this.structAtPoint(px, py);
-      if (st && !st.def.bp && st.def.block !== 0 && !(st.def.door && st.open)) { this.damageStruct(st, w.dmg * (w.svd || 1) * 0.5, o); break; }
+      if (st && (st.zone || 'world') === zone && !st.def.bp && st.def.block !== 0 && !(st.def.door && st.open)) { this.damageStruct(st, w.dmg * (w.svd || 1) * 0.5, o); break; }
       const dmg = w.dmg * (d > range * 0.65 ? 0.75 : 1);
       q.length = 0; this.zh.query(px, py, 64, q);
-      for (const z of q) { if (hit.has(z) || z.hp <= 0) continue; const zr = ZD[z.type].r + 4; if (d2(z.x, z.y, px, py) < zr * zr) { hit.add(z); this.hitZombie(z, dmg, o, w, a); if (--pierce <= 0) break; } }
+      for (const z of q) { if ((z.zone || 'world') !== zone || hit.has(z) || z.hp <= 0) continue; const zr = ZD[z.type].r + 4; if (d2(z.x, z.y, px, py) < zr * zr) { hit.add(z); this.hitZombie(z, dmg, o, w, a); if (--pierce <= 0) break; } }
       if (pierce <= 0) break;
-      q.length = 0; this.vh.query(px, py, 90, q); let stop = false;
-      for (const v of q) {
-        if (v === ignoreVeh || v.dead || hit.has(v)) continue; const vd = VEH[v.type];
-        if (d2(v.x, v.y, px, py) < vd.r * vd.r) {
-          hit.add(v); this.damageVehicle(v, dmg * (w.vdmg || 1) * 0.6, o);
-          if (vd.exposed) for (const pid of v.seats) { const pp = pid && this.players.get(pid); if (pp && pp !== o && this.canHurt(o, pp) && rnd() < 0.5) this.damagePlayer(pp, dmg * 0.8, 'bullet', o, null, w); }
-          stop = true; break;
+      if (zone === 'world') {
+        q.length = 0; this.vh.query(px, py, 90, q); let stop = false;
+        for (const v of q) {
+          if (v === ignoreVeh || v.dead || hit.has(v)) continue; const vd = VEH[v.type];
+          if (d2(v.x, v.y, px, py) < vd.r * vd.r) {
+            hit.add(v); this.damageVehicle(v, dmg * (w.vdmg || 1) * 0.6, o);
+            if (vd.exposed) for (const pid of v.seats) { const pp = pid && this.players.get(pid); if (pp && pp !== o && this.canHurt(o, pp) && rnd() < 0.5) this.damagePlayer(pp, dmg * 0.8, 'bullet', o, null, w); }
+            stop = true; break;
+          }
         }
+        if (stop) break;
       }
-      if (stop) break;
       for (const p of this.players.values()) {
-        if (p === o || p.dead || p.veh || hit.has(p)) continue;
+        if ((p.zone || 'world') !== zone || p === o || p.dead || p.veh || hit.has(p)) continue;
         if (d2(p.x, p.y, px, py) < 400) { if (!this.canHurt(o, p)) continue; hit.add(p); this.damagePlayer(p, dmg, 'bullet', o, null, w); if (--pierce <= 0) break; }
       }
       if (pierce <= 0) break;
     }
-    this.ev.push({x, y, d: ['tr', Math.round(x), Math.round(y), Math.round(ex), Math.round(ey), w.beam ? 2 : (w.pellets ? 1 : (w.dmg >= 80 ? 3 : 0))]});
+    this.ev.push({x, y, zone, d: ['tr', Math.round(x), Math.round(y), Math.round(ex), Math.round(ey), w.beam ? 2 : (w.pellets ? 1 : (w.dmg >= 80 ? 3 : 0))]});
   }
   melee(o, w, x, y, a) {
+    const zone = (o && o.zone) || 'world';
     const Rr = w.range || 70, arc = w.arc || 1.4; const max = w.pierce || (arc > 1.5 ? 3 : 1); let n = 0;
     const q = this.zh.query(x, y, Rr + 50, []); q.sort((A, B) => d2(A.x, A.y, x, y) - d2(B.x, B.y, x, y));
     for (const z of q) {
-      if (n >= max) break; const zr = ZD[z.type].r, d = Math.hypot(z.x - x, z.y - y); if (d > Rr + zr || z.hp <= 0) continue;
+      if ((z.zone || 'world') !== zone || n >= max) continue; const zr = ZD[z.type].r, d = Math.hypot(z.x - x, z.y - y); if (d > Rr + zr || z.hp <= 0) continue;
       if (Math.abs(angDiff(a, Math.atan2(z.y - y, z.x - x))) > arc / 2 && d > zr + 10) continue;
       let dmg = w.dmg; if (w.backstab && Math.abs(angDiff(z.a, a)) < 0.9) dmg *= w.backstab;
       this.hitZombie(z, dmg, o, w, a); n++;
     }
     if (n < max) for (const p of this.players.values()) {
-      if (n >= max) break; if (p === o || p.dead || (p.veh && !VEH[p.veh.type].exposed)) continue;
+      if ((p.zone || 'world') !== zone || n >= max) break; if (p === o || p.dead || (p.veh && !VEH[p.veh.type].exposed)) continue;
       const d = Math.hypot(p.x - x, p.y - y); if (d > Rr + p.r) continue; if (Math.abs(angDiff(a, Math.atan2(p.y - y, p.x - x))) > arc / 2) continue;
       if (!this.canHurt(o, p)) continue; this.damagePlayer(p, w.dmg, 'melee', o, null, w);
       if (w.knock && !p.veh) this.knockPlayer(p, Math.cos(a) * w.knock * 0.15, Math.sin(a) * w.knock * 0.15); n++;
     }
-    if (n < max) for (const v of this.vh.query(x, y, Rr + 60, [])) { if (v.dead || (o && v === o.veh)) continue; if (Math.hypot(v.x - x, v.y - y) < Rr + VEH[v.type].r) { this.damageVehicle(v, w.dmg * 0.3 * (w.svd || 1), o); n++; break; } }
-    if (n === 0) { const st = this.structAtPoint(x + Math.cos(a) * Rr * 0.8, y + Math.sin(a) * Rr * 0.8); if (st) this.damageStruct(st, w.dmg * (w.svd || 1), o); }
-    this.ev.push({x, y, d: ['sw', o ? o.id : 0, +a.toFixed(2), Math.round(Rr), +arc.toFixed(2)]});
+    if (zone === 'world' && n < max) for (const v of this.vh.query(x, y, Rr + 60, [])) { if (v.dead || (o && v === o.veh)) continue; if (Math.hypot(v.x - x, v.y - y) < Rr + VEH[v.type].r) { this.damageVehicle(v, w.dmg * 0.3 * (w.svd || 1), o); n++; break; } }
+    if (n === 0) { const st = this.structAtPoint(x + Math.cos(a) * Rr * 0.8, y + Math.sin(a) * Rr * 0.8); if (st && (st.zone || 'world') === zone) this.damageStruct(st, w.dmg * (w.svd || 1), o); }
+    this.ev.push({x, y, zone, d: ['sw', o ? o.id : 0, +a.toFixed(2), Math.round(Rr), +arc.toFixed(2)]});
   }
   spawnProj(o, w, x, y, a, ax, ay, ignoreVeh, grenade) {
-    const sp = w.proj || 650, c = Math.cos(a), s = Math.sin(a);
-    const pr = {id: this.id(), x: x + c * 20, y: y + s * 20, a, vx: c * sp, vy: s * sp, w, o, iv: ignoreVeh, born: this.now, die: this.now + ((w.range || 800) / sp) * 1000, hit: null, pierce: w.pierce || 1, z: 0};
+    const sp = w.proj || 650, c = Math.cos(a), s = Math.sin(a), zone = (o && o.zone) || 'world';
+    const pr = {id: this.id(), x: x + c * 20, y: y + s * 20, a, vx: c * sp, vy: s * sp, w, o, iv: ignoreVeh, zone, born: this.now, die: this.now + ((w.range || 800) / sp) * 1000, hit: null, pierce: w.pierce || 1, z: 0};
     if (w.mode === 'flame') pr.flame = true;
     if (w.lob || grenade) {
       let d = Math.hypot(ax - x, ay - y); d = clamp(d, w.minRange || 0, w.range || 700);
@@ -658,35 +779,42 @@ class Game {
     this.proj = out;
   }
   projStep(pr) {
-    const w = pr.w, x = pr.x, y = pr.y;
-    if (x < 0 || y < 0 || x >= this.WP || y >= this.HP) return true;
-    if (PROPS[this.tiles[Math.floor(y / this.TS) * this.W + Math.floor(x / this.TS)]].solid || this.rectAtPoint(x, y)) { if (w.radius) this.projImpact(pr, x, y); return true; }
+    const w = pr.w, x = pr.x, y = pr.y, zone = pr.zone || 'world', idef = this.interiorDef(zone);
+    if (idef) {
+      if (x < 28 || y < 28 || x >= idef.w - 28 || y >= idef.h - 28) { if (w.radius) this.projImpact(pr, x, y); return true; }
+      for (const wl of idef.walls) if (x >= wl[0] && x <= wl[0] + wl[2] && y >= wl[1] && y <= wl[1] + wl[3]) { if (w.radius) this.projImpact(pr, x, y); return true; }
+    } else {
+      if (x < 0 || y < 0 || x >= this.WP || y >= this.HP) return true;
+      if (PROPS[this.tiles[Math.floor(y / this.TS) * this.W + Math.floor(x / this.TS)]].solid || this.rectAtPoint(x, y)) { if (w.radius) this.projImpact(pr, x, y); return true; }
+    }
     const st = this.structAtPoint(x, y);
-    if (st && st.def.block !== 0 && !(st.def.door && st.open) && !(st.def.bp && !w.radius)) { if (w.radius) this.projImpact(pr, x, y); else this.damageStruct(st, w.dmg * (w.svd || 1) * 0.6, pr.o); return true; }
+    if (st && (st.zone || 'world') === zone && st.def.block !== 0 && !(st.def.door && st.open) && !(st.def.bp && !w.radius)) { if (w.radius) this.projImpact(pr, x, y); else this.damageStruct(st, w.dmg * (w.svd || 1) * 0.6, pr.o); return true; }
     if (pr.zom) {
       for (const p of this.players.values()) {
-        if (p.dead) continue;
-        if (d2(p.x, p.y, x, y) < (p.r + 6) ** 2) { if (p.veh && !VEH[p.veh.type].exposed) this.damageVehicle(p.veh, w.dmg, null); else this.damagePlayer(p, w.dmg, 'acid', null); this.addEffect('acid', x, y, 40, 4, {dps: 10}); return true; }
+        if ((p.zone || 'world') !== zone || p.dead) continue;
+        if (d2(p.x, p.y, x, y) < (p.r + 6) ** 2) { if (p.veh && !VEH[p.veh.type].exposed) this.damageVehicle(p.veh, w.dmg, null); else this.damagePlayer(p, w.dmg, 'acid', null); this.addEffect('acid', x, y, 40, 4, {dps: 10, zone}); return true; }
       }
       return false;
     }
     for (const z of this.zh.query(x, y, 60, [])) {
-      if (z.hp <= 0 || (pr.hit && pr.hit.has(z))) continue; const zr = ZD[z.type].r + (pr.flame ? 10 : 3);
+      if ((z.zone || 'world') !== zone || z.hp <= 0 || (pr.hit && pr.hit.has(z))) continue; const zr = ZD[z.type].r + (pr.flame ? 10 : 3);
       if (d2(z.x, z.y, x, y) < zr * zr) {
         if (w.radius) { this.projImpact(pr, x, y); return true; }
         (pr.hit || (pr.hit = new Set())).add(z); this.hitZombie(z, w.dmg, pr.o, w, pr.a); if (--pr.pierce <= 0 && !pr.flame) return true;
       }
     }
-    for (const v of this.vh.query(x, y, 90, [])) {
-      if (v === pr.iv || v.dead) continue; const vr = VEH[v.type].r;
-      if (d2(v.x, v.y, x, y) < vr * vr) {
-        if (w.radius) { this.projImpact(pr, x, y); return true; }
-        if (pr.flame) { if (pr.hit && pr.hit.has(v)) continue; (pr.hit || (pr.hit = new Set())).add(v); }
-        this.damageVehicle(v, w.dmg * (w.vdmg || 1) * 0.5, pr.o); if (!pr.flame) return true;
+    if (zone === 'world') {
+      for (const v of this.vh.query(x, y, 90, [])) {
+        if (v === pr.iv || v.dead) continue; const vr = VEH[v.type].r;
+        if (d2(v.x, v.y, x, y) < vr * vr) {
+          if (w.radius) { this.projImpact(pr, x, y); return true; }
+          if (pr.flame) { if (pr.hit && pr.hit.has(v)) continue; (pr.hit || (pr.hit = new Set())).add(v); }
+          this.damageVehicle(v, w.dmg * (w.vdmg || 1) * 0.5, pr.o); if (!pr.flame) return true;
+        }
       }
     }
     for (const p of this.players.values()) {
-      if (p === pr.o || p.dead || (p.veh && (p.veh === pr.iv || !VEH[p.veh.type].exposed))) continue;
+      if ((p.zone || 'world') !== zone || p === pr.o || p.dead || (p.veh && (p.veh === pr.iv || !VEH[p.veh.type].exposed))) continue;
       if (pr.hit && pr.hit.has(p)) continue;
       if (d2(p.x, p.y, x, y) < (p.r + 4) ** 2) {
         if (!this.canHurt(pr.o, p)) continue;
@@ -700,48 +828,48 @@ class Game {
   }
   projImpact(pr, x, y) {
     pr.dead = true;
-    if (pr.itemFx) { this.applyThrowFx(pr.o, pr.itemFx, x, y); return; }
-    if (pr.w.radius || pr.w.fx === 'smoke' || pr.w.fx === 'flash') this.explode(x, y, pr.w.radius || 200, pr.w.dmg || 0, pr.o, pr.w);
+    if (pr.itemFx) { this.applyThrowFx(pr.o, pr.itemFx, x, y, pr.zone || 'world'); return; }
+    if (pr.w.radius || pr.w.fx === 'smoke' || pr.w.fx === 'flash') this.explode(x, y, pr.w.radius || 200, pr.w.dmg || 0, pr.o, pr.w, pr.zone || 'world');
   }
   findHomingTarget(pr) {
-    const air = pr.w.homing === 'air'; let best = null, bs = Infinity;
+    const air = pr.w.homing === 'air', zone = pr.zone || 'world'; let best = null, bs = Infinity;
     const consider = (e, bonus) => { const dx = e.x - pr.x, dy = e.y - pr.y, d = Math.hypot(dx, dy); if (d > 1800) return; const da = Math.abs(angDiff(pr.a, Math.atan2(dy, dx))); if (da > 0.75) return; const sc = d * (1 + da * 2) / bonus; if (sc < bs) { bs = sc; best = e; } };
-    for (const v of this.vh.query(pr.x, pr.y, 1800, [])) {
+    if (zone === 'world') for (const v of this.vh.query(pr.x, pr.y, 1800, [])) {
       if (v.dead || v === pr.iv) continue; const occ = v.seats.find(s => s); if (!occ) continue; if (air && !(v.alt > 0.5)) continue;
       const drv = this.players.get(occ); if (drv && !this.canHurt(pr.o, drv)) continue; consider(v, VEH[v.type].kind === 'heli' ? 3 : 2);
     }
     if (!air) {
-      for (const z of this.zh.query(pr.x, pr.y, 1200, [])) if (z.hp > 0) consider(z, ZD[z.type].boss ? 4 : z.type === 'brute' ? 2 : 1);
-      for (const p of this.players.values()) { if (p === pr.o || p.dead || !this.canHurt(pr.o, p)) continue; consider(p, 1.5); }
+      for (const z of this.zh.query(pr.x, pr.y, 1200, [])) if ((z.zone || 'world') === zone && z.hp > 0) consider(z, ZD[z.type].boss ? 4 : z.type === 'brute' ? 2 : 1);
+      for (const p of this.players.values()) { if ((p.zone || 'world') !== zone || p === pr.o || p.dead || !this.canHurt(pr.o, p)) continue; consider(p, 1.5); }
     }
     return best;
   }
-  explode(x, y, Rr, dmg, o, w = {}) {
-    const fx = w.fx || 'frag', now = this.now;
-    this.ev.push({x, y, all: Rr >= 400, d: ['ex', Math.round(x), Math.round(y), Math.round(Rr), fx]});
-    this.noise(x, y, Math.min(4500, Rr * 9));
+  explode(x, y, Rr, dmg, o, w = {}, forceZone) {
+    const fx = w.fx || 'frag', now = this.now, zone = forceZone || (o && o.zone) || 'world';
+    this.ev.push({x, y, zone, all: Rr >= 400 && zone === 'world', d: ['ex', Math.round(x), Math.round(y), Math.round(Rr), fx]});
+    if (zone === 'world') this.noise(x, y, Math.min(4500, Rr * 9));
     if (dmg > 0) {
       const zw = {...w, mode: 'explosion'};
       for (const z of this.zh.query(x, y, Rr + 50, [])) {
-        if (z.hp <= 0) continue; const d = Math.hypot(z.x - x, z.y - y); if (d > Rr + ZD[z.type].r) continue;
+        if ((z.zone || 'world') !== zone || z.hp <= 0) continue; const d = Math.hypot(z.x - x, z.y - y); if (d > Rr + ZD[z.type].r) continue;
         const f = 1 - 0.6 * Math.min(1, d / Rr); zw.knock = (w.knock || 0) + 220 * f; this.hitZombie(z, dmg * f, o, zw, Math.atan2(z.y - y, z.x - x));
       }
       for (const p of this.players.values()) {
-        if (p.dead) continue; const d = Math.hypot(p.x - x, p.y - y); if (d > Rr + p.r) continue; if (o && p !== o && !this.canHurt(o, p)) continue;
+        if ((p.zone || 'world') !== zone || p.dead) continue; const d = Math.hypot(p.x - x, p.y - y); if (d > Rr + p.r) continue; if (o && p !== o && !this.canHurt(o, p)) continue;
         let f = 1 - 0.6 * Math.min(1, d / Rr); if (p === o) f *= 0.5; if (p.veh && !VEH[p.veh.type].exposed) f *= 0.25;
         this.damagePlayer(p, dmg * f, 'explosion', o, null, w);
         if (!p.veh && !p.dead && d > 1) { const k = 160 * f; this.knockPlayer(p, (p.x - x) / d * k, (p.y - y) / d * k); }
       }
-      for (const v of this.vh.query(x, y, Rr + 80, [])) { if (v.dead) continue; const d = Math.hypot(v.x - x, v.y - y); if (d > Rr + VEH[v.type].r) continue; this.damageVehicle(v, dmg * (1 - 0.6 * Math.min(1, d / Rr)) * (w.vdmg || 1), o); }
-      for (const s of this.sh.query(x, y, Rr + 100, [])) { const d = Math.hypot(s.x - x, s.y - y); if (d > Rr + 40) continue; this.damageStruct(s, dmg * (1 - 0.5 * Math.min(1, d / Rr)) * (w.svd || 1), o); }
+      if (zone === 'world') for (const v of this.vh.query(x, y, Rr + 80, [])) { if (v.dead) continue; const d = Math.hypot(v.x - x, v.y - y); if (d > Rr + VEH[v.type].r) continue; this.damageVehicle(v, dmg * (1 - 0.6 * Math.min(1, d / Rr)) * (w.vdmg || 1), o); }
+      for (const s of this.sh.query(x, y, Rr + 100, [])) { if ((s.zone || 'world') !== zone) continue; const d = Math.hypot(s.x - x, s.y - y); if (d > Rr + 40) continue; this.damageStruct(s, dmg * (1 - 0.5 * Math.min(1, d / Rr)) * (w.svd || 1), o); }
     }
-    if (fx === 'fire' || fx === 'thermo') this.addEffect('fire', x, y, Rr * 0.6, 9, {dps: 16, o});
-    if (fx === 'smoke') this.addEffect('smoke', x, y, Rr, 22);
-    if (fx === 'toxic') this.addEffect('toxic', x, y, Rr * 1.2, 14, {dps: 9});
-    if (fx === 'nuke') { this.addEffect('fire', x, y, Rr * 0.5, 25, {dps: 30, o}); this.addEffect('toxic', x, y, Rr * 0.8, 90, {dps: 12}); }
+    if (fx === 'fire' || fx === 'thermo') this.addEffect('fire', x, y, Rr * 0.6, 9, {dps: 16, o, zone});
+    if (fx === 'smoke') this.addEffect('smoke', x, y, Rr, 22, {zone});
+    if (fx === 'toxic') this.addEffect('toxic', x, y, Rr * 1.2, 14, {dps: 9, zone});
+    if (fx === 'nuke') { this.addEffect('fire', x, y, Rr * 0.5, 25, {dps: 30, o, zone}); this.addEffect('toxic', x, y, Rr * 0.8, 90, {dps: 12, zone}); }
     if (fx === 'flash' || fx === 'stun') {
-      for (const p of this.players.values()) { if (p.dead || d2(p.x, p.y, x, y) > Rr * Rr) continue; if (o && p !== o && !this.canHurt(o, p)) continue; if (fx === 'flash') p.buf.blind = now + (w.blind || 4) * 1000; p.buf.stun = now + Math.min(2, w.stun || 1) * 1000; }
-      for (const z of this.zh.query(x, y, Rr, [])) if (!ZD[z.type].boss) z.stun = now + (w.stun || 3) * 1000;
+      for (const p of this.players.values()) { if ((p.zone || 'world') !== zone || p.dead || d2(p.x, p.y, x, y) > Rr * Rr) continue; if (o && p !== o && !this.canHurt(o, p)) continue; if (fx === 'flash') p.buf.blind = now + (w.blind || 4) * 1000; p.buf.stun = now + Math.min(2, w.stun || 1) * 1000; }
+      for (const z of this.zh.query(x, y, Rr, [])) if ((z.zone || 'world') === zone && !ZD[z.type].boss) z.stun = now + (w.stun || 3) * 1000;
     }
   }
   addStrike(o, w, ox, oy, tx, ty, extra, quiet, clampIt) {
@@ -761,9 +889,10 @@ class Game {
     this.strikes = keep;
   }
   cone(o, w, x, y, a) {
-    const Rr = w.range, arc = w.arc || 0.6, now = this.now;
+    const Rr = w.range, arc = w.arc || 0.6, now = this.now, zone = (o && o.zone) || 'world';
     const inCone = (ex, ey) => { const d = Math.hypot(ex - x, ey - y); return d < Rr && Math.abs(angDiff(a, Math.atan2(ey - y, ex - x))) < arc / 2 ? d : -1; };
     for (const z of this.zh.query(x, y, Rr, [])) {
+      if ((z.zone || 'world') !== zone) continue;
       const d = inCone(z.x, z.y); if (d < 0 || z.hp <= 0) continue; const zd = ZD[z.type];
       if (w.dmg) this.hitZombie(z, w.dmg, o, null, a); if (z.hp <= 0) continue;
       if (w.stun && !zd.boss) z.stun = now + w.stun * 1000;
@@ -771,14 +900,14 @@ class Game {
       if (w.water) z.burn = 0;
     }
     for (const p of this.players.values()) {
-      if (p === o || p.dead) continue; const d = inCone(p.x, p.y); if (d < 0) continue;
+      if ((p.zone || 'world') !== zone || p === o || p.dead) continue; const d = inCone(p.x, p.y); if (d < 0) continue;
       if (w.water) p.buf.burn = 0; if (!this.canHurt(o, p)) continue;
       if (w.dmg) this.damagePlayer(p, w.dmg, 'melee', o); if (w.blind) p.buf.blind = now + w.blind * 1000; if (w.stun) p.buf.stun = now + Math.min(2, w.stun) * 1000;
       if (w.knock && !p.veh) { const k = w.knock * (1 - d / Rr) * 0.3; this.knockPlayer(p, Math.cos(a) * k, Math.sin(a) * k); }
     }
-    if (w.emp) for (const v of this.vh.query(x, y, Rr, [])) { if (o && v === o.veh) continue; if (inCone(v.x, v.y) >= 0) v.emp = now + w.emp * 1000; }
-    if (w.water) for (const e of this.effects.values()) if (e.type === 'fire' && inCone(e.x, e.y) >= 0) e.until = now;
-    this.ev.push({x, y, d: ['cn', Math.round(x), Math.round(y), +a.toFixed(2), Rr, +arc.toFixed(2), w.water ? 1 : w.emp ? 2 : w.blind ? 3 : 4]});
+    if (zone === 'world' && w.emp) for (const v of this.vh.query(x, y, Rr, [])) { if (o && v === o.veh) continue; if (inCone(v.x, v.y) >= 0) v.emp = now + w.emp * 1000; }
+    if (w.water) for (const e of this.effects.values()) if ((e.zone || 'world') === zone && e.type === 'fire' && inCone(e.x, e.y) >= 0) e.until = now;
+    this.ev.push({x, y, zone, d: ['cn', Math.round(x), Math.round(y), +a.toFixed(2), Rr, +arc.toFixed(2), w.water ? 1 : w.emp ? 2 : w.blind ? 3 : 4]});
   }
 
   // ───────── damage ─────────
@@ -797,22 +926,24 @@ class Game {
       if (w.burn && !d.fireImmune) { z.burn = now + w.burn * 1000; z.burnBy = o; }
       if (w.poison) { z.poison = now + w.poison * 1000; z.burnBy = o; }
     }
-    if (dmg >= 8 && this.bloodN++ < 40) this.ev.push({x: z.x, y: z.y, d: ['bl', Math.round(z.x), Math.round(z.y)]});
+    if (dmg >= 8 && this.bloodN++ < 40) this.ev.push({x: z.x, y: z.y, zone: z.zone || 'world', d: ['bl', Math.round(z.x), Math.round(z.y)]});
     if (z.hp <= 0) this.killZombie(z, o);
   }
   killZombie(z, o) {
-    if (!this.zombies.has(z.id)) return; this.zombies.delete(z.id); const d = ZD[z.type];
+    if (!this.zombies.has(z.id)) return; this.zombies.delete(z.id); const d = ZD[z.type], zone = z.zone || 'world';
     if (o && o.name && this.players.get(o.id) === o) {
       o.kills++;
       const scrap = d.scrap || 12;
-      this.awardScrap(o, scrap, z.x, z.y);
+      this.awardScrap(o, scrap, z.x, z.y, zone);
+      this.progressMission(o, 'kill', 1);
+      this.progressMission(o, 'kill_elite', d.boss ? 20 : 1);
       if (d.boss) this.feed(`🏆 ${o.name} slew the ${d.n}! (+${scrap} Scrap)`);
     }
-    this.ev.push({x: z.x, y: z.y, d: ['zd', Math.round(z.x), Math.round(z.y), z.ti]});
-    if (d.explode) this.explode(z.x, z.y, d.explode.r, d.explode.dmg, null, {fx: 'toxic'});
-    if (d.boss) this.createItem(z.x, z.y, {k: 'crate', contents: this.rollMany('drop', 6)});
-    else if (d.drop && rnd() < 0.5) this.createItem(z.x, z.y, this.rollLoot(d.drop));
-    else if (rnd() < 0.06) this.createItem(z.x + R(-10, 10), z.y + R(-10, 10), this.rollLoot('zdrop'));
+    this.ev.push({x: z.x, y: z.y, zone, d: ['zd', Math.round(z.x), Math.round(z.y), z.ti]});
+    if (d.explode) this.explode(z.x, z.y, d.explode.r, d.explode.dmg, null, {fx: 'toxic'}, zone);
+    if (d.boss) this.createItem(z.x, z.y, {k: 'crate', contents: this.rollMany('drop', 6), zone});
+    else if (d.drop && rnd() < 0.5) this.createItem(z.x, z.y, Object.assign(this.rollLoot(d.drop), {zone}));
+    else if (rnd() < 0.06) this.createItem(z.x + R(-10, 10), z.y + R(-10, 10), Object.assign(this.rollLoot('zdrop'), {zone}));
   }
   damagePlayer(p, dmg, kind, o, zsrc, w) {
     if (p.dead || !(dmg > 0) || p.god) return; const now = this.now;
@@ -829,7 +960,7 @@ class Game {
       const absorbed = Math.min(p.hardlightShield, effectiveDmg);
       p.hardlightShield -= absorbed;
       effectiveDmg -= absorbed;
-      this.ev.push({x: p.x, y: p.y, d: ['ring', Math.round(p.x), Math.round(p.y), 45, '#00e5ff']});
+      this.ev.push({x: p.x, y: p.y, zone: p.zone || 'world', d: ['ring', Math.round(p.x), Math.round(p.y), 45, '#00e5ff']});
     }
     p.hp -= effectiveDmg; p.hurt = now;
     if (kind === 'zombie' && zsrc) {
@@ -890,7 +1021,9 @@ class Game {
   // ───────── items & inventory ─────────
   createItem(x, y, o) {
     if (!o || !o.k) return null;
-    const it = {id: this.id(), x: clamp(x, 40, this.WP - 40), y: clamp(y, 40, this.HP - 40), k: o.k, n: o.n || 1, mag: o.mag || 0, contents: o.contents || null, label: o.label || null, born: this.now, pt: null};
+    const zone = o.zone || 'world', idef = this.interiorDef(zone);
+    const maxW = idef ? idef.w - 40 : this.WP - 40, maxH = idef ? idef.h - 40 : this.HP - 40;
+    const it = {id: this.id(), x: clamp(x, 40, maxW), y: clamp(y, 40, maxH), k: o.k, n: o.n || 1, mag: o.mag || 0, contents: o.contents || null, label: o.label || null, zone, born: this.now, pt: null};
     this.items.set(it.id, it); this.ih.add(it); return it;
   }
   removeItem(it) { if (!this.items.has(it.id)) return; this.items.delete(it.id); this.ih.remove(it); if (it.pt) { it.pt.item = null; it.pt.next = this.now + R(240, 480) * 1000; } }
@@ -926,19 +1059,282 @@ class Game {
       if (pt.item || this.now < pt.next || this.playerNear(pt.x, pt.y, 700)) continue;
       if (rnd() < 0.6) this.spawnLootPt(pt); else pt.next = this.now + R(120, 300) * 1000;
     }
-    if (this.tickN % 300 === 0) for (const it of this.items.values()) { if (it.pt || it.k === 'vault') continue; if (this.now - it.born > ((it.k === 'bag' || it.k === 'crate') ? 1200000 : 600000)) this.removeItem(it); }
+    if (this.tickN % 300 === 0) for (const it of this.items.values()) { if (it.pt || it.k === 'vault') continue; const maxAge = (it.zone && it.zone !== 'world' && it.k === 'crate') ? 1800000 : ((it.k === 'bag' || it.k === 'crate') ? 1200000 : 600000); if (this.now - it.born > maxAge) this.removeItem(it); }
+  }
+  enterInterior(p, zoneKey) {
+    const idef = this.interiorDef(zoneKey);
+    if (!idef || p.veh) return;
+    p.surfX = p.x; p.surfY = p.y;
+    p.zone = zoneKey;
+    p.x = idef.spawnX; p.y = idef.spawnY;
+    this.forcePos(p);
+    this.progressMission(p, 'enter_bunker', 1);
+    if (zoneKey.startsWith('raid_')) {
+      this.msg(p, '⚠️ Entered Military Raid Bunker — Loot Wing Chests, Eliminate Guards & Breach the SE Vault!');
+      this.ensureRaidContents(zoneKey);
+    } else {
+      const plotId = +zoneKey.slice(7);
+      const plot = this.plots.get(plotId);
+      this.ensureBunkerContents(zoneKey, plot);
+      this.msg(p, '🏢 Descended into Shelter Underground Command Bunker (6 Wings & Resupply Chests)');
+    }
+  }
+  exitInterior(p) {
+    if ((p.zone || 'world') === 'world') return;
+    p.zone = 'world';
+    p.x = p.surfX || (p.plot ? p.plot.x : this.WP / 2);
+    p.y = (p.surfY || (p.plot ? p.plot.y + 70 : this.HP / 2)) + 16;
+    this.forcePos(p);
+    this.msg(p, '☀️ Returned to the Wasteland Surface');
+  }
+  ensureBunkerContents(zoneKey, plot) {
+    const now = this.now;
+    if (this.raidInit[zoneKey] && now - this.raidInit[zoneKey] < 240000) return;
+    this.raidInit[zoneKey] = now;
+    const lv = plot ? (plot.level || 1) : 1;
+    const hasNear = (x, y, k) => {
+      for (const it of this.items.values()) {
+        if ((it.zone || 'world') === zoneKey && (!k || it.k === k) && d2(it.x, it.y, x, y) < 85 * 85) return true;
+      }
+      return false;
+    };
+    const chests = [
+      [180, 400, 'crate', 'Armory Munitions Chest', this.rollMany(lv >= 3 ? 'military' : 'police', 3)],
+      [1580, 320, 'crate', 'Bio-Med Supply Chest', this.rollMany('hospital', 3)],
+      [180, 960, 'crate', 'Engineering Tool Chest', this.rollMany('gas', 3)],
+      [1040, 960, 'crate', 'Reactor Hydro Cache', this.rollMany('science', 3)],
+      [1040, 180, 'crate', 'Command Supply Locker', [...this.rollMany('gov', 2), {k: 'scrapmetal', n: 2}]]
+    ];
+    if (lv >= 3) chests.push([1560, 1050, 'vault', 'Shelter High-Security Safe', this.rollMany('vault', 3)]);
+    for (const [cx, cy, k, label, contents] of chests) {
+      if (hasNear(cx, cy, k)) continue;
+      const [fx, fy] = this.findFree(cx, cy, 16, 'walk', zoneKey);
+      this.createItem(fx, fy, {k, label, contents, zone: zoneKey});
+    }
+  }
+  ensureRaidContents(zoneKey) {
+    const now = this.now;
+    if (this.raidInit[zoneKey] && now - this.raidInit[zoneKey] < 300000) return;
+    this.raidInit[zoneKey] = now;
+    let aliveGuards = 0;
+    for (const z of this.zombies.values()) if ((z.zone || 'world') === zoneKey && z.hp > 0) aliveGuards++;
+    if (aliveGuards < 3) {
+      const spots = [
+        [280, 320, 'soldier'], [450, 390, 'runner'], [1480, 320, 'hazmat'],
+        [320, 880, 'riot'], [900, 960, 'brute'], [1480, 760, 'soldier'], [1560, 960, 'riot']
+      ];
+      for (const [zx, zy, zt] of spots) {
+        const [fx, fy] = this.findFree(zx, zy, 18, 'walk', zoneKey);
+        const z = this.spawnZombie(zt, fx, fy);
+        if (z) z.zone = zoneKey;
+      }
+    }
+    const hasNear = (x, y, k) => {
+      for (const it of this.items.values()) {
+        if ((it.zone || 'world') === zoneKey && (!k || it.k === k) && d2(it.x, it.y, x, y) < 85 * 85) return true;
+      }
+      return false;
+    };
+    const raidChests = [
+      [200, 360, 'crate', 'Armory Weapon Chest', this.rollMany('military', 4)],
+      [1040, 175, 'crate', 'Command Officer Chest', [{k: 'keycard', n: 1}, ...this.rollMany('gov', 3)]],
+      [1560, 300, 'crate', 'Bio-Containment Chest', this.rollMany('hospital', 4)],
+      [220, 940, 'crate', 'Heavy Ordnance Chest', this.rollMany('military', 4)],
+      [1040, 960, 'crate', 'Reactor Core Cache', this.rollMany('science', 4)],
+      [1670, 760, 'vault', 'Auxiliary Vault Chest', this.rollMany('vault', 4)],
+      [1550, 1055, 'vault', 'Primary Raid Vault', this.rollMany('vault', 5)]
+    ];
+    for (const [cx, cy, k, label, contents] of raidChests) {
+      if (hasNear(cx, cy, k)) continue;
+      const [fx, fy] = this.findFree(cx, cy, 16, 'walk', zoneKey);
+      this.createItem(fx, fy, {k, label, contents, zone: zoneKey});
+    }
+  }
+  useInteriorStation(p, st) {
+    const now = this.now, zone = p.zone || 'world';
+    const isRaid = zone.startsWith('raid_');
+    const plotId = zone.startsWith('bunker_') ? +zone.slice(7) : (p.plotId || 0);
+    const plot = plotId ? this.plots.get(plotId) : null;
+    const up = (plot && plot.upgrades) || {};
+    switch (st.kind) {
+      case 'exit_lift':
+        this.exitInterior(p);
+        return;
+      case 'tycoon_console':
+        if (plot) this.sendPlotDetail(p, plot.id);
+        else if (p.plotId) this.sendPlotDetail(p, p.plotId);
+        else this.msg(p, 'Claim a Shelter Plot on the surface to manage Tycoon upgrades!');
+        return;
+      case 'mission_board': {
+        const ch = CAMPAIGN[p.missionStep];
+        const ct = CONTRACTS[p.contractIdx % CONTRACTS.length];
+        this.msg(p, `🎯 ${ch.title} (${p.missionProg}/${ch.target}) · 📋 ${ct.title} (${p.contractProg}/${ct.target})`);
+        return;
+      }
+      case 'ammo_dispenser': {
+        const free = !isRaid && up.ammo_press > 0;
+        const cost = free ? 0 : st.cost;
+        if ((p.scrap || 0) < cost) { this.msg(p, `Need ${cost} Scrap for Munitions Replicator.`); return; }
+        p.scrap -= cost;
+        for (const s of p.hotbar) {
+          if (!s) continue;
+          const w = WEAPONS[s.w];
+          if (!w) continue;
+          if (w.mag) s.mag = w.mag;
+          if (w.ammo) p.ammo[w.ammo] = Math.max(p.ammo[w.ammo] || 0, (AMMO[w.ammo].pick || 30) * 3);
+        }
+        p.dirty = true;
+        this.msg(p, free ? '🎯 Ammo Replenished (FREE via Ammo Press!)' : `🎯 All Weapon Ammo Refilled (-${cost} Scrap)`);
+        return;
+      }
+      case 'weapon_forge': {
+        const lv = plot ? plot.level : 1;
+        const cost = st.cost;
+        if ((p.scrap || 0) < cost) { this.msg(p, `Need ${cost} Scrap to print a tactical firearm.`); return; }
+        const pool = lv >= 4
+          ? ['AK-47', 'M4A1', 'SPAS-12', 'M249 SAW', 'AWM']
+          : ['MP5', 'Remington 870', 'AK-47', 'UMP45', 'M16A4'];
+        const pickName = pool[Math.floor(rnd() * pool.length)];
+        const wk = wkey(pickName);
+        if (!wk || !WEAPONS[wk]) { this.msg(p, 'Fabricator calibrating…'); return; }
+        p.scrap -= cost;
+        const w = WEAPONS[wk];
+        this.giveObj(p, {k: 'w:' + wk, mag: w.mag || 0, n: w.count || 0}, true);
+        if (w.ammo) p.ammo[w.ammo] = (p.ammo[w.ammo] || 0) + (AMMO[w.ammo].pick || 30) * 2;
+        p.dirty = true;
+        this.msg(p, `🔫 Fabricated ${w.name}! (-${cost} Scrap)`);
+        return;
+      }
+      case 'med_pod': {
+        const free = !isRaid && up.medbay > 0;
+        const cost = free ? 0 : st.cost;
+        if ((p.scrap || 0) < cost) { this.msg(p, `Need ${cost} Scrap for Auto-Doc Cryo-Pod.`); return; }
+        p.scrap -= cost;
+        p.hp = 100; p.bleed = false; p.frac = false; p.inf = 0; p.buf.burn = 0;
+        this.msg(p, free ? '🩺 Full Cryo-Heal Complete (FREE via Medbay!)' : `🩺 Health 100% & All Wounds Cured (-${cost} Scrap)`);
+        return;
+      }
+      case 'chem_synth': {
+        const cost = st.cost;
+        if ((p.scrap || 0) < cost) { this.msg(p, `Need ${cost} Scrap for Bio-Chem Synth.`); return; }
+        p.scrap -= cost;
+        this.addItem(p, 'medkit', 1);
+        this.addItem(p, 'bandage', 2);
+        this.msg(p, `💉 Synthesized Medkit + 2× Bandage (-${cost} Scrap)`);
+        return;
+      }
+      case 'gear_fab': {
+        const cost = st.cost;
+        if ((p.scrap || 0) < cost) { this.msg(p, `Need ${cost} Scrap for Tactical Gear.`); return; }
+        p.scrap -= cost;
+        if (!p.wear.vest) p.wear.vest = 'kevlar';
+        if (!p.wear.back) p.wear.back = 'backpack';
+        if (!p.wear.face) p.wear.face = 'gasmask';
+        this.recalcWear(p); p.dirty = true;
+        this.msg(p, `🦺 Equipped Kevlar Vest, Backpack & Gas Mask (-${cost} Scrap)`);
+        return;
+      }
+      case 'craft_bench': {
+        const cost = st.cost;
+        if ((p.scrap || 0) < cost) { this.msg(p, `Need ${cost} Scrap for Workshop Fabrication.`); return; }
+        p.scrap -= cost;
+        this.addItem(p, 'scrapmetal', 2);
+        this.addItem(p, 'gasoline', 1);
+        this.msg(p, `🔧 Fabricated 2× Scrap Metal & Gasoline (-${cost} Scrap)`);
+        return;
+      }
+      case 'hydro_bar': {
+        const free = !isRaid && (up.hydroponic_greenhouse > 0 || up.water_vaporator > 0 || (plot && plot.owner === p.id));
+        const cost = free ? 0 : st.cost;
+        if ((p.scrap || 0) < cost) { this.msg(p, `Need ${cost} Scrap for Ration Synth.`); return; }
+        p.scrap -= cost;
+        p.hu = 100; p.th = 100; p.st = 100;
+        this.msg(p, '🌱 Nourishment, Hydration & Stamina Restored to 100%!');
+        return;
+      }
+      case 'reactor_core': {
+        const cdKey = zone + ':reactor';
+        const rem = Math.ceil(((p.stationCD[cdKey] || 0) - now) / 1000);
+        if (rem > 0) { this.msg(p, `⚛️ Reactor Core recharging (${rem}s remaining)`); return; }
+        p.stationCD[cdKey] = now + 60000;
+        const amt = 80 + (plot ? plot.level * 25 : 40);
+        this.awardScrap(p, amt, p.x, p.y, zone);
+        this.progressMission(p, 'bunker_op', 1);
+        this.msg(p, `⚛️ Harvested +${amt} Scrap from Reactor Surge!`);
+        return;
+      }
+      case 'vault_locker': {
+        const cdKey = zone + ':vault';
+        const rem = Math.ceil(((p.stationCD[cdKey] || 0) - now) / 1000);
+        if (rem > 0) { this.msg(p, `🔐 Security Vault relocked (${rem}s remaining)`); return; }
+        p.stationCD[cdKey] = now + 150000;
+        const amt = isRaid ? 280 : 140;
+        this.awardScrap(p, amt, p.x, p.y, zone);
+        this.addItem(p, 'keycard', 1);
+        const contents = this.rollMany(isRaid ? 'vault' : 'military', 4);
+        for (const c of contents) this.giveObj(p, c, false);
+        this.progressMission(p, 'bunker_op', 1);
+        this.progressMission(p, 'loot', 2);
+        this.msg(p, `🔐 Breached Vault Locker! +${amt} Scrap + Keycard + Military Gear!`);
+        return;
+      }
+    }
   }
   interact(p) {
     if (p.dead) return;
     if (p.veh) { this.exitVehicle(p); return; }
+    const zone = p.zone || 'world';
+    let bi = null, bid = 80 * 80;
+    for (const it of this.ih.query(p.x, p.y, 90, [])) {
+      if ((it.zone || 'world') !== zone) continue;
+      const dd = d2(it.x, it.y, p.x, p.y); if (dd < bid) { bid = dd; bi = it; }
+    }
+    let bs = null, bsd = 95 * 95;
+    for (const s of this.sh.query(p.x, p.y, 200, [])) {
+      if ((s.zone || 'world') !== zone || !(s.def.door || s.def.water)) continue;
+      const dd = d2(s.x, s.y, p.x, p.y); if (dd < bsd) { bsd = dd; bs = s; }
+    }
+
+    if (zone !== 'world') {
+      if (bi) { this.pickup(p, bi); return; }
+      const idef = this.interiorDef(zone);
+      if (idef) {
+        let bestSt = null, bestD = Infinity;
+        for (const st of idef.stations) {
+          const dd = Math.hypot(st.x - p.x, st.y - p.y);
+          if (dd <= st.r && dd < bestD) { bestD = dd; bestSt = st; }
+        }
+        if (bestSt) { this.useInteriorStation(p, bestSt); return; }
+      }
+      if (bs) {
+        if (bs.def.door) { bs.open = !bs.open; this.ev.push({x: bs.x, y: bs.y, zone, d: ['door', bs.id]}); return; }
+        if (bs.water >= 1) { bs.water -= 1; p.th = Math.min(100, p.th + 35); this.msg(p, '💧 You drink clean water.'); return; }
+      }
+      return;
+    }
+
     let bv = null, bvd = Infinity; for (const v of this.vh.query(p.x, p.y, 280, [])) { if (v.dead) continue; const r = VEH[v.type].r + 80, dd = d2(v.x, v.y, p.x, p.y); if (dd < r * r && dd < bvd) { bvd = dd; bv = v; } }
-    let bi = null, bid = 80 * 80; for (const it of this.ih.query(p.x, p.y, 90, [])) { const dd = d2(it.x, it.y, p.x, p.y); if (dd < bid) { bid = dd; bi = it; } }
-    let bs = null, bsd = 95 * 95; for (const s of this.sh.query(p.x, p.y, 200, [])) { if (!(s.def.door || s.def.water)) continue; const dd = d2(s.x, s.y, p.x, p.y); if (dd < bsd) { bsd = dd; bs = s; } }
     if (bv && (!bi || bvd < 70 * 70 || bvd <= bid)) { this.enterVehicle(p, bv); return; }
     if (bi) { this.pickup(p, bi); return; }
     if (bv) { this.enterVehicle(p, bv); return; }
+
+    // Check Wasteland Military Raid Bunker Hatches
+    for (const rb of RAID_BUNKERS) {
+      if (d2(p.x, p.y, rb.x, rb.y) < 110 * 110) {
+        this.enterInterior(p, 'raid_' + rb.id);
+        return;
+      }
+    }
+
+    // Check Shelter Plots: North Bunker Lift OR Center Command Terminal / Claim
     for (const pl of this.plots.values()) {
-      if (d2(p.x, p.y, pl.x, pl.y) < 180 * 180) {
+      const S = computePlotSize(pl);
+      const liftX = pl.x, liftY = pl.y - S * 0.28;
+      if (pl.owner && (pl.owner === p.id || (pl.team > 0 && pl.team === p.team) || this.settings.mode === 'coop') && d2(p.x, p.y, liftX, liftY) < 95 * 95) {
+        this.enterInterior(p, 'bunker_' + pl.id);
+        return;
+      }
+      if (d2(p.x, p.y, pl.x, pl.y) < 190 * 190) {
         if (!pl.owner || pl.owner === p.id) { this.claimPlot(p, pl.id); return; }
       }
     }
@@ -946,7 +1342,7 @@ class Game {
       if (bs.def.door) {
         if (this.settings.mode !== 'coop' && bs.team !== p.team && bs.owner !== p.id) { this.msg(p, '🔒 Not your door.'); return; }
         if (bs.open && !this.rectFree(bs.x, bs.y, bs.w, bs.h, true)) { bs.open = false; if (!this.rectFree(bs.x, bs.y, bs.w, bs.h, true)) { bs.open = true; this.msg(p, 'Something is in the doorway.'); return; } bs.open = true; }
-        bs.open = !bs.open; this.ev.push({x: bs.x, y: bs.y, d: ['door', bs.id]}); return;
+        bs.open = !bs.open; this.ev.push({x: bs.x, y: bs.y, zone: 'world', d: ['door', bs.id]}); return;
       }
       if (bs.water >= 1) { bs.water -= 1; p.th = Math.min(100, p.th + 35); this.msg(p, '💧 You drink clean water.'); } else this.msg(p, 'Empty — wait for it to collect water.');
       return;
@@ -961,26 +1357,30 @@ class Game {
     else this.msg(p, '💧 You drink from the water.');
   }
   pickup(p, it) {
-    const k = it.k;
+    const k = it.k, zone = it.zone || 'world';
     if (k === 'vault') {
-      if (this.countItem(p, 'keycard') < 1) { this.msg(p, '🔒 Locked vault — you need a Keycard.'); return; }
-      this.takeItem(p, 'keycard', 1); for (const c of it.contents || []) this.createItem(it.x + R(-50, 50), it.y + R(-50, 50), c);
-      this.feed(`🔓 ${p.name} cracked a vault!`); this.removeItem(it); return;
+      if (this.countItem(p, 'keycard') < 1) { this.msg(p, '🔒 Locked vault — you need a Keycard (check Command Chest or Vault Locker).'); return; }
+      this.takeItem(p, 'keycard', 1);
+      for (const c of it.contents || []) {
+        const [fx, fy] = this.findFree(it.x + R(-42, 42), it.y + R(-42, 42), 12, 'walk', zone);
+        this.createItem(fx, fy, Object.assign({}, c, {zone}));
+      }
+      this.feed(`🔓 ${p.name} cracked ${it.label || 'a vault'}!`); this.removeItem(it); this.progressMission(p, 'loot', 2); return;
     }
     if (k === 'bag' || k === 'crate') {
       const rest = []; for (const c of it.contents || []) if (!this.giveObj(p, c, false)) rest.push(c);
       it.contents = rest; if (!rest.length) this.removeItem(it); else this.msg(p, 'Inventory full — some loot left behind.');
-      this.msg(p, k === 'bag' ? `🎒 Looted ${it.label || 'a'} bag` : '📦 Opened the crate'); p.dirty = true; return;
+      this.msg(p, k === 'bag' ? `🎒 Looted ${it.label || 'a'} bag` : `📦 Opened ${it.label || 'the supply chest'}`); p.dirty = true; this.progressMission(p, 'loot', 1); return;
     }
-    if (this.giveObj(p, it, true)) this.removeItem(it);
+    if (this.giveObj(p, it, true)) { this.removeItem(it); this.progressMission(p, 'loot', 1); }
   }
   giveObj(p, o, announce) {
-    const k = o.k;
+    const k = o.k, zone = p.zone || 'world';
     if (k.startsWith('w:')) {
       const key = k.slice(2), w = WEAPONS[key]; if (!w) return true;
       if (w.count) { const same = p.hotbar.findIndex(s => s && s.w === key); if (same >= 0) { p.hotbar[same].n = (p.hotbar[same].n || 0) + (o.n || w.count); p.dirty = true; if (announce) this.msg(p, `+${o.n || w.count} ${w.name}`); return true; } }
       let i = p.hotbar.indexOf(null);
-      if (i < 0) { if (!announce) return false; i = p.sel; const cur = p.hotbar[i]; this.createItem(p.x + R(-20, 20), p.y + R(-20, 20), {k: 'w:' + cur.w, mag: cur.mag, n: cur.n}); }
+      if (i < 0) { if (!announce) return false; i = p.sel; const cur = p.hotbar[i]; this.createItem(p.x + R(-20, 20), p.y + R(-20, 20), {k: 'w:' + cur.w, mag: cur.mag, n: cur.n, zone}); }
       p.hotbar[i] = {w: key, mag: o.mag || 0, n: o.n || w.count || 0}; p.dirty = true;
       if (announce) this.msg(p, `Picked up ${w.name} (${CATS[w.cat].label})`); return true;
     }
@@ -991,8 +1391,8 @@ class Game {
     if (left > 0) { o.n = left; return false; }
     if (announce) this.msg(p, 'Picked up ' + d.n + (n0 > 1 ? ' ×' + n0 : '')); return true;
   }
-  dropItem(p, i, all) { const it = p.inv[i]; if (!it || p.dead) return; const n = all ? it.n : 1; this.createItem(p.x + R(-25, 25), p.y + R(-25, 25), {k: it.k, n}); this.takeAt(p, i, n); }
-  dropWeapon(p, s) { const sl = p.hotbar[s]; if (!sl || p.dead) return; this.createItem(p.x + R(-25, 25), p.y + R(-25, 25), {k: 'w:' + sl.w, mag: sl.mag, n: sl.n}); p.hotbar[s] = null; p.dirty = true; }
+  dropItem(p, i, all) { const it = p.inv[i]; if (!it || p.dead) return; const n = all ? it.n : 1; this.createItem(p.x + R(-25, 25), p.y + R(-25, 25), {k: it.k, n, zone: p.zone || 'world'}); this.takeAt(p, i, n); }
+  dropWeapon(p, s) { const sl = p.hotbar[s]; if (!sl || p.dead) return; this.createItem(p.x + R(-25, 25), p.y + R(-25, 25), {k: 'w:' + sl.w, mag: sl.mag, n: sl.n, zone: p.zone || 'world'}); p.hotbar[s] = null; p.dirty = true; }
   useItem(p, i, x, y, rot) {
     if (p.dead) return; const it = p.inv[i]; if (!it) return; const d = ITEMS[it.k]; if (!d) return;
     switch (d.u) {
@@ -1045,14 +1445,15 @@ class Game {
     const pr = this.spawnProj(p, {proj: 650, range: 620, lob: 1, kind: 'item', fuse: th.fuse || 0}, p.x, p.y, a, x, y, p.veh, !!th.fuse);
     pr.itemFx = th;
   }
-  applyThrowFx(o, th, x, y) {
+  applyThrowFx(o, th, x, y, forceZone) {
+    const zone = forceZone || (o && o.zone) || 'world';
     switch (th.t) {
-      case 'light': this.addEffect('light', x, y, th.r, th.dur); break;
-      case 'flare': this.addEffect('flare', x, y, th.r, th.dur, {lure: th.lure}); this.noise(x, y, th.lure); break;
-      case 'lure': this.addEffect('lure', x, y, 60, th.dur, {lure: th.lure}); this.noise(x, y, th.lure); this.ev.push({x, y, d: ['lu', Math.round(x), Math.round(y), th.pop ? 1 : 0]}); break;
-      case 'smoke': this.addEffect('smoke', x, y, th.r, th.dur); break;
-      case 'fire': this.addEffect('fire', x, y, th.r, th.dur, {dps: th.dps, o}); this.ev.push({x, y, d: ['ex', Math.round(x), Math.round(y), 70, 'fire']}); this.noise(x, y, 700); break;
-      case 'frag': this.explode(x, y, th.r, th.dmg, o, {fx: 'frag', svd: 2}); break;
+      case 'light': this.addEffect('light', x, y, th.r, th.dur, {zone}); break;
+      case 'flare': this.addEffect('flare', x, y, th.r, th.dur, {lure: th.lure, zone}); if (zone === 'world') this.noise(x, y, th.lure); break;
+      case 'lure': this.addEffect('lure', x, y, 60, th.dur, {lure: th.lure, zone}); if (zone === 'world') this.noise(x, y, th.lure); this.ev.push({x, y, zone, d: ['lu', Math.round(x), Math.round(y), th.pop ? 1 : 0]}); break;
+      case 'smoke': this.addEffect('smoke', x, y, th.r, th.dur, {zone}); break;
+      case 'fire': this.addEffect('fire', x, y, th.r, th.dur, {dps: th.dps, o, zone}); this.ev.push({x, y, zone, d: ['ex', Math.round(x), Math.round(y), 70, 'fire']}); if (zone === 'world') this.noise(x, y, 700); break;
+      case 'frag': this.explode(x, y, th.r, th.dmg, o, {fx: 'frag', svd: 2}, zone); break;
     }
   }
   targetItem(p, k, x, y) {
@@ -1063,12 +1464,12 @@ class Game {
   wearItem(p, i) {
     const it = p.inv[i], d = ITEMS[it.k], old = p.wear[d.slot];
     p.wear[d.slot] = it.k; this.takeAt(p, i, 1); this.recalcWear(p);
-    if (old && this.addItem(p, old, 1) > 0) this.createItem(p.x, p.y, {k: old, n: 1});
+    if (old && this.addItem(p, old, 1) > 0) this.createItem(p.x, p.y, {k: old, n: 1, zone: p.zone || 'world'});
     this.overflow(p); this.msg(p, 'Equipped ' + d.n);
   }
   unwear(p, slot) {
     const k = p.wear[slot]; if (!k) return; delete p.wear[slot]; this.recalcWear(p);
-    this.overflow(p); if (this.addItem(p, k, 1) > 0) this.createItem(p.x, p.y, {k, n: 1}); p.dirty = true;
+    this.overflow(p); if (this.addItem(p, k, 1) > 0) this.createItem(p.x, p.y, {k, n: 1, zone: p.zone || 'world'}); p.dirty = true;
   }
   vehicleItem(p, i, d) {
     let best = null, bd = Infinity;
@@ -1089,7 +1490,7 @@ class Game {
     for (const [k, n] of Object.entries(r.in)) if (this.countItem(p, k) < n) { this.msg(p, 'Missing materials.'); return; }
     for (const [k, n] of Object.entries(r.in)) this.takeItem(p, k, n);
     if (r.out.startsWith('ammo_')) { const a = r.out.slice(5); p.ammo[a] = (p.ammo[a] || 0) + AMMO[a].pick * r.n; p.dirty = true; this.msg(p, `🔨 Crafted ${AMMO[a].pick * r.n} ${AMMO[a].n}`); return; }
-    const left = this.addItem(p, r.out, r.n); if (left > 0) this.createItem(p.x, p.y, {k: r.out, n: left});
+    const left = this.addItem(p, r.out, r.n); if (left > 0) this.createItem(p.x, p.y, {k: r.out, n: left, zone: p.zone || 'world'});
     this.msg(p, '🔨 Crafted ' + ITEMS[r.out].n + (r.n > 1 ? ' ×' + r.n : ''));
   }
   placeStruct(p, kind, x, y, rot) {
@@ -1098,8 +1499,9 @@ class Game {
     const w = rot ? d.h : d.w, h = rot ? d.w : d.h;
     if (!this.rectFree(x, y, w, h, d.block !== 0)) { this.msg(p, "Can't build there."); return false; }
     if (this.structs.size > 3000) { this.msg(p, 'Server structure limit reached.'); return false; }
-    const s = {id: this.id(), kind, def: d, x, y, w, h, hp: d.hp, maxhp: d.hp, team: p.team, owner: p.id, open: false, born: this.now, charge: d.charge || 0, water: d.inf ? 99 : 0};
-    this.structs.set(s.id, s); this.sh.add(s); this.ev.push({x, y, d: ['pl', Math.round(x), Math.round(y)]}); return true;
+    const zone = p.zone || 'world';
+    const s = {id: this.id(), kind, def: d, x, y, w, h, hp: d.hp, maxhp: d.hp, team: p.team, owner: p.id, zone, open: false, born: this.now, charge: d.charge || 0, water: d.inf ? 99 : 0};
+    this.structs.set(s.id, s); this.sh.add(s); this.ev.push({x, y, zone, d: ['pl', Math.round(x), Math.round(y)]}); return true;
   }
 
   // ───────── vehicles ─────────
@@ -1113,7 +1515,9 @@ class Game {
   initVehicles() {
     for (const [x, y, a, pool] of this.M.vspawns) {
       const sp = {x, y, a, pool, vid: 0, next: 0}; const type = pool[Math.floor(rnd() * pool.length)], d = VEH[type]; if (!d) continue;
-      this.vspawns.push(sp); if (this.blockedAt(x, y, d.r, d.kind === 'heli' ? 'car' : d.kind)) { sp.next = 1e12; continue; }
+      this.vspawns.push(sp);
+      const colR = Math.max(14, Math.round(d.r * 0.78));
+      if (this.blockedAt(x, y, colR, d.kind === 'heli' ? 'car' : d.kind)) { sp.next = 1e12; continue; }
       sp.vid = this.createVehicle(type, x, y, a, sp).id;
     }
   }
@@ -1127,7 +1531,8 @@ class Game {
     for (const sp of this.vspawns) {
       if (this.vehicles.has(sp.vid) || now < sp.next || this.playerNear(sp.x, sp.y, 900)) continue;
       const type = sp.pool[Math.floor(rnd() * sp.pool.length)], d = VEH[type];
-      if (this.blockedAt(sp.x, sp.y, d.r, d.kind === 'heli' ? 'car' : d.kind)) { sp.next = now + 60000; continue; }
+      const colR = Math.max(14, Math.round(d.r * 0.78));
+      if (this.blockedAt(sp.x, sp.y, colR, d.kind === 'heli' ? 'car' : d.kind)) { sp.next = now + 60000; continue; }
       sp.vid = this.createVehicle(type, sp.x, sp.y, sp.a, sp).id;
     }
   }
@@ -1136,10 +1541,11 @@ class Game {
     if (seat < 0) { this.msg(p, 'Vehicle is full.'); return; }
     const drv = v.seats[0] && this.players.get(v.seats[0]); if (drv && this.settings.mode !== 'coop' && this.canHurt(drv, p)) { this.msg(p, '⚠ Enemy vehicle!'); return; }
     v.seats[seat] = p.id; p.veh = v; p.seat = seat; p.x = v.x; p.y = v.y; p.reloadUntil = 0; p.dirty = true; v.lastUsed = this.now;
+    this.progressMission(p, 'drive', 1);
     if (seat === 0 && v.broken) this.msg(p, `🔧 This ${d.n} won't start — use Spark Plugs on it.`);
     else if (seat === 0 && v.fuel <= 1) this.msg(p, '⛽ Out of fuel — use a Gasoline Jerrycan.');
     else this.msg(p, `${d.n} — ${seat === 0 ? 'driver' : 'seat ' + (seat + 1)}`);
-    this.ev.push({x: v.x, y: v.y, d: ['door', v.id]});
+    this.ev.push({x: v.x, y: v.y, zone: 'world', d: ['door', v.id]});
   }
   exitVehicle(p, force) {
     const v = p.veh; if (!v) return; const d = VEH[v.type];
@@ -1162,7 +1568,7 @@ class Game {
     for (const v of this.vehicles.values()) {
       if (v.dead) continue; const d = VEH[v.type];
       const occ = v.seats.some(s => s);
-      if (!occ && Math.abs(v.sp) < 1 && Math.abs(v.vx) + Math.abs(v.vy) < 2 && v.alt <= 0) { v.sp = 0; v.vx = 0; v.vy = 0; continue; }
+      if (!occ && Math.abs(v.sp) < 2 && Math.hypot(v.vx, v.vy) < 2 && v.alt <= 0) { v.sp = 0; v.vx = 0; v.vy = 0; continue; }
       const drv = v.seats[0] ? this.players.get(v.seats[0]) : null;
       let thr = 0, steer = 0, boost = false, braking = false;
       if (drv && !drv.dead) { thr = -drv.input.my; steer = drv.input.mx; boost = drv.input.sprint; braking = !!drv.input.brake; }
@@ -1173,67 +1579,89 @@ class Game {
       let tm;
       if (heli) tm = v.alt > 0.6 ? 1 : 0.25;
       else if (d.kind === 'boat') tm = P.water ? 1 : 0.05;
-      else if (d.kind === 'hover') tm = P.water ? 1 : Math.max(0.5, P.veh);
+      else if (d.kind === 'hover') tm = P.water ? 1 : Math.max(0.55, P.veh);
       else {
-        // Road surface gives significant speed and traction boost
         const isRoad = tile === 5 || tile === 20 || tile === 24 || tile === 6;
         tm = isRoad ? 1.35 : (d.terrain && d.terrain[tile] !== undefined ? d.terrain[tile] : P.veh);
       }
-      const maxS = d.speed * tm * (boost && !disabled ? 1.3 : 1);
-      
-      // Acceleration, smart braking, and reverse handling
+      const maxS = d.speed * tm * (boost && !disabled ? 1.32 : 1);
+
+      // Forward / Lateral velocity decomposition (true tire grip & drift)
+      const cosA = Math.cos(v.a), sinA = Math.sin(v.a);
+      let fwd = v.vx * cosA + v.vy * sinA;
+      let lat = -v.vx * sinA + v.vy * cosA;
+
       if (thr > 0) {
-        v.sp += d.accel * thr * dt * (v.sp < 0 ? 3.6 : 1.15);
+        fwd += d.accel * thr * dt * (fwd < -10 ? 3.8 : 1.18);
       } else if (thr < 0) {
-        if (v.sp > 15) {
-          // Pressing S while moving forward applies high-friction disc brakes!
-          v.sp -= Math.min(v.sp, d.accel * 4.2 * dt);
-        } else {
-          // Reverse gear acceleration
-          v.sp += d.accel * thr * dt * 1.5;
-        }
+        if (fwd > 20) fwd -= Math.min(fwd, d.accel * 4.4 * dt);
+        else fwd += d.accel * thr * dt * 1.5;
       } else {
-        // Terrain-aware rolling drag
-        const rollingDrag = (P.drag || 1.0) * (heli ? 1.0 : 1.8);
-        v.sp -= v.sp * Math.min(1, rollingDrag * dt);
+        const rollingDrag = (P.drag || 1.0) * (heli ? 1.0 : 1.7);
+        fwd -= fwd * Math.min(1, rollingDrag * dt);
       }
 
-      if (braking && d.kind === 'car') {
-        v.sp *= Math.pow(0.12, dt);
+      if (braking && d.kind === 'car') fwd *= Math.exp(-3.6 * dt);
+      if (fwd > maxS) fwd -= (fwd - maxS) * Math.min(1, 4.5 * dt);
+      if (fwd < -maxS * 0.55) fwd = -maxS * 0.55;
+
+      // Smoothed speed-scaled steering
+      v.sa = (v.sa || 0) + (steer - (v.sa || 0)) * Math.min(1, 16 * dt);
+      const spdNorm = Math.min(1.15, Math.abs(fwd) / 140);
+      const tf = heli ? 1 : (0.55 + spdNorm * 0.62);
+      if (Math.abs(fwd) > 6 || heli) {
+        v.a += v.sa * d.turn * tf * dt * (fwd < -5 && !heli ? -1 : 1);
       }
-      if (v.sp > maxS) v.sp -= (v.sp - maxS) * Math.min(1, 4 * dt);
-      if (v.sp < -maxS * 0.6) v.sp = -maxS * 0.6;
 
-      // High-authority responsive steering at all speeds with natural reverse inversion
-      const tf = heli ? 1 : Math.max(0.68, Math.min(1.25, 0.45 + Math.abs(v.sp) / 100));
-      v.a += steer * d.turn * tf * dt * (v.sp < -5 && !heli ? -1 : 1);
+      // Exponential lateral tire traction decay
+      const nCos = Math.cos(v.a), nSin = Math.sin(v.a);
+      const latGrip = (d.kind === 'car' ? (P.grip || 1) : 1) * (d.grip || 1) * (braking ? 2.4 : 9.5);
+      lat *= Math.exp(-latGrip * dt);
 
-      // Tire grip, handbrake drift, and slide physics
-      let effectiveGrip = (d.kind === 'car' ? (P.grip || 1) : 1) * (d.grip || 1);
-      if (braking) effectiveGrip *= 0.32; // Power slide
-      const g = Math.min(1, effectiveGrip * 10 * dt);
-      v.vx += (Math.cos(v.a) * v.sp - v.vx) * g;
-      v.vy += (Math.sin(v.a) * v.sp - v.vy) * g;
+      v.vx = nCos * fwd - nSin * lat;
+      v.vy = nSin * fwd + nCos * lat;
+      v.sp = fwd;
 
       if (!disabled && drv) v.fuel = Math.max(0, v.fuel - d.burn * (Math.abs(thr) + (heli && v.alt > 0 ? 0.35 : 0)) * (boost ? 1.6 : 1) * dt);
       const ck = heli ? (v.alt > 0.6 ? 'fly' : 'car') : d.kind;
+      const colR = Math.max(14, Math.round(d.r * 0.78));
       const spd = Math.hypot(v.vx, v.vy);
       if (spd > 0.5) {
-        const hit = this.moveCircle(v, v.vx * dt, v.vy * dt, d.r, ck);
-        if (hit) {
-          if (hit.def && d.crush) this.damageStruct(hit, 5000, drv);
-          else {
-            if (spd > 260) {
-              this.damageVehicle(v, (spd - 200) * 0.05 * (d.tough ? 0.25 : 1), null); if (hit.def) this.damageStruct(hit, spd * 0.4 * (d.mass || 1), drv);
-              if (spd > 650 && !d.tough) for (const pid of v.seats) { const pp = pid && this.players.get(pid); if (pp) this.damagePlayer(pp, (spd - 600) * 0.04, 'crash', null); }
-              this.ev.push({x: v.x, y: v.y, d: ['cr', Math.round(v.x), Math.round(v.y)]});
+        const res = this.moveVehicle(v, v.vx * dt, v.vy * dt, colR, ck);
+        if (res.hit) {
+          if (res.hit.def && d.crush) {
+            this.damageStruct(res.hit, 5000, drv);
+          } else {
+            const impactSpd = (res.bx ? Math.abs(v.vx) : 0) + (res.by ? Math.abs(v.vy) : 0);
+            if (impactSpd > 340 && now - (v.lastCrash || 0) > 380) {
+              v.lastCrash = now;
+              this.damageVehicle(v, (impactSpd - 290) * 0.04 * (d.tough ? 0.25 : 1), null);
+              if (res.hit.def) this.damageStruct(res.hit, impactSpd * 0.35 * (d.mass || 1), drv);
+              if (impactSpd > 680 && !d.tough) for (const pid of v.seats) { const pp = pid && this.players.get(pid); if (pp) this.damagePlayer(pp, (impactSpd - 600) * 0.035, 'crash', null); }
+              this.ev.push({x: v.x, y: v.y, zone: 'world', d: ['cr', Math.round(v.x), Math.round(v.y)]});
             }
-            v.sp *= 0.35; v.vx *= 0.4; v.vy *= 0.4;
+            if (res.bx) v.vx *= -0.08;
+            if (res.by) v.vy *= -0.08;
+            v.sp = v.vx * nCos + v.vy * nSin;
           }
         }
         if (spd > 130 && ck !== 'fly' && !v.dead) this.ram(v, d, drv, spd);
       }
       if (v.dead) continue;
+      // Soft vehicle-to-vehicle circle separation with momentum damping
+      if (ck !== 'fly') {
+        for (const o of this.vh.query(v.x, v.y, d.r + 70, [])) {
+          if (o === v || o.dead || (VEH[o.type].kind === 'heli' && o.alt > 0.5)) continue;
+          const oColR = Math.max(14, Math.round(VEH[o.type].r * 0.78));
+          const rr = colR + oColR, dx = v.x - o.x, dy = v.y - o.y, dd = dx * dx + dy * dy;
+          if (dd > 0.1 && dd < rr * rr) {
+            const dl = Math.sqrt(dd), push = (rr - dl) * 0.42;
+            const nx = v.x + dx / dl * push, ny = v.y + dy / dl * push;
+            if (!this.blockedAt(nx, ny, colR, ck, v, 'world')) { v.x = nx; v.y = ny; }
+            v.vx *= 0.9; v.vy *= 0.9;
+          }
+        }
+      }
       for (const pid of v.seats) { if (!pid) continue; const p = this.players.get(pid); if (p) { p.x = v.x; p.y = v.y; if (d.heal) { p.hp = Math.min(100, p.hp + d.heal * dt); p.bleed = false; } } }
       if (v.siren && this.tickN % 30 === 0) this.noise(v.x, v.y, 1500);
       if (d.kind === 'car' && !heli && P.water === 2) this.damageVehicle(v, 60 * dt, null);
@@ -1242,16 +1670,16 @@ class Game {
   ram(v, d, drv, spd) {
     const ux = v.vx / spd, uy = v.vy / spd;
     for (const z of this.zh.query(v.x, v.y, d.r + 60, [])) {
-      if (z.hp <= 0 || z.burrowed) continue; const zd = ZD[z.type]; if (d2(z.x, z.y, v.x, v.y) > (d.r + zd.r) ** 2) continue;
+      if ((z.zone || 'world') !== 'world' || z.hp <= 0 || z.burrowed) continue; const zd = ZD[z.type]; if (d2(z.x, z.y, v.x, v.y) > (d.r + zd.r) ** 2) continue;
       const dmg = spd * 0.14 * (d.mass || 1); this.hitZombie(z, dmg, drv, null, v.a);
-      if (drv && z.hp <= 0) this.awardScrap(drv, 15, z.x, z.y);
+      if (drv && z.hp <= 0) { this.awardScrap(drv, 15, z.x, z.y, 'world'); this.progressMission(drv, 'roadkill', 1); }
       if (z.hp > 0) { this.moveCircle(z, ux * 35, uy * 35, zd.r, 'walk'); z.stun = this.now + 500; }
       const slow = zd.boss ? 0.35 : z.type === 'brute' ? 0.7 : 0.95; v.sp *= slow; v.vx *= slow; v.vy *= slow;
       if (!d.tough) this.damageVehicle(v, dmg * 0.012 * (zd.boss ? 6 : 1), null);
       if (v.dead) return;
     }
     for (const p of this.players.values()) {
-      if (p.dead || p.veh || d2(p.x, p.y, v.x, v.y) > (d.r + p.r) ** 2) continue;
+      if ((p.zone || 'world') !== 'world' || p.dead || p.veh || d2(p.x, p.y, v.x, v.y) > (d.r + p.r) ** 2) continue;
       if (drv && drv !== p && this.canHurt(drv, p)) this.damagePlayer(p, spd * 0.09 * (d.mass || 1), 'melee', drv);
       this.knockPlayer(p, ux * 60 + (p.x - v.x) * 0.3, uy * 60 + (p.y - v.y) * 0.3);
     }
@@ -1284,9 +1712,9 @@ class Game {
     if (!this.players.size) { if (this.zombies.size) this.zombies.clear(); return; }
     const night = this.light < 0.35, bm = this.fxActive('bloodmoon') ? 2 : 1, ecl = this.fxActive('eclipse') ? 1.5 : 1;
     for (const p of this.players.values()) {
-      if (p.dead || this.zombies.size >= MAXZ) continue;
+      if (p.dead || (p.zone || 'world') !== 'world' || this.zombies.size >= MAXZ) continue;
       const target = Math.round((THEME_DENS[this.themeAt(p.x, p.y)] || 20) * this.settings.density * (night ? 1.5 : 1) * bm * ecl);
-      let c = 0; for (const z of this.zh.query(p.x, p.y, 1800, [])) if (d2(z.x, z.y, p.x, p.y) < 3240000) c++;
+      let c = 0; for (const z of this.zh.query(p.x, p.y, 1800, [])) if ((z.zone || 'world') === 'world' && d2(z.x, z.y, p.x, p.y) < 3240000) c++;
       const need = Math.min(6, target - c); for (let k = 0; k < need; k++) this.spawnNear(p, night);
       if ((bm > 1 && rnd() < 0.01) || rnd() < 0.0006) {
         let boss = false; for (const z of this.zombies.values()) if (ZD[z.type].boss) { boss = true; break; }
@@ -1297,16 +1725,18 @@ class Game {
   despawnTick() {
     for (const z of this.zombies.values()) {
       if (ZD[z.type].boss && rnd() > 0.02) continue;
-      let near = false; for (const p of this.players.values()) if (d2(p.x, p.y, z.x, z.y) < 7290000) { near = true; break; }
+      const zz = z.zone || 'world';
+      let near = false; for (const p of this.players.values()) if ((p.zone || 'world') === zz && d2(p.x, p.y, z.x, z.y) < 7290000) { near = true; break; }
       if (!near) this.zombies.delete(z.id);
     }
   }
   zThink(z, d, night) {
-    const smoke = []; for (const e of this.effects.values()) if (e.type === 'smoke' && d2(e.x, e.y, z.x, z.y) < 4e6) smoke.push(e);
+    const zz = z.zone || 'world';
+    const smoke = []; for (const e of this.effects.values()) if ((e.zone || 'world') === zz && e.type === 'smoke' && d2(e.x, e.y, z.x, z.y) < 4e6) smoke.push(e);
     const base = d.sense * (night ? 1.25 : 1) * (this.fxActive('dust') || this.fxActive('whiteout') ? 0.6 : 1);
     let best = null, bd = Infinity;
     for (const p of this.players.values()) {
-      if (p.dead) continue; let s = base;
+      if (p.dead || (p.zone || 'world') !== zz) continue; let s = base;
       if (p.veh) { if (p.veh.alt > 0.5) continue; s *= 1.35; }
       if (p.input.sprint) s *= 1.25; if (p.wfx.gillie) s *= 0.5;
       if (p.buf.scent > this.now && this.now - p.lastAtk > 3000) s *= 0.12;
@@ -1314,8 +1744,8 @@ class Game {
       const dd = Math.hypot(p.x - z.x, p.y - z.y); if (dd < s && dd < bd) { bd = dd; best = p; }
     }
     if (best) { z.tp = best.id; z.inv = false; return; }
-    if (z.tp) { const p = this.players.get(z.tp); if (p && !p.dead && d2(p.x, p.y, z.x, z.y) < (base * 1.6) ** 2) return; z.tp = 0; }
-    for (let i = this.noises.length - 1; i >= 0; i--) { const n = this.noises[i]; if (this.now - n.t > 4000) break; if (d2(n.x, n.y, z.x, z.y) < n.r * n.r) { z.gx = n.x + R(-60, 60); z.gy = n.y + R(-60, 60); z.inv = true; return; } }
+    if (z.tp) { const p = this.players.get(z.tp); if (p && !p.dead && (p.zone || 'world') === zz && d2(p.x, p.y, z.x, z.y) < (base * 1.6) ** 2) return; z.tp = 0; }
+    if (zz === 'world') for (let i = this.noises.length - 1; i >= 0; i--) { const n = this.noises[i]; if (this.now - n.t > 4000) break; if (d2(n.x, n.y, z.x, z.y) < n.r * n.r) { z.gx = n.x + R(-60, 60); z.gy = n.y + R(-60, 60); z.inv = true; return; } }
     if (z.inv && d2(z.gx, z.gy, z.x, z.y) > 900) return;
     z.inv = false; if (d2(z.gx, z.gy, z.x, z.y) < 900 || rnd() < 0.03) { z.gx = z.x + R(-260, 260); z.gy = z.y + R(-260, 260); }
   }
@@ -1323,16 +1753,16 @@ class Game {
     const now = this.now, night = this.light < 0.35, frenzy = (this.fxActive('bloodmoon') ? 1.3 : 1) * (this.fxActive('eclipse') ? 1.2 : 1);
     const odd = this.tickN & 1, zdt = dt * 2;
     for (const z of this.zombies.values()) {
-      if ((z.id & 1) !== odd) continue; const d = ZD[z.type];
+      if ((z.id & 1) !== odd) continue; const d = ZD[z.type], zz = z.zone || 'world';
       if (z.burn > now) { this.hitZombie(z, 7 * zdt, z.burnBy, null); if (z.hp <= 0) continue; }
       if (z.poison > now) { this.hitZombie(z, 5 * zdt, z.burnBy, null); if (z.hp <= 0) continue; }
       if (z.stun > now) continue;
       if (now >= z.think) { z.think = now + 250 + rnd() * 200; this.zThink(z, d, night); }
-      let target = null; if (z.tp) { const p = this.players.get(z.tp); if (p && !p.dead) { target = p; z.gx = p.x; z.gy = p.y; } else z.tp = 0; }
+      let target = null; if (z.tp) { const p = this.players.get(z.tp); if (p && !p.dead && (p.zone || 'world') === zz) { target = p; z.gx = p.x; z.gy = p.y; } else z.tp = 0; }
       const dx = z.gx - z.x, dy = z.gy - z.y, dist = Math.hypot(dx, dy);
       if (d.burrow) z.burrowed = !(target && dist < 230);
-      if (d.aura && this.tickN % 6 < 2) for (const p of this.players.values()) { if (p.dead || (p.veh && !VEH[p.veh.type].exposed) || p.wfx.toxic) continue; if (d2(p.x, p.y, z.x, z.y) < d.aura.r ** 2) this.damagePlayer(p, d.aura.dps * 0.2, 'toxic', null); }
-      const P = PROPS[this.tileAt(z.x, z.y)];
+      if (d.aura && this.tickN % 6 < 2) for (const p of this.players.values()) { if ((p.zone || 'world') !== zz || p.dead || (p.veh && !VEH[p.veh.type].exposed) || p.wfx.toxic) continue; if (d2(p.x, p.y, z.x, z.y) < d.aura.r ** 2) this.damagePlayer(p, d.aura.dps * 0.2, 'toxic', null); }
+      const P = zz === 'world' ? PROPS[this.tileAt(z.x, z.y)] : PROPS[6];
       let spd = d.spd * (night ? 1.2 : 1) * frenzy;
       if (d.swim) spd *= P.water ? 2.1 : 0.7; else spd *= P.water === 2 ? 0.45 : (P.walk || 1);
       if (!target && !z.inv) spd *= 0.45;
@@ -1359,10 +1789,10 @@ class Game {
     if (this.tickN % 3 === 0) {
       const q = [];
       for (const z of this.zombies.values()) {
-        const r = ZD[z.type].r; q.length = 0; this.zh.query(z.x, z.y, 60, q);
+        const r = ZD[z.type].r, zz = z.zone || 'world'; q.length = 0; this.zh.query(z.x, z.y, 60, q);
         for (const o of q) {
-          if (o === z) continue; const rr = r + ZD[o.type].r, dx = z.x - o.x, dy = z.y - o.y, dd = dx * dx + dy * dy;
-          if (dd > 0.01 && dd < rr * rr) { const dl = Math.sqrt(dd), push = (rr - dl) * 0.25, nx = z.x + dx / dl * push, ny = z.y + dy / dl * push; if (!this.blockedAt(nx, ny, r, 'walk')) { z.x = nx; z.y = ny; } }
+          if (o === z || (o.zone || 'world') !== zz) continue; const rr = r + ZD[o.type].r, dx = z.x - o.x, dy = z.y - o.y, dd = dx * dx + dy * dy;
+          if (dd > 0.01 && dd < rr * rr) { const dl = Math.sqrt(dd), push = (rr - dl) * 0.25, nx = z.x + dx / dl * push, ny = z.y + dy / dl * push; if (!this.blockedAt(nx, ny, r, 'walk', z, zz)) { z.x = nx; z.y = ny; } }
         }
       }
     }
@@ -1371,23 +1801,25 @@ class Game {
     const dmg = d.dmg * (night ? 1.15 : 1);
     if (target.veh) { const v = target.veh; if (VEH[v.type].exposed && rnd() < 0.5) this.damagePlayer(target, dmg, 'zombie', null, z); else this.damageVehicle(v, dmg * 1.4 * (d.svd ? 2 : 1), null); }
     else this.damagePlayer(target, dmg, 'zombie', null, z);
-    this.ev.push({x: z.x, y: z.y, d: ['za', z.id]});
+    this.ev.push({x: z.x, y: z.y, zone: z.zone || 'world', d: ['za', z.id]});
   }
   spawnSpit(z, d, tx, ty) {
-    const a = Math.atan2(ty - z.y, tx - z.x), sp = 520;
-    this.proj.push({id: this.id(), x: z.x + Math.cos(a) * 20, y: z.y + Math.sin(a) * 20, a, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, w: {dmg: d.spit.dmg, proj: sp, range: d.spit.range, kind: 'spit'}, o: null, zom: true, born: this.now, die: this.now + d.spit.range / sp * 1000, pierce: 1, z: 0});
+    const a = Math.atan2(ty - z.y, tx - z.x), sp = 520, zz = z.zone || 'world';
+    this.proj.push({id: this.id(), x: z.x + Math.cos(a) * 20, y: z.y + Math.sin(a) * 20, a, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, w: {dmg: d.spit.dmg, proj: sp, range: d.spit.range, kind: 'spit'}, o: null, zom: true, zone: zz, born: this.now, die: this.now + d.spit.range / sp * 1000, pierce: 1, z: 0});
   }
   slam(z, d) {
-    this.ev.push({x: z.x, y: z.y, d: ['sl', Math.round(z.x), Math.round(z.y), d.slam.r]});
+    const zz = z.zone || 'world';
+    this.ev.push({x: z.x, y: z.y, zone: zz, d: ['sl', Math.round(z.x), Math.round(z.y), d.slam.r]});
     for (const p of this.players.values()) {
-      if (p.dead) continue; const dd = Math.hypot(p.x - z.x, p.y - z.y); if (dd > d.slam.r) continue;
+      if ((p.zone || 'world') !== zz || p.dead) continue; const dd = Math.hypot(p.x - z.x, p.y - z.y); if (dd > d.slam.r) continue;
       if (p.veh) this.damageVehicle(p.veh, d.slam.dmg * 3, null); else { this.damagePlayer(p, d.slam.dmg, 'zombie', null, z); const a = Math.atan2(p.y - z.y, p.x - z.x); this.knockPlayer(p, Math.cos(a) * 120, Math.sin(a) * 120); }
     }
-    for (const s of this.sh.query(z.x, z.y, d.slam.r + 60, [])) this.damageStruct(s, 300, null);
+    for (const s of this.sh.query(z.x, z.y, d.slam.r + 60, [])) if ((s.zone || 'world') === zz) this.damageStruct(s, 300, null);
   }
   scream(z) {
-    this.ev.push({x: z.x, y: z.y, d: ['sc', Math.round(z.x), Math.round(z.y)]}); this.noise(z.x, z.y, 1600);
-    if (this.zombies.size < MAXZ) for (let k = 0; k < 3; k++) { const a = rnd() * 6.28, x = z.x + Math.cos(a) * R(300, 600), y = z.y + Math.sin(a) * R(300, 600); if (!this.blockedAt(x, y, 15, 'walk')) { const n = this.spawnZombie('runner', x, y); n.tp = z.tp; } }
+    const zz = z.zone || 'world';
+    this.ev.push({x: z.x, y: z.y, zone: zz, d: ['sc', Math.round(z.x), Math.round(z.y)]}); if (zz === 'world') this.noise(z.x, z.y, 1600);
+    if (this.zombies.size < MAXZ) for (let k = 0; k < 3; k++) { const a = rnd() * 6.28, x = z.x + Math.cos(a) * R(220, 420), y = z.y + Math.sin(a) * R(220, 420); if (!this.blockedAt(x, y, 15, 'walk', null, zz)) { const n = this.spawnZombie('runner', x, y); if (n) { n.zone = zz; n.tp = z.tp; } } }
   }
 
   // ───────── world effects ─────────
@@ -1395,22 +1827,23 @@ class Game {
     const now = this.now, sec = this.tickN % 30 === 0;
     for (const e of this.effects.values()) {
       if (now >= e.until) { this.effects.delete(e.id); continue; }
+      const ez = e.zone || 'world';
       switch (e.type) {
         case 'fire': case 'toxic': case 'acid': case 'crater': {
           if (this.tickN % 5) break; const f = 5 / 30;
           for (const p of this.players.values()) {
-            if (p.dead || (p.veh && !VEH[p.veh.type].exposed) || d2(p.x, p.y, e.x, e.y) > e.r * e.r) continue;
+            if ((p.zone || 'world') !== ez || p.dead || (p.veh && !VEH[p.veh.type].exposed) || d2(p.x, p.y, e.x, e.y) > e.r * e.r) continue;
             if (e.type === 'toxic' || e.type === 'crater') { if (!p.wfx.toxic) this.damagePlayer(p, (e.dps || 8) * f, 'toxic', null); }
             else { if (e.o && e.o !== p && !this.canHurt(e.o, p)) continue; this.damagePlayer(p, (e.dps || 12) * f, e.type === 'fire' ? 'fire' : 'acid', e.o && e.o !== p ? e.o : null); }
           }
-          if (e.type === 'fire') for (const z of this.zh.query(e.x, e.y, e.r, [])) if (d2(z.x, z.y, e.x, e.y) < e.r * e.r && !ZD[z.type].fireImmune) { z.burn = now + 3000; z.burnBy = e.o; }
+          if (e.type === 'fire') for (const z of this.zh.query(e.x, e.y, e.r, [])) if ((z.zone || 'world') === ez && d2(z.x, z.y, e.x, e.y) < e.r * e.r && !ZD[z.type].fireImmune) { z.burn = now + 3000; z.burnBy = e.o; }
           break;
         }
-        case 'flare': case 'lure': if (sec) this.noise(e.x, e.y, e.lure || 900); break;
-        case 'drone': { const dx = e.tx - e.x, dy = e.ty - e.y, dd = Math.hypot(dx, dy); if (dd > 5) { const s = Math.min(dd, 320 * dt); e.x += dx / dd * s; e.y += dy / dd * s; } if (sec) this.noise(e.x, e.y, 1000); break; }
+        case 'flare': case 'lure': if (sec && ez === 'world') this.noise(e.x, e.y, e.lure || 900); break;
+        case 'drone': { const dx = e.tx - e.x, dy = e.ty - e.y, dd = Math.hypot(dx, dy); if (dd > 5) { const s = Math.min(dd, 320 * dt); e.x += dx / dd * s; e.y += dy / dd * s; } if (sec && ez === 'world') this.noise(e.x, e.y, 1000); break; }
         case 'vortex': this.vortexTick(e, dt); break;
         case 'mine': this.mineTick(e); break;
-        case 'drop': if (now >= e.land) { this.createItem(e.x, e.y, {k: 'crate', contents: this.rollMany('drop', 6)}); this.ev.push({x: e.x, y: e.y, all: true, d: ['dl', Math.round(e.x), Math.round(e.y)]}); this.noise(e.x, e.y, 2200); this.effects.delete(e.id); } break;
+        case 'drop': if (now >= e.land) { this.createItem(e.x, e.y, {k: 'crate', contents: this.rollMany('drop', 6)}); this.ev.push({x: e.x, y: e.y, zone: 'world', all: true, d: ['dl', Math.round(e.x), Math.round(e.y)]}); this.noise(e.x, e.y, 2200); this.effects.delete(e.id); } break;
       }
     }
   }
@@ -1419,36 +1852,36 @@ class Game {
     e.x = clamp(e.x + e.vx * dt, 300, this.WP - 300); e.y = clamp(e.y + e.vy * dt, 300, this.HP - 300);
     const pull = e.pull || 220, dmgTick = this.tickN % 5 === 0;
     for (const p of this.players.values()) {
-      if (p.dead) continue; const dx = e.x - p.x, dy = e.y - p.y, d = Math.hypot(dx, dy); if (d > e.r || d < 1) continue; const f = pull * (1 - d / e.r);
+      if ((p.zone || 'world') !== 'world' || p.dead) continue; const dx = e.x - p.x, dy = e.y - p.y, d = Math.hypot(dx, dy); if (d > e.r || d < 1) continue; const f = pull * (1 - d / e.r);
       if (p.veh) { const v = p.veh; if (VEH[v.type].kind !== 'heli' || v.alt > 0) { v.vx += dx / d * f * dt * 2; v.vy += dy / d * f * dt * 2; } }
       else p.pull = [p.pull[0] + dx / d * f, p.pull[1] + dy / d * f];
       if (d < e.r * 0.18 && dmgTick) this.damagePlayer(p, (e.dps || 20) / 6, 'vortex', null);
     }
-    for (const z of this.zh.query(e.x, e.y, e.r, [])) { const dx = e.x - z.x, dy = e.y - z.y, d = Math.hypot(dx, dy); if (d > e.r || d < 1 || z.hp <= 0) continue; const f = pull * 1.3 * (1 - d / e.r) * dt; this.moveCircle(z, dx / d * f, dy / d * f, ZD[z.type].r, 'walk'); if (d < e.r * 0.18 && dmgTick) this.hitZombie(z, (e.dps || 20) / 6, null, null); }
+    for (const z of this.zh.query(e.x, e.y, e.r, [])) { if ((z.zone || 'world') !== 'world') continue; const dx = e.x - z.x, dy = e.y - z.y, d = Math.hypot(dx, dy); if (d > e.r || d < 1 || z.hp <= 0) continue; const f = pull * 1.3 * (1 - d / e.r) * dt; this.moveCircle(z, dx / d * f, dy / d * f, ZD[z.type].r, 'walk'); if (d < e.r * 0.18 && dmgTick) this.hitZombie(z, (e.dps || 20) / 6, null, null); }
     for (const v of this.vh.query(e.x, e.y, e.r, [])) { if (v.dead || v.seats.some(s => s)) continue; const dx = e.x - v.x, dy = e.y - v.y, d = Math.hypot(dx, dy); if (d > e.r || d < 1) continue; const f = pull * (1 - d / e.r); v.vx += dx / d * f * dt; v.vy += dy / d * f * dt; }
   }
   mineTick(e) {
-    if (this.now < e.armed || this.tickN % 3) return; let trig = false; const R2 = e.r * e.r + 400;
-    if (e.trig === 'heavy') { for (const z of this.zh.query(e.x, e.y, 90, [])) if ((ZD[z.type].boss || z.type === 'brute') && d2(z.x, z.y, e.x, e.y) < (e.r + 30) ** 2) { trig = true; break; } }
-    else for (const z of this.zh.query(e.x, e.y, 60, [])) if (d2(z.x, z.y, e.x, e.y) < R2) { trig = true; break; }
-    if (!trig) for (const v of this.vh.query(e.x, e.y, 100, [])) {
+    if (this.now < e.armed || this.tickN % 3) return; let trig = false; const R2 = e.r * e.r + 400, ez = e.zone || 'world';
+    if (e.trig === 'heavy') { for (const z of this.zh.query(e.x, e.y, 90, [])) if ((z.zone || 'world') === ez && (ZD[z.type].boss || z.type === 'brute') && d2(z.x, z.y, e.x, e.y) < (e.r + 30) ** 2) { trig = true; break; } }
+    else for (const z of this.zh.query(e.x, e.y, 60, [])) if ((z.zone || 'world') === ez && d2(z.x, z.y, e.x, e.y) < R2) { trig = true; break; }
+    if (!trig && ez === 'world') for (const v of this.vh.query(e.x, e.y, 100, [])) {
       if (v.dead || v.alt > 0.5 || d2(v.x, v.y, e.x, e.y) > (VEH[v.type].r + e.r) ** 2) continue; const occ = v.seats.find(s => s); if (!occ) continue;
       const drv = this.players.get(occ); if (!drv || (drv !== e.o && this.canHurt(e.o, drv))) { trig = true; break; }
     }
-    if (!trig && e.trig !== 'heavy') for (const p of this.players.values()) if (!p.dead && !p.veh && p !== e.o && this.canHurt(e.o, p) && d2(p.x, p.y, e.x, e.y) < R2) { trig = true; break; }
-    if (trig) { this.effects.delete(e.id); this.explode(e.x, e.y, e.w.radius, e.w.dmg, e.o, e.w); }
+    if (!trig && e.trig !== 'heavy') for (const p of this.players.values()) if ((p.zone || 'world') === ez && !p.dead && !p.veh && p !== e.o && this.canHurt(e.o, p) && d2(p.x, p.y, e.x, e.y) < R2) { trig = true; break; }
+    if (trig) { this.effects.delete(e.id); this.explode(e.x, e.y, e.w.radius, e.w.dmg, e.o, e.w, ez); }
   }
   updateStructs() {
     if (this.tickN % 8) return; const now = this.now, dt = 8 / 30;
     for (const s of this.structs.values()) {
-      const d = s.def, own = this.players.get(s.owner) || null;
-      if (d.trap === 'spike') { for (const z of this.zh.query(s.x, s.y, 80, [])) if (z.hp > 0 && Math.abs(z.x - s.x) < s.w / 2 + 8 && Math.abs(z.y - s.y) < s.h / 2 + 8) { this.hitZombie(z, 22, own, null); s.hp -= 3; } if (s.hp <= 0) this.removeStruct(s, true); }
+      const d = s.def, own = this.players.get(s.owner) || null, sz = s.zone || 'world';
+      if (d.trap === 'spike') { for (const z of this.zh.query(s.x, s.y, 80, [])) if ((z.zone || 'world') === sz && z.hp > 0 && Math.abs(z.x - s.x) < s.w / 2 + 8 && Math.abs(z.y - s.y) < s.h / 2 + 8) { this.hitZombie(z, 22, own, null); s.hp -= 3; } if (s.hp <= 0) this.removeStruct(s, true); }
       else if (d.trap === 'tesla' && s.charge > 0 && now >= (s.next || 0)) {
-        let best = null, bd = 160 * 160; for (const z of this.zh.query(s.x, s.y, 160, [])) { const dd = d2(z.x, z.y, s.x, s.y); if (dd < bd && z.hp > 0) { bd = dd; best = z; } }
-        if (best) { s.next = now + 450; s.charge--; this.ev.push({x: s.x, y: s.y, d: ['zp', Math.round(s.x), Math.round(s.y), Math.round(best.x), Math.round(best.y)]}); this.hitZombie(best, 40, own, {stun: 0.6, mode: 'trap'}); }
+        let best = null, bd = 160 * 160; for (const z of this.zh.query(s.x, s.y, 160, [])) { if ((z.zone || 'world') !== sz) continue; const dd = d2(z.x, z.y, s.x, s.y); if (dd < bd && z.hp > 0) { bd = dd; best = z; } }
+        if (best) { s.next = now + 450; s.charge--; this.ev.push({x: s.x, y: s.y, zone: sz, d: ['zp', Math.round(s.x), Math.round(s.y), Math.round(best.x), Math.round(best.y)]}); this.hitZombie(best, 40, own, {stun: 0.6, mode: 'trap'}); }
       }
-      if (d.lure) { if (!(d.delay && now < s.born + d.delay * 1000) && now >= (s.nl || 0)) { s.nl = now + 1000; this.noise(s.x, s.y, d.lure); } if (d.life && now > s.born + d.life * 1000) this.removeStruct(s, false); }
-      if (d.noise && now >= (s.nn || 0)) { s.nn = now + 2000; this.noise(s.x, s.y, d.noise); }
+      if (d.lure) { if (!(d.delay && now < s.born + d.delay * 1000) && now >= (s.nl || 0)) { s.nl = now + 1000; if (sz === 'world') this.noise(s.x, s.y, d.lure); } if (d.life && now > s.born + d.life * 1000) this.removeStruct(s, false); }
+      if (d.noise && now >= (s.nn || 0)) { s.nn = now + 2000; if (sz === 'world') this.noise(s.x, s.y, d.noise); }
       if (d.water && !d.inf) s.water = Math.min(3, (s.water || 0) + dt / 60 * (this.fxActive('storm') || this.fxActive('tornado') || this.fxActive('hail') ? 4 : 1));
     }
   }
@@ -1597,7 +2030,7 @@ class Game {
       // Hardlight shield dome pushes away and repels approaching zombies
       if (up.hardlight_dome) {
         for (const z of this.zh.query(plot.x, plot.y, plot.radius, [])) {
-          if (z.hp <= 0) continue;
+          if ((z.zone || 'world') !== 'world' || z.hp <= 0) continue;
           const dd = Math.hypot(z.x - plot.x, z.y - plot.y);
           if (dd < plot.radius && dd > 1) {
             const pushA = Math.atan2(z.y - plot.y, z.x - plot.x);
@@ -1623,7 +2056,7 @@ class Game {
       if (up.spikes) {
         const spikeDmg = [0, 20, 40, 70, 110, 180][up.spikes] || 20;
         for (const z of this.zh.query(plot.x, plot.y, plot.radius + 30, [])) {
-          if (z.hp <= 0) continue;
+          if ((z.zone || 'world') !== 'world' || z.hp <= 0) continue;
           const zd = Math.hypot(z.x - plot.x, z.y - plot.y);
           if (zd >= plot.radius - 25 && zd <= plot.radius + 30) {
             this.hitZombie(z, spikeDmg * dt, null, {knock: 50});
@@ -1636,7 +2069,7 @@ class Game {
       if (now - (plot.lastTurretFire || 0) > turretCooldown) {
         let targetZ = null, minD = (850 + (up.radar_spire || 0) * 150) ** 2;
         for (const z of this.zh.query(plot.x, plot.y, 900, [])) {
-          if (z.hp <= 0) continue;
+          if ((z.zone || 'world') !== 'world' || z.hp <= 0) continue;
           const dd = d2(z.x, z.y, plot.x, plot.y);
           if (dd < minD) { minD = dd; targetZ = z; }
         }
@@ -1659,28 +2092,31 @@ class Game {
           }
 
           this.hitZombie(targetZ, turretDmg, ownerPlayer, {knock: 140});
-          this.ev.push({x: bestCorner[0], y: bestCorner[1], d: ['tr', Math.round(bestCorner[0]), Math.round(bestCorner[1]), Math.round(targetZ.x), Math.round(targetZ.y), up.turret_laser ? 2 : up.turret_mg ? 3 : 1]});
+          this.ev.push({x: bestCorner[0], y: bestCorner[1], zone: 'world', d: ['tr', Math.round(bestCorner[0]), Math.round(bestCorner[1]), Math.round(targetZ.x), Math.round(targetZ.y), up.turret_laser ? 2 : up.turret_mg ? 3 : 1]});
           if (up.turret_rocket) {
-            this.explode(targetZ.x, targetZ.y, 110 + up.turret_rocket * 30, 160, ownerPlayer, {fx: 'frag'});
+            this.explode(targetZ.x, targetZ.y, 110 + up.turret_rocket * 30, 160, ownerPlayer, {fx: 'frag'}, 'world');
           }
           if (up.tesla_spire) {
             let hitCount = 0;
             for (const otherZ of this.zh.query(targetZ.x, targetZ.y, 300, [])) {
-              if (otherZ !== targetZ && otherZ.hp > 0 && hitCount < 2 + up.tesla_spire) {
+              if ((otherZ.zone || 'world') === 'world' && otherZ !== targetZ && otherZ.hp > 0 && hitCount < 2 + up.tesla_spire) {
                 hitCount++;
                 this.hitZombie(otherZ, 70 * up.tesla_spire, ownerPlayer, {knock: 90});
-                this.ev.push({x: targetZ.x, y: targetZ.y, d: ['zp', Math.round(targetZ.x), Math.round(targetZ.y), Math.round(otherZ.x), Math.round(otherZ.y)]});
+                this.ev.push({x: targetZ.x, y: targetZ.y, zone: 'world', d: ['zp', Math.round(targetZ.x), Math.round(targetZ.y), Math.round(otherZ.x), Math.round(otherZ.y)]});
               }
             }
           }
         }
       }
 
-      // Survival, food, water, and ammo replenishment inside shelter
+      // Survival, food, water, and ammo replenishment inside shelter or its underground bunker
       for (const p of this.players.values()) {
         if (p.dead) continue;
+        const pZone = p.zone || 'world';
+        const inMyBunker = pZone === ('bunker_' + plot.id);
+        const onSurfacePlot = pZone === 'world' && d2(p.x, p.y, plot.x, plot.y) < plot.radius * plot.radius;
         if (p.id === plot.owner || (plot.team > 0 && p.team === plot.team) || plot.owner === null) {
-          if (d2(p.x, p.y, plot.x, plot.y) < plot.radius * plot.radius) {
+          if (onSurfacePlot || inMyBunker) {
             if (up.medbay) {
               const healRate = [0, 5, 12, 20, 35, 60][up.medbay] || 5;
               p.hp = Math.min(100, p.hp + healRate * dt);
@@ -1748,48 +2184,58 @@ class Game {
       const sl = p.hotbar[p.sel], w = sl ? WEAPONS[sl.w] : null; let f = 0;
       if (p.dead) f |= 1; if (p.light) f |= (p.pfx.light === 'cone' ? 2 : 512); if (now < p.reloadUntil) f |= 4; if (p.swim) f |= 8; if (p.input.sprint && p.st > 1) f |= 16;
       if (p.buf.burn > now) f |= 32; if (p.buf.stun > now) f |= 64; if (p.nvg) f |= 128; if (p.scope) f |= 256; if (now < p.spawnProt) f |= 1024; if (p.bleed) f |= 2048;
-      P.push([p.id, Math.round(p.x), Math.round(p.y), Math.round(Math.atan2(p.input.ay - p.y, p.input.ax - p.x) * 100), Math.round(p.hp), p.team, w ? w.i : -1, p.veh ? p.veh.id : 0, f, p.rebirths || 0]);
+      P.push([p.id, Math.round(p.x), Math.round(p.y), Math.round(Math.atan2(p.input.ay - p.y, p.input.ax - p.x) * 100), Math.round(p.hp), p.team, w ? w.i : -1, p.veh ? p.veh.id : 0, f, p.rebirths || 0, p.zone || 'world']);
     }
     for (const p of this.players.values()) {
       if (!p.ws || p.ws.readyState !== 1 || p.ws.bufferedAmount > 2e6) continue;
-      const cx = p.x, cy = p.y, Rr = p.scope ? 2200 : 1500, R2 = Rr * Rr;
+      const cx = p.x, cy = p.y, pZone = p.zone || 'world', Rr = p.scope ? 2200 : 1500, R2 = Rr * Rr;
+      const zoneP = P.filter(q => q[10] === pZone);
       const Z = [];
       for (const z of this.zh.query(cx, cy, Rr, [])) {
-        if (z.hp <= 0) continue; const dd = d2(z.x, z.y, cx, cy); if (dd > R2) continue; const d = ZD[z.type];
+        if ((z.zone || 'world') !== pZone || z.hp <= 0) continue; const dd = d2(z.x, z.y, cx, cy); if (dd > R2) continue; const d = ZD[z.type];
         if (d.stealth && dd > 72900 && !(p.light && dd < 270400) && !p.nvg) continue;
         let f = 0; if (z.burrowed) f |= 1; if (z.burn > now) f |= 2; if (z.stun > now) f |= 4; if (now - z.atk < 300) f |= 8;
         Z.push([z.id, z.ti, Math.round(z.x), Math.round(z.y), Math.round(z.a * 10), Math.round(100 * z.hp / z.maxhp), f]); if (Z.length >= 320) break;
       }
       const V = [];
-      for (const v of this.vh.query(cx, cy, Rr + 200, [])) {
+      if (pZone === 'world') for (const v of this.vh.query(cx, cy, Rr + 200, [])) {
         let f = 0; if (v.siren) f |= 1; if (v.emp > now || now < this.empUntil) f |= 2; if (v.seats[0]) f |= 4; if (v.alt > 0.5) f |= 8; if (v.broken) f |= 16; if (v.dead) f |= 32;
-        V.push([v.id, v.ti, Math.round(v.x), Math.round(v.y), Math.round(v.a * 100), Math.round(100 * v.hp / v.maxhp), v.seats[0] || 0, f, Math.round(Math.hypot(v.vx, v.vy)), Math.round((v.ta || v.a) * 100), Math.round(v.vx || 0), Math.round(v.vy || 0)]);
+        V.push([v.id, v.ti, Math.round(v.x), Math.round(v.y), Math.round(v.a * 100), Math.round(100 * v.hp / v.maxhp), v.seats[0] || 0, f, Math.round(v.sp || 0), Math.round((v.ta || v.a) * 100), Math.round(v.vx || 0), Math.round(v.vy || 0)]);
       }
-      const Rp = []; for (const pr of this.proj) if (d2(pr.x, pr.y, cx, cy) < R2) Rp.push([pr.id, pr.itemFx ? (pr.itemFx.t === 'fire' ? 'molotov' : 'item') : (pr.w.kind || 'bullet'), Math.round(pr.x), Math.round(pr.y), Math.round(pr.a * 100), Math.round(pr.z * 100)]);
+      const Rp = []; for (const pr of this.proj) if ((pr.zone || 'world') === pZone && d2(pr.x, pr.y, cx, cy) < R2) Rp.push([pr.id, pr.itemFx ? (pr.itemFx.t === 'fire' ? 'molotov' : 'item') : (pr.w.kind || 'bullet'), Math.round(pr.x), Math.round(pr.y), Math.round(pr.a * 100), Math.round(pr.z * 100)]);
       const E = [];
       for (const e of this.effects.values()) {
+        if ((e.zone || 'world') !== pZone) continue;
         if (e.type === 'mine' && e.o !== p && !(this.settings.mode !== 'ffa' && e.o && e.o.team === p.team)) continue;
         if (e.type !== 'vortex' && e.type !== 'drop' && d2(e.x, e.y, cx, cy) > 5.76e6) continue;
         E.push([e.id, e.type === 'vortex' ? (e.kind || 'tornado') : e.type, Math.round(e.x), Math.round(e.y), Math.round(e.r), e.until === Infinity ? -1 : Math.round((e.until - now) / 100)]);
       }
-      const ev = []; for (const e of this.ev) if (e.all || d2(e.x, e.y, cx, cy) < 7.84e6) ev.push(e.d);
+      const ev = []; for (const e of this.ev) if ((e.zone || 'world') === pZone && (e.all || d2(e.x, e.y, cx, cy) < 7.84e6)) ev.push(e.d);
       const sl = p.hotbar[p.sel], w = sl && WEAPONS[sl.w];
       let bits = 0; const b = p.buf; if (b.painkill > now) bits |= 1; if (b.adren > now) bits |= 2; if (b.scent > now) bits |= 4; if (b.stun > now) bits |= 8; if (b.blind > now) bits |= 16; if (b.burn > now) bits |= 32; if (b.slow > now) bits |= 64; if (b.disinf > now) bits |= 128; if (b.antizyme > now) bits |= 256;
-      const me = {x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, ps: p.ps, hp: Math.round(p.hp), st: Math.round(p.st), hu: Math.round(p.hu), th: Math.round(p.th), inf: Math.round(p.inf),
+      const ch = CAMPAIGN[p.missionStep] || CAMPAIGN[CAMPAIGN.length - 1];
+      const ct = CONTRACTS[p.contractIdx % CONTRACTS.length];
+      const me = {x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10, ps: p.ps, zone: pZone, hp: Math.round(p.hp), st: Math.round(p.st), hu: Math.round(p.hu), th: Math.round(p.th), inf: Math.round(p.inf),
         bl: p.bleed ? 1 : 0, fr: p.frac ? 1 : 0, spd: Math.round(p.spd), pl: [Math.round(p.pull[0]), Math.round(p.pull[1])], sel: p.sel, mag: sl ? (sl.mag || 0) : 0, n: sl ? (sl.n || 0) : 0,
         res: w && w.ammo ? (p.ammo[w.ammo] || 0) : -1, rl: p.reloadUntil > now ? Math.round(p.reloadUntil - now) : 0, rlT: p.reloadT, veh: p.veh ? p.veh.id : 0, seat: p.seat, dead: p.dead ? 1 : 0,
         rsp: p.dead ? Math.max(0, Math.round(p.rspAt - now)) : 0, b: bits, hurt: Math.min(99999, Math.round(now - p.hurt)), emp: now < this.empUntil ? 1 : 0, nvg: p.nvg ? 1 : 0, lt: p.light ? (p.pfx.light || 'cone') : 0,
         scrap: p.scrap || 0, plotId: p.plotId || 0, plotLv: p.plot ? p.plot.level : 0, team: p.team || 0,
         rebirths: p.rebirths || 0, prestigeTokens: p.prestigeTokens || 0, rebornPerks: p.rebornPerks || {}, hardlightShield: Math.round(p.hardlightShield || 0),
-        beacon: p.plot ? (p.plot.upgrades.evac_beacon || 0) : 0, evacTimer: p.plot && p.plot.evacActive ? Math.max(0, Math.round((p.plot.evacTimer - now) / 1000)) : 0};
+        beacon: p.plot ? (p.plot.upgrades.evac_beacon || 0) : 0, evacTimer: p.plot && p.plot.evacActive ? Math.max(0, Math.round((p.plot.evacTimer - now) / 1000)) : 0,
+        mission: { title: ch.title, desc: ch.desc, evt: ch.evt, prog: p.missionProg || 0, target: ch.target, reward: `${ch.scrap}⚙️ + ${ch.cores}⚛️` },
+        contract: { title: ct.title, desc: ct.desc, prog: p.contractProg || 0, target: ct.target, reward: `${ct.scrap}⚙️` }};
       if (p.veh) {
         const v = p.veh, vd = VEH[v.type]; me.vf = Math.round(100 * v.fuel / vd.fuel); me.vh = Math.round(100 * v.hp / v.maxhp); me.vb = v.broken ? 1 : 0; me.va = v.alt > 0.5 ? 1 : 0; me.vp = Math.round((v.plate || 0) * 100);
         if (vd.guns) me.vg = vd.guns.map((g, i) => [v.gm && v.gm[i] !== undefined ? v.gm[i] : (g.w.mag || 0), v.gr && v.gr[i] > now ? 1 : 0]);
       }
-      const o = {t: 's', tm: +this.time.toFixed(4), P, Z, V, R: Rp, E, ev, me};
-      if (full) {
-        o.G = this.ih.query(cx, cy, 1200, []).map(it => [it.id, it.k, Math.round(it.x), Math.round(it.y), it.n, it.label || 0]);
-        o.S = this.sh.query(cx, cy, 1600, []).map(s => [s.id, s.kind, Math.round(s.x), Math.round(s.y), s.w, s.h, Math.round(100 * s.hp / s.maxhp), s.open ? 1 : 0, s.team, s.water >= 1 ? 1 : 0, s.owner]);
+      const o = {t: 's', tm: +this.time.toFixed(4), P: zoneP, Z, V, R: Rp, E, ev, me};
+      const zoneChanged = p.lastSnapZone !== pZone;
+      if (zoneChanged) p.lastSnapZone = pZone;
+      if (full || zoneChanged || ev.length > 0) {
+        const gRad = pZone === 'world' ? 1200 : 2200;
+        const sRad = pZone === 'world' ? 1600 : 2200;
+        o.G = this.ih.query(cx, cy, gRad, []).filter(it => (it.zone || 'world') === pZone).map(it => [it.id, it.k, Math.round(it.x), Math.round(it.y), it.n, it.label || 0]);
+        o.S = this.sh.query(cx, cy, sRad, []).filter(s => (s.zone || 'world') === pZone).map(s => [s.id, s.kind, Math.round(s.x), Math.round(s.y), s.w, s.h, Math.round(100 * s.hp / s.maxhp), s.open ? 1 : 0, s.team, s.water >= 1 ? 1 : 0, s.owner]);
       }
       p.ws.send(JSON.stringify(o));
       if (p.dirty) { p.dirty = false; this.send(p, this.invMsg(p)); }

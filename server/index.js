@@ -4,7 +4,9 @@ const http = require('http'), fs = require('fs'), path = require('path'), crypto
 const {WebSocketServer} = require('ws');
 const {Game} = require('./game');
 
-const PORT = +process.env.PORT || 3000;
+const PORT = (+process.env.PORT && +process.env.PORT !== +process.env.NGINX_PORT)
+  ? +process.env.PORT
+  : (+process.env.DEFAULT_APP_PORT || 3000);
 const fmt = k => k.toUpperCase().match(/.{4}/g).join('-');
 let KEY = (process.env.GAME_KEY || 'deadbeefdeadbeef').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
 if (KEY.length !== 16) {

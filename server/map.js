@@ -4,6 +4,8 @@
 const {mulberry32, fbm, vnoise, clamp} = require('./util');
 const {T} = require('./data/tiles');
 const PLACES = require('./data/places');
+const {PLOTS} = require('./data/shelter');
+const {RAID_BUNKERS} = require('./data/interiors');
 
 const W = 400, H = 400, TS = 80, RS = 80;
 const THEMES = [
@@ -70,32 +72,82 @@ function generateMap(seed) {
     const wx = x + (fbm(x * 0.025, y * 0.025, seed + 11, 3) - 0.5) * 22, wy = y + (fbm(x * 0.025, y * 0.025, seed + 23, 3) - 0.5) * 22;
     region[idx(x, y)] = clamp(Math.floor(wy / RS), 0, 4) * 5 + clamp(Math.floor(wx / RS), 0, 4);
   }
-  // ── base terrain ──
+  // ── base terrain (elevation + moisture topography) ──
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const i = idx(x, y), th = themeOf(region[i]);
-    const n = fbm(x * 0.045, y * 0.045, seed + 1, 4), m = fbm(x * 0.11, y * 0.11, seed + 2, 3);
+    const n = fbm(x * 0.045, y * 0.045, seed + 1, 4);
+    const m = fbm(x * 0.11, y * 0.11, seed + 2, 3);
+    const elev = fbm(x * 0.022, y * 0.022, seed + 37, 4);
+    const ridge = 1 - Math.abs(fbm(x * 0.032, y * 0.032, seed + 61, 3) * 2 - 1);
+    const micro = vnoise(x * 0.24, y * 0.24, seed + 83);
     let t;
     switch (th) {
-      case 'alpine': t = n > 0.64 ? T.ROCK : n > 0.55 ? (m > 0.7 ? T.ICE : T.SNOW) : (m > 0.6 ? T.FOREST : T.GRASS); break;
-      case 'volcanic': t = n > 0.67 ? T.ROCK : m > 0.8 ? T.LAVA : m < 0.3 ? T.GRASS : T.DIRT; break;
-      case 'karst': t = (m > 0.72 && n > 0.45) ? T.ROCK : n < 0.3 ? T.SHALLOW : m < 0.42 ? T.FOREST : T.GRASS; break;
-      case 'coast': t = n > 0.7 ? T.ROCK : m > 0.6 ? T.FOREST : T.GRASS; break;
-      case 'desert': t = n > 0.73 ? T.ROCK : m > 0.55 ? T.DUNE : T.SAND; break;
-      case 'saltflat': t = n > 0.42 ? T.SALT : T.SAND; break;
-      case 'canyon': t = n > 0.66 ? T.ROCK : m < 0.3 ? T.SAND : T.DIRT; break;
-      case 'lakes': t = n < 0.3 ? T.DEEP : n < 0.36 ? T.SHALLOW : m > 0.64 ? T.SWAMP : m > 0.52 ? T.FOREST : T.GRASS; break;
-      case 'reef': t = n > 0.66 ? (m > 0.6 ? T.FOREST : T.SAND) : n > 0.58 ? T.SHALLOW : T.DEEP; break;
-      case 'rural': t = m > 0.56 ? T.FARM : m < 0.26 ? T.FOREST : T.GRASS; break;
-      case 'historic': t = m > 0.72 ? T.FOREST : m > 0.58 ? T.DIRT : T.GRASS; break;
-      case 'sports': t = m > 0.62 ? T.GRASS : T.CONCRETE; break;
-      default: t = m > 0.74 ? T.GRASS : T.CONCRETE;
+      case 'alpine':
+        t = (elev > 0.66 || ridge > 0.88) ? (elev > 0.72 ? T.SNOW : T.ROCK)
+          : n > 0.56 ? (m > 0.68 ? T.ICE : T.SNOW)
+          : (m > 0.54 ? T.FOREST : (elev < 0.34 && m > 0.45 ? T.SHALLOW : T.GRASS));
+        break;
+      case 'volcanic':
+        t = (ridge > 0.87 && elev > 0.55) ? T.LAVA
+          : (n > 0.64 || elev > 0.68) ? T.ROCK
+          : m > 0.82 ? T.LAVA : m < 0.3 ? T.GRASS : T.DIRT;
+        break;
+      case 'karst':
+        t = ((m > 0.68 && n > 0.42) || ridge > 0.89) ? T.ROCK
+          : n < 0.31 ? T.SHALLOW
+          : m < 0.45 ? T.FOREST : (elev < 0.3 ? T.SWAMP : T.GRASS);
+        break;
+      case 'coast':
+        t = (n > 0.67 || ridge > 0.88) ? T.ROCK
+          : elev < 0.28 ? T.SAND
+          : m > 0.56 ? T.FOREST : T.GRASS;
+        break;
+      case 'desert': {
+        const oasis = elev < 0.22 && m > 0.66;
+        t = oasis ? (elev < 0.17 ? T.SHALLOW : T.GRASS)
+          : (n > 0.72 || ridge > 0.90) ? T.ROCK
+          : (m > 0.52 || micro > 0.68) ? T.DUNE : T.SAND;
+        break;
+      }
+      case 'saltflat':
+        t = ridge > 0.91 ? T.ROCK : n > 0.4 ? T.SALT : T.SAND;
+        break;
+      case 'canyon':
+        t = (n > 0.63 || ridge > 0.84) ? T.ROCK
+          : elev < 0.28 ? T.SAND : (m > 0.68 ? T.GRASS : T.DIRT);
+        break;
+      case 'lakes':
+        t = (n < 0.31 || elev < 0.27) ? T.DEEP
+          : n < 0.38 ? T.SHALLOW
+          : m > 0.60 ? T.SWAMP
+          : m > 0.48 ? T.FOREST : T.GRASS;
+        break;
+      case 'reef':
+        t = n > 0.65 ? (m > 0.56 ? T.FOREST : T.SAND) : n > 0.56 ? T.SHALLOW : T.DEEP;
+        break;
+      case 'rural':
+        t = (ridge > 0.92 && elev > 0.64) ? T.ROCK
+          : elev < 0.25 && m > 0.62 ? T.SHALLOW
+          : m > 0.55 ? T.FARM : m < 0.28 ? T.FOREST : T.GRASS;
+        break;
+      case 'historic':
+        t = ridge > 0.91 ? T.ROCK : m > 0.68 ? T.FOREST : m > 0.55 ? T.DIRT : T.GRASS;
+        break;
+      case 'sports':
+        t = m > 0.6 ? T.GRASS : T.CONCRETE;
+        break;
+      default:
+        t = m > 0.72 ? T.GRASS : T.CONCRETE;
     }
-    // rivers
+    // meandering rivers with sandy/gravel banks
     const rv = Math.abs(fbm(x * 0.012, y * 0.012, seed + 99, 3) - 0.5);
-    if (rv < 0.0105 && th !== 'reef') t = (th === 'desert' || th === 'saltflat') ? T.DIRT : (rv < 0.005 ? T.DEEP : T.SHALLOW);
+    if (th !== 'reef') {
+      if (rv < 0.011) t = (th === 'desert' || th === 'saltflat') ? T.DIRT : (rv < 0.0052 ? T.DEEP : T.SHALLOW);
+      else if (rv < 0.0185 && t !== T.ROCK && t !== T.CONCRETE && t !== T.LAVA) t = (th === 'lakes' || m > 0.62) ? T.SWAMP : T.SAND;
+    }
     // ocean border
     const e = Math.min(x, y, W - 1 - x, H - 1 - y) + (vnoise(x * 0.08, y * 0.08, seed + 5) - 0.5) * 8;
-    if (e < 6) t = T.DEEP; else if (e < 8) t = T.SHALLOW; else if (e < 10.5) t = (th === 'coast' && n > 0.5) ? T.ROCK : T.SAND;
+    if (e < 6) t = T.DEEP; else if (e < 8.5) t = T.SHALLOW; else if (e < 11) t = (th === 'coast' && n > 0.5) ? T.ROCK : T.SAND;
     tiles[i] = t;
   }
   // ── road network ──
@@ -541,8 +593,57 @@ function generateMap(seed) {
     if (rng() < 0.1) vs(P(k) + 40, P(c + 1) + 40, 0, ['sedan', 'suv', 'pickup', 'motorcycle', 'sportscar', 'bus']);
     if (rng() < 0.1) vs(P(c - 1) + 40, P(k) + 40, Math.PI / 2, ['sedan', 'suv', 'pickup', 'motorcycle', 'police']);
   }
-  // roads (bridges over water, passes through rock)
+  // roads (bridges over water, passes through rock) + winding wilderness dirt trails
   for (let i = 0; i < W * H; i++) if (road[i] && occ[i] < 3) tiles[i] = T.ROAD;
+  for (let y = 14; y < H - 14; y++) for (let x = 14; x < W - 14; x++) {
+    const i = idx(x, y);
+    if (road[i] || occ[i] >= 2) continue;
+    const t = tiles[i];
+    if (t === T.DEEP || t === T.SHALLOW || t === T.LAVA || t === T.CONCRETE) continue;
+    const tr = Math.abs(fbm(x * 0.019, y * 0.019, seed + 211, 3) - 0.5);
+    if (tr < 0.0055) tiles[i] = T.DIRT;
+  }
+
+  // ── clear shelter plots & raid bunker pads (guarantee unobstructed compounds + starter vehicles) ──
+  const clearZone = (cx, cy, padRadiusPx, tilePadRadius, isPlot) => {
+    for (let i = rects.length - 1; i >= 0; i--) {
+      const r = rects[i];
+      if (r[0] < cx + padRadiusPx && r[0] + r[2] > cx - padRadiusPx && r[1] < cy + padRadiusPx && r[1] + r[3] > cy - padRadiusPx) {
+        rects.splice(i, 1);
+      }
+    }
+    for (let i = loot.length - 1; i >= 0; i--) {
+      if (Math.abs(loot[i][0] - cx) < 260 && Math.abs(loot[i][1] - cy) < 260) {
+        loot.splice(i, 1);
+      }
+    }
+    for (let i = vspawns.length - 1; i >= 0; i--) {
+      if (Math.abs(vspawns[i][0] - cx) < 280 && Math.abs(vspawns[i][1] - cy) < 280) {
+        vspawns.splice(i, 1);
+      }
+    }
+    const ctxT = Math.floor(cx / TS), ctyT = Math.floor(cy / TS);
+    for (let dy = -tilePadRadius; dy <= tilePadRadius; dy++) {
+      for (let dx = -tilePadRadius; dx <= tilePadRadius; dx++) {
+        const tx = ctxT + dx, ty = ctyT + dy;
+        if (!inb(tx, ty)) continue;
+        const inner = Math.abs(dx) <= tilePadRadius - 2 && Math.abs(dy) <= tilePadRadius - 2;
+        set(tx, ty, inner ? T.CONCRETE : (tiles[idx(tx, ty)] === T.ROAD ? T.ROAD : T.GRASS));
+      }
+    }
+    if (isPlot) {
+      // Southern driveway apron + 2 guaranteed vehicles + starter supply spot
+      fill(ctxT - 1, ctyT + 2, 3, tilePadRadius + 2, T.CONCRETE);
+      vs(cx - 210, cy + 345, 0, ['sedan', 'pickup', 'suv', 'dunebuggy']);
+      vs(cx + 210, cy + 345, Math.PI, ['motorcycle', 'quad', 'humvee']);
+      lp(cx + 120, cy + 280, 'military', false);
+    } else {
+      vs(cx + 160, cy + 160, 0, ['humvee', 'pickup', 'quad']);
+      lp(cx - 120, cy + 120, 'military', false);
+    }
+  };
+  for (const pl of PLOTS) clearZone(pl.x, pl.y, 460, 6, true);
+  for (const rb of RAID_BUNKERS) clearZone(rb.x, rb.y, 320, 4, false);
 
   // spawn points
   const roadPts = (regs, n) => { const out = []; for (let t = 0; t < 8000 && out.length < n; t++) { const r = pick(regs); const x = (r % 5) * RS + RI(4, RS - 5), y = Math.floor(r / 5) * RS + RI(4, RS - 5); if (tiles[idx(x, y)] === T.ROAD) out.push([P(x) + 40, P(y) + 40]); } return out; };
