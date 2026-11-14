@@ -209,6 +209,14 @@ table{width:100%;border-collapse:collapse}td,th{padding:6px 8px;text-align:left;
 .zone-pill{font-size:8.5px;font-weight:900;letter-spacing:.4px;padding:1px 5px;border-radius:3px;background:rgba(56,189,248,.16);color:#38bdf8;border:1px solid rgba(56,189,248,.35);white-space:nowrap}
 .zone-pill.bunker{background:rgba(16,185,129,.18);color:#34d399;border-color:rgba(16,185,129,.45)}
 .zone-pill.raid{background:rgba(239,68,68,.18);color:#f87171;border-color:rgba(239,68,68,.45)}
+.zone-pill.university{background:rgba(245,158,11,.18);color:#fbbf24;border-color:rgba(245,158,11,.45)}
+.zone-pill.hospital{background:rgba(16,185,129,.18);color:#6ee7b7;border-color:rgba(16,185,129,.45)}
+.zone-pill.mall{background:rgba(45,212,191,.18);color:#5eead4;border-color:rgba(45,212,191,.45)}
+.zone-pill.military{background:rgba(239,68,68,.18);color:#fca5a5;border-color:rgba(239,68,68,.45)}
+.zone-pill.historic{background:rgba(217,119,6,.2);color:#fcd34d;border-color:rgba(217,119,6,.5)}
+.zone-pill.museum{background:rgba(236,72,153,.18);color:#f9a8d4;border-color:rgba(236,72,153,.45)}
+.zone-pill.transit{background:rgba(56,189,248,.18);color:#7dd3fc;border-color:rgba(56,189,248,.45)}
+.zone-pill.industrial{background:rgba(251,146,60,.18);color:#fdba74;border-color:rgba(251,146,60,.45)}
 .mis-title{font-size:10.5px;font-weight:800;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
 .mis-rew{font-size:9.5px;font-weight:800;color:#ffd166;white-space:nowrap}
 .mis-desc{font-size:9.5px;color:#94a3b8;margin:1px 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

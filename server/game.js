@@ -29,14 +29,15 @@ const CONTRACTS = [
   { id: 'c_vault', title: 'Bunker Ops', desc: 'Use Vault Locker or Upgrade Shelter', evt: 'bunker_op', target: 1, scrap: 220, cores: 2 }
 ];
 
-const THEME_DENS = {city:16,gov:14,culture:14,sports:14,historic:12,rural:10,alpine:8,volcanic:8,karst:8,coast:8,desert:8,saltflat:6,canyon:8,lakes:8,reef:5};
-const MAXZ = 280;
+const THEME_DENS = {city:14,gov:12,culture:12,sports:12,historic:11,rural:9,alpine:7,volcanic:7,karst:7,coast:7,desert:7,saltflat:5,canyon:7,lakes:7,reef:5};
+const MAXZ = 220;
 const TEAM_NAMES = ['None', 'Red', 'Blue', 'Green', 'Gold'];
 const MELEE = ['sword', 'polearm', 'blunt', 'dagger'];
 const rnd = Math.random, R = (a, b) => a + rnd() * (b - a);
 const d2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; };
 const HIT_TILE = {t: 'tile'}, HIT_RECT = {t: 'rect'}, HIT_OOB = {t: 'oob'};
 const tmpA = [], tmpB = [];
+const snapZ = [], snapV = [], snapG = [], snapS = [];
 const KNIFE = wkey('Fairbairn–Sykes Fighting Knife'), GLOCK = wkey('Glock 17 / 19');
 
 function circleBuildingCollide(x, y, r, q) {
@@ -119,12 +120,14 @@ class Game {
       });
     }
 
+    this.entranceById = new Map();
+    for (const e of (M.entrances || [])) this.entranceById.set(e.id, e);
     this.mapJSON = JSON.stringify({W: M.W, H: M.H, TS: M.TS, tiles: Buffer.from(M.tiles).toString('base64'), region: Buffer.from(M.region).toString('base64'),
-      rects: M.rects, styles: M.styles, landmarks: M.landmarks, zones: M.zones, themes: M.themes, rnames: M.rnames});
+      rects: M.rects, styles: M.styles, landmarks: M.landmarks, zones: M.zones, entrances: M.entrances || [], themes: M.themes, rnames: M.rnames});
     this.defsJSON = JSON.stringify({W: WLIST.map(k => WEAPONS[k]), AMMO, ITEMS, STRUCTS, RECIPES, VEH, VLIST, ZD, ZLIST, TILES: PROPS, TEAMS: TEAM_NAMES, PLOTS, UPGRADES, REBORN_PERKS, INTERIORS, RAID_BUNKERS});
     this.raidInit = {};
     this.initLoot(); this.initVehicles();
-    console.log(`[game] ${this.items.size} ground items, ${this.vehicles.size} vehicles, ${this.plots.size} shelter plots. Init payload ${(this.mapJSON.length / 1024).toFixed(0)} KB`);
+    console.log(`[game] ${this.items.size} ground items, ${this.vehicles.size} vehicles, ${this.plots.size} shelter plots, ${this.entranceById.size} building sub-maps. Init payload ${(this.mapJSON.length / 1024).toFixed(0)} KB`);
   }
   id() { return this.nid++; }
   tileAt(x, y) { const tx = Math.floor(x / this.TS), ty = Math.floor(y / this.TS); if (tx < 0 || ty < 0 || tx >= this.W || ty >= this.W) return 0; return this.tiles[ty * this.W + tx]; }
@@ -136,7 +139,17 @@ class Game {
   // ───────── collision ─────────
   interiorDef(zone) {
     if (!zone || zone === 'world') return null;
-    return zone.startsWith('raid_') ? INTERIORS.raid : INTERIORS.bunker;
+    if (zone.startsWith('raid_')) return INTERIORS.raid;
+    if (zone.startsWith('air_')) return INTERIORS.airport;
+    if (zone.startsWith('univ_')) return INTERIORS.university;
+    if (zone.startsWith('hosp_')) return INTERIORS.hospital;
+    if (zone.startsWith('mall_')) return INTERIORS.mall;
+    if (zone.startsWith('mil_')) return INTERIORS.military;
+    if (zone.startsWith('hist_')) return INTERIORS.historic;
+    if (zone.startsWith('mus_')) return INTERIORS.museum;
+    if (zone.startsWith('hub_')) return INTERIORS.transit;
+    if (zone.startsWith('ind_')) return INTERIORS.industrial;
+    return INTERIORS.bunker;
   }
   blockedAt(x, y, r, kind, entity, forceZone) {
     const zone = forceZone || (entity && entity.zone) || 'world';
@@ -165,7 +178,7 @@ class Game {
     // 16 Designated Shelter Tycoon Plots (walls and airlock gates)
     for (const plot of this.plots.values()) {
       if (Math.abs(plot.x - x) > 550 || Math.abs(plot.y - y) > 550) continue;
-      const isAuth = entity && (entity.id === plot.owner || (plot.team > 0 && entity.team === plot.team) || !plot.owner);
+      const isAuth = entity && (entity.id === plot.owner || (plot.team > 0 && entity.team === plot.team) || (entity.name && this.settings.mode === 'coop') || !plot.owner);
       if (circleShelterCollide(x, y, r, plot, isAuth)) return HIT_RECT;
     }
     return null;
@@ -185,7 +198,7 @@ class Game {
     return hit;
   }
   moveVehicle(v, dx, dy, r, kind) {
-    const dist = Math.abs(dx) + Math.abs(dy); if (dist < 0.01) return {hit: null, bx: false, by: false};
+    const dist = Math.hypot(dx, dy); if (dist < 0.01) return {hit: null, nx: 0, ny: 0, impact: 0};
     if (this.blockedAt(v.x, v.y, r, kind, v, 'world')) {
       let rescued = false;
       for (const rad of [6, 14, 24, 38]) {
@@ -195,29 +208,58 @@ class Game {
         }
         if (rescued) break;
       }
-      if (!rescued) return {hit: HIT_RECT, bx: true, by: true};
+      if (!rescued) return {hit: HIT_RECT, nx: 1, ny: 0, impact: dist};
     }
-    const steps = Math.max(1, Math.ceil(dist / Math.max(6, r * 0.45))), sx = dx / steps, sy = dy / steps;
-    let hit = null, bx = false, by = false;
+    const steps = clamp(Math.ceil(dist / Math.max(5, r * 0.4)), 1, 16);
+    const sx = dx / steps, sy = dy / steps;
+    let hit = null, hnx = 0, hny = 0, maxImpact = 0;
     for (let i = 0; i < steps; i++) {
-      let h = this.blockedAt(v.x + sx, v.y, r, kind, v, 'world');
-      if (!h) v.x += sx;
-      else {
-        bx = true; if (!hit || h.def) hit = h;
-        const nudge = Math.abs(sx) * 0.55;
-        if (!this.blockedAt(v.x + sx, v.y + nudge, r, kind, v, 'world')) { v.x += sx; v.y += nudge; }
-        else if (!this.blockedAt(v.x + sx, v.y - nudge, r, kind, v, 'world')) { v.x += sx; v.y -= nudge; }
-      }
-      h = this.blockedAt(v.x, v.y + sy, r, kind, v, 'world');
-      if (!h) v.y += sy;
-      else {
-        by = true; if (!hit || h.def) hit = h;
-        const nudge = Math.abs(sy) * 0.55;
-        if (!this.blockedAt(v.x + nudge, v.y + sy, r, kind, v, 'world')) { v.x += nudge; v.y += sy; }
-        else if (!this.blockedAt(v.x - nudge, v.y + sy, r, kind, v, 'world')) { v.x -= nudge; v.y += sy; }
+      const nxPos = v.x + sx, nyPos = v.y + sy;
+      const h = this.blockedAt(nxPos, nyPos, r, kind, v, 'world');
+      if (!h) {
+        v.x = nxPos; v.y = nyPos;
+      } else {
+        if (!hit || h.def) hit = h;
+        // Estimate outward obstacle normal by sampling around candidate position
+        let gx = 0, gy = 0;
+        for (let k = 0; k < 8; k++) {
+          const ang = k * (Math.PI * 0.25);
+          const ox = Math.cos(ang), oy = Math.sin(ang);
+          if (this.blockedAt(nxPos + ox * 4, nyPos + oy * 4, r, kind, v, 'world')) {
+            gx -= ox; gy -= oy;
+          }
+        }
+        let gl = Math.hypot(gx, gy);
+        if (gl > 0.01) {
+          gx /= gl; gy /= gl;
+          // Slide remaining step along wall tangent (perpendicular to normal)
+          const stepDotN = sx * gx + sy * gy;
+          if (stepDotN < 0) {
+            const tx = sx - gx * stepDotN, ty = sy - gy * stepDotN;
+            if (!this.blockedAt(v.x + tx, v.y + ty, r, kind, v, 'world')) {
+              v.x += tx; v.y += ty;
+            } else if (!this.blockedAt(v.x + sx, v.y, r, kind, v, 'world')) {
+              v.x += sx; gx = 0; gy = sy < 0 ? 1 : -1;
+            } else if (!this.blockedAt(v.x, v.y + sy, r, kind, v, 'world')) {
+              v.y += sy; gx = sx < 0 ? 1 : -1; gy = 0;
+            }
+          }
+          hnx = gx; hny = gy;
+          maxImpact = Math.max(maxImpact, Math.abs(stepDotN) * steps);
+        } else {
+          // Axis fallback when normal samples cancel in tight corner
+          const hx = this.blockedAt(v.x + sx, v.y, r, kind, v, 'world');
+          if (!hx) { v.x += sx; hnx = 0; hny = sy > 0 ? -1 : 1; }
+          else {
+            const hy = this.blockedAt(v.x, v.y + sy, r, kind, v, 'world');
+            if (!hy) { v.y += sy; hnx = sx > 0 ? -1 : 1; hny = 0; }
+            else { hnx = sx !== 0 ? -Math.sign(sx) : 0; hny = sy !== 0 ? -Math.sign(sy) : 0; }
+          }
+          maxImpact = dist;
+        }
       }
     }
-    return {hit, bx, by};
+    return {hit, nx: hnx, ny: hny, impact: maxImpact};
   }
   findFree(x, y, r, kind, zone = 'world') {
     for (let rad = 0; rad < 600; rad += 30) for (let k = 0; k < 12; k++) { const a = k / 12 * Math.PI * 2, px = x + Math.cos(a) * rad, py = y + Math.sin(a) * rad; if (!this.blockedAt(px, py, r, kind, null, zone)) return [px, py]; }
@@ -284,7 +326,7 @@ class Game {
 
     this.players.set(p.id, p);
     this.respawnPlayer(p);
-    ws.send(JSON.stringify({t: 'init', id: p.id, map: JSON.parse(this.mapJSON), defs: JSON.parse(this.defsJSON), settings: this.settings, plots: this.getPlotsSummary()}));
+    ws.send(`{"t":"init","id":${p.id},"map":${this.mapJSON},"defs":${this.defsJSON},"settings":${JSON.stringify(this.settings)},"plots":${JSON.stringify(this.getPlotsSummary())}}`);
     this.sendSky(p);
     this.send(p, this.invMsg(p));
     p.dirty = false;
@@ -313,7 +355,7 @@ class Game {
     const [x, y] = this.spawnPos(p); p.x = x; p.y = y; this.forcePos(p); this.giveKit(p); p.dirty = true;
   }
   spawnPos(p) {
-    if (p.plot && !this.blockedAt(p.plot.x, p.plot.y, 18, 'walk', null, 'world')) return [p.plot.x + R(-30, 30), p.plot.y + 70];
+    if (p.plot && !this.blockedAt(p.plot.x, p.plot.y + 76, 18, 'walk', null, 'world')) return [p.plot.x + R(-24, 24), p.plot.y + 76];
     let list = this.M.spawns; if (this.settings.mode === 'teams' && p.team > 0 && this.M.teamSpawns[p.team - 1].length) list = this.M.teamSpawns[p.team - 1];
     for (let t = 0; t < 40; t++) { const s = list[Math.floor(rnd() * list.length)]; const x = s[0] + R(-60, 60), y = s[1] + R(-60, 60); if (!this.blockedAt(x, y, 18, 'walk', null, 'world')) return [x, y]; }
     return this.findFree(list[0][0], list[0][1], 18, 'walk', 'world');
@@ -986,7 +1028,7 @@ class Game {
     for (const it of p.inv) contents.push({k: it.k, n: it.n});
     for (const [k, n] of Object.entries(p.ammo)) if (n > 0) contents.push({k: 'ammo_' + k, n});
     for (const k of Object.values(p.wear)) if (k) contents.push({k, n: 1});
-    if (contents.length) this.createItem(p.x, p.y, {k: 'bag', contents, label: p.name});
+    if (contents.length) this.createItem(p.x, p.y, {k: 'bag', contents, label: p.name, zone: p.zone || 'world'});
     p.hotbar = [null, null, null, null, null]; p.inv = []; p.ammo = {}; p.wear = {}; this.recalcWear(p); this.invChanged(p);
     let killer = o && o !== p && o.name && this.players.get(o.id) === o ? o : null;
     if (!killer && p.lastBy && this.now - p.lastByT < 8000) killer = this.players.get(p.lastBy) || null;
@@ -996,7 +1038,7 @@ class Game {
     else if (zsrc) txt = `${p.name} was killed by a ${ZD[zsrc.type].n}`;
     else txt = `${p.name} died (${kind})`;
     this.feed(txt);
-    if (kind === 'infection') { const z = this.spawnZombie('turned', p.x, p.y); if (z) z.name = 'Turned ' + p.name; }
+    if (kind === 'infection') { const z = this.spawnZombie('turned', p.x, p.y); if (z) { z.name = 'Turned ' + p.name; z.zone = p.zone || 'world'; } }
     p.dirty = true;
   }
   damageVehicle(v, dmg, o) {
@@ -1069,9 +1111,37 @@ class Game {
     p.x = idef.spawnX; p.y = idef.spawnY;
     this.forcePos(p);
     this.progressMission(p, 'enter_bunker', 1);
+    const ent = this.entranceById.get(zoneKey);
     if (zoneKey.startsWith('raid_')) {
       this.msg(p, '⚠️ Entered Military Raid Bunker — Loot Wing Chests, Eliminate Guards & Breach the SE Vault!');
       this.ensureRaidContents(zoneKey);
+    } else if (zoneKey.startsWith('air_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'airport');
+      this.msg(p, `✈️ Entered ${ent ? ent.name : 'International Airport'} — Explore Concourse Gates, ATC Tower & Customs Vault!`);
+    } else if (zoneKey.startsWith('univ_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'university');
+      this.msg(p, `🎓 Entered ${ent ? ent.name : 'University Campus'} — Search Library, Bio-Lab & Dean's Vault!`);
+    } else if (zoneKey.startsWith('hosp_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'hospital');
+      this.msg(p, `🏥 Entered ${ent ? ent.name : 'Hospital'} — Search ICU, Pharmacy & Quarantine Lab!`);
+    } else if (zoneKey.startsWith('mall_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'mall');
+      this.msg(p, `🛍️ Entered ${ent ? ent.name : 'Shopping Mall'} — Scavenge Concourse, Tech Emporium & Security Vault!`);
+    } else if (zoneKey.startsWith('mil_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'military');
+      this.msg(p, `🪖 Entered ${ent ? ent.name : 'Military Base'} — Breach Armory, War Room & Classified Ordnance Vault!`);
+    } else if (zoneKey.startsWith('hist_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'historic');
+      this.msg(p, `🏛️ Entered ${ent ? ent.name : 'Historic Monument'} — Explore Sanctum, Catacombs & Relic Treasury!`);
+    } else if (zoneKey.startsWith('mus_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'museum');
+      this.msg(p, `🖼️ Entered ${ent ? ent.name : 'Civic & Cultural Hall'} — Raid Galleries, Archives & Federal Vault!`);
+    } else if (zoneKey.startsWith('hub_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'transit');
+      this.msg(p, `🏟️ Entered ${ent ? ent.name : 'Terminal & Civic Hub'} — Scavenge Cargo, Control Tower & Customs Safe!`);
+    } else if (zoneKey.startsWith('ind_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'industrial');
+      this.msg(p, `🏭 Entered ${ent ? ent.name : 'Power & Industrial Facility'} — Search Turbine Hall, Machine Shop & Breaker Vault!`);
     } else {
       const plotId = +zoneKey.slice(7);
       const plot = this.plots.get(plotId);
@@ -1082,8 +1152,10 @@ class Game {
   exitInterior(p) {
     if ((p.zone || 'world') === 'world') return;
     p.zone = 'world';
-    p.x = p.surfX || (p.plot ? p.plot.x : this.WP / 2);
-    p.y = (p.surfY || (p.plot ? p.plot.y + 70 : this.HP / 2)) + 16;
+    const tx = p.surfX || (p.plot ? p.plot.x : this.WP / 2);
+    const ty = (p.surfY || (p.plot ? p.plot.y + 70 : this.HP / 2)) + 24;
+    const [fx, fy] = this.findFree(tx, ty, p.r, 'walk', 'world');
+    p.x = fx; p.y = fy;
     this.forcePos(p);
     this.msg(p, '☀️ Returned to the Wasteland Surface');
   }
@@ -1150,9 +1222,163 @@ class Game {
       this.createItem(fx, fy, {k, label, contents, zone: zoneKey});
     }
   }
+  ensureBuildingInteriorContents(zoneKey, kind) {
+    const now = this.now;
+    if (this.raidInit[zoneKey] && now - this.raidInit[zoneKey] < 240000) return;
+    this.raidInit[zoneKey] = now;
+    let aliveGuards = 0;
+    for (const z of this.zombies.values()) if ((z.zone || 'world') === zoneKey && z.hp > 0) aliveGuards++;
+
+    const guardSets = {
+      airport: [
+        [450, 260, 'runner'], [960, 320, 'shambler'], [1480, 320, 'runner'],
+        [2040, 290, 'soldier'], [380, 740, 'screamer'], [1180, 760, 'riot'],
+        [1980, 780, 'soldier'], [360, 1240, 'hazmat'], [1980, 1250, 'brute'],
+        [2220, 1180, 'riot']
+      ],
+      university: [
+        [300, 320, 'runner'], [420, 440, 'shambler'], [900, 360, 'runner'],
+        [1480, 320, 'hazmat'], [1620, 440, 'spitter'], [300, 890, 'shambler'],
+        [1520, 920, 'brute'], [900, 220, 'riot']
+      ],
+      hospital: [
+        [280, 340, 'hazmat'], [860, 320, 'crawler'], [980, 460, 'runner'],
+        [1500, 320, 'hazmat'], [1620, 420, 'spitter'], [280, 880, 'brute'],
+        [1500, 890, 'runner']
+      ],
+      mall: [
+        [280, 320, 'runner'], [840, 520, 'shambler'], [1080, 520, 'runner'],
+        [960, 240, 'screamer'], [280, 900, 'shambler'], [1640, 320, 'crawler'],
+        [1640, 920, 'riot'], [1720, 980, 'brute']
+      ],
+      military: [
+        [280, 320, 'soldier'], [440, 420, 'riot'], [960, 500, 'soldier'],
+        [800, 260, 'runner'], [1540, 280, 'soldier'], [280, 920, 'hazmat'],
+        [1560, 860, 'riot'], [1680, 980, 'brute']
+      ],
+      historic: [
+        [290, 140, 'shambler'], [420, 400, 'runner'], [820, 320, 'runner'],
+        [1020, 360, 'screamer'], [1450, 150, 'crawler'], [300, 900, 'brute'],
+        [1500, 740, 'riot'], [1500, 1020, 'soldier']
+      ],
+      museum: [
+        [320, 290, 'runner'], [760, 280, 'shambler'], [1100, 480, 'runner'],
+        [1580, 140, 'soldier'], [270, 900, 'hazmat'], [1580, 740, 'riot'],
+        [1540, 1040, 'brute']
+      ],
+      transit: [
+        [380, 320, 'runner'], [930, 520, 'shambler'], [1180, 550, 'runner'],
+        [1560, 340, 'soldier'], [340, 880, 'crawler'], [1560, 740, 'riot'],
+        [1540, 1020, 'brute']
+      ],
+      industrial: [
+        [390, 300, 'hazmat'], [720, 480, 'spitter'], [1080, 480, 'soldier'],
+        [1500, 320, 'hazmat'], [390, 860, 'brute'], [1500, 740, 'riot'],
+        [1500, 1020, 'soldier']
+      ]
+    };
+    if (aliveGuards < 3) {
+      for (const [zx, zy, zt] of (guardSets[kind] || [])) {
+        const [fx, fy] = this.findFree(zx, zy, 18, 'walk', zoneKey);
+        const z = this.spawnZombie(zt, fx, fy);
+        if (z) z.zone = zoneKey;
+      }
+    }
+
+    const hasNear = (x, y, k) => {
+      for (const it of this.items.values()) {
+        if ((it.zone || 'world') === zoneKey && (!k || it.k === k) && d2(it.x, it.y, x, y) < 85 * 85) return true;
+      }
+      return false;
+    };
+
+    const chestSets = {
+      airport: [
+        [270, 95, 'crate', 'Unclaimed Cargo Pallet', this.rollMany('airport', 4)],
+        [980, 120, 'crate', 'Departure Gate A Locker', [...this.rollMany('airport', 3), ...this.rollMany('mall', 1)]],
+        [1420, 120, 'crate', 'Quarantine Triage Case', this.rollMany('hospital', 4)],
+        [2180, 130, 'crate', 'ATC Radar Security Crate', [...this.rollMany('science', 2), ...this.rollMany('police', 2)]],
+        [380, 880, 'crate', 'Duty-Free Luxury Cache', this.rollMany('mall', 4)],
+        [1960, 880, 'crate', 'Air Marshal Armory Crate', this.rollMany('military', 4)],
+        [220, 1360, 'crate', 'Ground Crew Fuel & Gear Box', [...this.rollMany('gas', 3), ...this.rollMany('airport', 2)]],
+        [2040, 1350, 'vault', 'Armored Customs Bullion Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 5)]]
+      ],
+      university: [
+        [185, 440, 'crate', 'Library Archive Chest', [...this.rollMany('campus', 3), ...this.rollMany('science', 1)]],
+        [190, 1080, 'crate', 'Student Union Supply Box', this.rollMany('campus', 3)],
+        [1420, 390, 'crate', 'Bio-Chem Research Cache', this.rollMany('science', 4)],
+        [1640, 950, 'crate', 'Campus Infirmary Locker', this.rollMany('hospital', 3)],
+        [1060, 220, 'crate', 'Lecture Hall Tech Crate', this.rollMany('gov', 2)],
+        [900, 225, 'vault', "Dean's Research Vault", [{k: 'keycard', n: 1}, ...this.rollMany('vault', 3)]]
+      ],
+      hospital: [
+        [180, 180, 'crate', 'Operating Theatre Supply', this.rollMany('hospital', 4)],
+        [895, 320, 'crate', 'ICU Trauma Locker', this.rollMany('hospital', 3)],
+        [340, 1060, 'crate', 'Central Pharmacy Cache', [...this.rollMany('hospital', 3), ...this.rollMany('science', 1)]],
+        [1420, 1050, 'crate', 'Staff Cafeteria Box', this.rollMany('mall', 2)],
+        [1580, 420, 'crate', 'Quarantine Hazmat Chest', this.rollMany('science', 4)],
+        [1610, 380, 'vault', 'Quarantine Bio-Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 3)]]
+      ],
+      mall: [
+        [180, 490, 'crate', 'Sporting Goods Crate', [...this.rollMany('mall', 3), ...this.rollMany('police', 1)]],
+        [720, 250, 'crate', 'Tech Emporium Cache', [...this.rollMany('mall', 2), ...this.rollMany('science', 2)]],
+        [1200, 250, 'crate', 'Electronics Display Safe', this.rollMany('airport', 3)],
+        [240, 1100, 'crate', 'Food Court Pantry', this.rollMany('market', 4)],
+        [1720, 490, 'crate', 'Department Store Crate', [...this.rollMany('mall', 3), ...this.rollMany('hospital', 1)]],
+        [1640, 960, 'vault', 'Armored Mall Jewelry Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      military: [
+        [180, 290, 'crate', 'Main Armory Weapon Chest', this.rollMany('military', 4)],
+        [960, 480, 'crate', 'War Room Officer Chest', [{k: 'keycard', n: 1}, ...this.rollMany('gov', 3)]],
+        [260, 1120, 'crate', 'Motorpool Supply Crate', [...this.rollMany('gas', 2), ...this.rollMany('military', 2)]],
+        [1680, 300, 'crate', 'Barracks Gear Locker', this.rollMany('police', 4)],
+        [1540, 1120, 'crate', 'Heavy Munitions Cache', this.rollMany('military', 4)],
+        [1730, 860, 'vault', 'Classified Ordnance Vault', this.rollMany('vault', 5)]
+      ],
+      historic: [
+        [110, 130, 'crate', 'Reliquary Vestment Chest', [...this.rollMany('historic', 3), ...this.rollMany('church', 1)]],
+        [1650, 320, 'crate', 'Ancient Scriptorium Box', [...this.rollMany('museum', 2), ...this.rollMany('gov', 2)]],
+        [450, 920, 'crate', 'Catacomb Crypt Locker', [...this.rollMany('historic', 3), ...this.rollMany('police', 1)]],
+        [900, 560, 'crate', 'Sanctum Offering Coffer', this.rollMany('historic', 4)],
+        [1520, 740, 'crate', 'Monastic Supply Chest', [...this.rollMany('hospital', 2), ...this.rollMany('market', 2)]],
+        [1440, 1080, 'vault', 'Sacred Relic Treasury', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      museum: [
+        [110, 290, 'crate', 'Gallery Restoration Crate', this.rollMany('museum', 4)],
+        [700, 520, 'crate', 'Rotunda Curio Case', [...this.rollMany('museum', 2), ...this.rollMany('gov', 2)]],
+        [460, 880, 'crate', 'National Archives Strongbox', [...this.rollMany('gov', 3), ...this.rollMany('science', 1)]],
+        [1440, 480, 'crate', 'State Council Trunk', this.rollMany('gov', 4)],
+        [1500, 730, 'crate', 'Treasury Guard Locker', this.rollMany('police', 4)],
+        [1500, 1080, 'vault', 'Federal Bullion Safe', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      transit: [
+        [380, 130, 'crate', 'Unclaimed Cargo Pallet', this.rollMany('airport', 4)],
+        [660, 310, 'crate', 'Air Traffic Gear Box', [...this.rollMany('police', 2), ...this.rollMany('science', 2)]],
+        [160, 1050, 'crate', 'Bistro Pantry Crate', this.rollMany('market', 4)],
+        [1460, 390, 'crate', 'VIP Luggage Cache', [...this.rollMany('mall', 2), ...this.rollMany('airport', 2)]],
+        [1680, 720, 'crate', 'Customs Confiscation Box', [...this.rollMany('police', 3), ...this.rollMany('military', 1)]],
+        [1560, 1080, 'vault', 'Armored Customs Safe', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      industrial: [
+        [400, 200, 'crate', 'Coolant HAZMAT Cache', [...this.rollMany('science', 3), ...this.rollMany('hospital', 1)]],
+        [700, 160, 'crate', 'Turbine Maintenance Box', [...this.rollMany('gas', 3), ...this.rollMany('science', 1)]],
+        [400, 750, 'crate', 'Machinist Tool Chest', [...this.rollMany('gas', 3), ...this.rollMany('police', 1)]],
+        [1520, 500, 'crate', 'Substation Capacitor Case', this.rollMany('science', 4)],
+        [1520, 720, 'crate', 'Control Room Locker', this.rollMany('military', 3)],
+        [1450, 1060, 'vault', 'High-Voltage Breaker Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ]
+    };
+
+    for (const [cx, cy, k, label, contents] of (chestSets[kind] || [])) {
+      if (hasNear(cx, cy, k)) continue;
+      const [fx, fy] = this.findFree(cx, cy, 16, 'walk', zoneKey);
+      this.createItem(fx, fy, {k, label, contents, zone: zoneKey});
+    }
+  }
   useInteriorStation(p, st) {
     const now = this.now, zone = p.zone || 'world';
-    const isRaid = zone.startsWith('raid_');
+    const isRaid = !zone.startsWith('bunker_');
+    const isMilitaryZone = zone.startsWith('raid_') || zone.startsWith('mil_');
     const plotId = zone.startsWith('bunker_') ? +zone.slice(7) : (p.plotId || 0);
     const plot = plotId ? this.plots.get(plotId) : null;
     const up = (plot && plot.upgrades) || {};
@@ -1191,7 +1417,7 @@ class Game {
         const lv = plot ? plot.level : 1;
         const cost = st.cost;
         if ((p.scrap || 0) < cost) { this.msg(p, `Need ${cost} Scrap to print a tactical firearm.`); return; }
-        const pool = lv >= 4
+        const pool = (lv >= 4 || isMilitaryZone)
           ? ['AK-47', 'M4A1', 'SPAS-12', 'M249 SAW', 'AWM']
           : ['MP5', 'Remington 870', 'AK-47', 'UMP45', 'M16A4'];
         const pickName = pool[Math.floor(rnd() * pool.length)];
@@ -1268,14 +1494,14 @@ class Game {
         const rem = Math.ceil(((p.stationCD[cdKey] || 0) - now) / 1000);
         if (rem > 0) { this.msg(p, `🔐 Security Vault relocked (${rem}s remaining)`); return; }
         p.stationCD[cdKey] = now + 150000;
-        const amt = isRaid ? 280 : 140;
+        const amt = isMilitaryZone ? 260 : isRaid ? 190 : 140;
         this.awardScrap(p, amt, p.x, p.y, zone);
         this.addItem(p, 'keycard', 1);
-        const contents = this.rollMany(isRaid ? 'vault' : 'military', 4);
+        const contents = this.rollMany(isMilitaryZone ? 'vault' : isRaid ? 'police' : 'military', 4);
         for (const c of contents) this.giveObj(p, c, false);
         this.progressMission(p, 'bunker_op', 1);
         this.progressMission(p, 'loot', 2);
-        this.msg(p, `🔐 Breached Vault Locker! +${amt} Scrap + Keycard + Military Gear!`);
+        this.msg(p, `🔐 Breached Security Vault! +${amt} Scrap + Keycard + Rare Gear!`);
         return;
       }
     }
@@ -1313,11 +1539,6 @@ class Game {
       return;
     }
 
-    let bv = null, bvd = Infinity; for (const v of this.vh.query(p.x, p.y, 280, [])) { if (v.dead) continue; const r = VEH[v.type].r + 80, dd = d2(v.x, v.y, p.x, p.y); if (dd < r * r && dd < bvd) { bvd = dd; bv = v; } }
-    if (bv && (!bi || bvd < 70 * 70 || bvd <= bid)) { this.enterVehicle(p, bv); return; }
-    if (bi) { this.pickup(p, bi); return; }
-    if (bv) { this.enterVehicle(p, bv); return; }
-
     // Check Wasteland Military Raid Bunker Hatches
     for (const rb of RAID_BUNKERS) {
       if (d2(p.x, p.y, rb.x, rb.y) < 110 * 110) {
@@ -1325,6 +1546,19 @@ class Game {
         return;
       }
     }
+
+    // Check Enterable Building Sub-Map Portals (Universities, Hospitals, Malls, Military Bases)
+    for (const ent of (this.M.entrances || [])) {
+      if (d2(p.x, p.y, ent.x, ent.y) < 110 * 110) {
+        this.enterInterior(p, ent.id);
+        return;
+      }
+    }
+
+    let bv = null, bvd = Infinity; for (const v of this.vh.query(p.x, p.y, 280, [])) { if (v.dead) continue; const r = VEH[v.type].r + 80, dd = d2(v.x, v.y, p.x, p.y); if (dd < r * r && dd < bvd) { bvd = dd; bv = v; } }
+    if (bv && (!bi || bvd < 70 * 70 || bvd <= bid)) { this.enterVehicle(p, bv); return; }
+    if (bi) { this.pickup(p, bi); return; }
+    if (bv) { this.enterVehicle(p, bv); return; }
 
     // Check Shelter Plots: North Bunker Lift OR Center Command Terminal / Claim
     for (const pl of this.plots.values()) {
@@ -1581,41 +1815,43 @@ class Game {
       else if (d.kind === 'boat') tm = P.water ? 1 : 0.05;
       else if (d.kind === 'hover') tm = P.water ? 1 : Math.max(0.55, P.veh);
       else {
-        const isRoad = tile === 5 || tile === 20 || tile === 24 || tile === 6;
+        const isRoad = tile === 5 || tile === 20 || tile === 16 || tile === 6;
         tm = isRoad ? 1.35 : (d.terrain && d.terrain[tile] !== undefined ? d.terrain[tile] : P.veh);
       }
       const maxS = d.speed * tm * (boost && !disabled ? 1.32 : 1);
 
-      // Forward / Lateral velocity decomposition (true tire grip & drift)
+      // Forward / Lateral velocity decomposition (true tire grip, apex stability & handbrake drift)
       const cosA = Math.cos(v.a), sinA = Math.sin(v.a);
       let fwd = v.vx * cosA + v.vy * sinA;
       let lat = -v.vx * sinA + v.vy * cosA;
 
       if (thr > 0) {
-        fwd += d.accel * thr * dt * (fwd < -10 ? 3.8 : 1.18);
+        const launchBoost = Math.abs(fwd) < 90 ? 1.35 : 1.18;
+        fwd += d.accel * thr * dt * (fwd < -10 ? 4.2 : launchBoost);
       } else if (thr < 0) {
-        if (fwd > 20) fwd -= Math.min(fwd, d.accel * 4.4 * dt);
-        else fwd += d.accel * thr * dt * 1.5;
+        if (fwd > 20) fwd -= Math.min(fwd, d.accel * 4.8 * dt);
+        else fwd += d.accel * thr * dt * 1.65;
       } else {
-        const rollingDrag = (P.drag || 1.0) * (heli ? 1.0 : 1.7);
+        const rollingDrag = (P.drag || 1.0) * (heli ? 0.95 : 1.55);
         fwd -= fwd * Math.min(1, rollingDrag * dt);
       }
 
-      if (braking && d.kind === 'car') fwd *= Math.exp(-3.6 * dt);
-      if (fwd > maxS) fwd -= (fwd - maxS) * Math.min(1, 4.5 * dt);
-      if (fwd < -maxS * 0.55) fwd = -maxS * 0.55;
+      if (braking && d.kind === 'car') fwd *= Math.exp(-2.8 * dt);
+      if (fwd > maxS) fwd -= (fwd - maxS) * Math.min(1, 5.2 * dt);
+      if (fwd < -maxS * 0.58) fwd = -maxS * 0.58;
 
-      // Smoothed speed-scaled steering
-      v.sa = (v.sa || 0) + (steer - (v.sa || 0)) * Math.min(1, 16 * dt);
-      const spdNorm = Math.min(1.15, Math.abs(fwd) / 140);
-      const tf = heli ? 1 : (0.55 + spdNorm * 0.62);
-      if (Math.abs(fwd) > 6 || heli) {
-        v.a += v.sa * d.turn * tf * dt * (fwd < -5 && !heli ? -1 : 1);
+      // Smoothed speed-sensitive progressive steering (nimble at low speed, stable at top speed)
+      v.sa = (v.sa || 0) + (steer - (v.sa || 0)) * Math.min(1, 18 * dt);
+      const absFwd = Math.abs(fwd);
+      const steerCurve = heli ? 1 : clamp(0.42 + (absFwd / 120) * 0.72 - Math.max(0, (absFwd - 480) / 1400) * 0.28, 0.35, 1.12);
+      const driftTurn = braking && d.kind === 'car' && absFwd > 140 ? 1.24 : 1;
+      if (absFwd > 5 || heli) {
+        v.a += v.sa * d.turn * steerCurve * driftTurn * dt * (fwd < -5 && !heli ? -1 : 1);
       }
 
-      // Exponential lateral tire traction decay
+      // Exponential lateral tire traction decay (crisp cornering normally, wide controlled slide on handbrake)
       const nCos = Math.cos(v.a), nSin = Math.sin(v.a);
-      const latGrip = (d.kind === 'car' ? (P.grip || 1) : 1) * (d.grip || 1) * (braking ? 2.4 : 9.5);
+      const latGrip = (d.kind === 'car' ? (P.grip || 1) : 1) * (d.grip || 1) * (braking ? 2.1 : 10.5);
       lat *= Math.exp(-latGrip * dt);
 
       v.vx = nCos * fwd - nSin * lat;
@@ -1632,17 +1868,30 @@ class Game {
           if (res.hit.def && d.crush) {
             this.damageStruct(res.hit, 5000, drv);
           } else {
-            const impactSpd = (res.bx ? Math.abs(v.vx) : 0) + (res.by ? Math.abs(v.vy) : 0);
-            if (impactSpd > 340 && now - (v.lastCrash || 0) > 380) {
+            // Radial normal collision projection: zero sticky snag, clean tangential slide!
+            const vDotN = v.vx * res.nx + v.vy * res.ny;
+            const impactSpd = vDotN < 0 ? -vDotN : (res.impact / Math.max(dt, 0.016));
+            if (impactSpd > 380 && now - (v.lastCrash || 0) > 400) {
               v.lastCrash = now;
-              this.damageVehicle(v, (impactSpd - 290) * 0.04 * (d.tough ? 0.25 : 1), null);
+              this.damageVehicle(v, (impactSpd - 320) * 0.036 * (d.tough ? 0.25 : 1), null);
               if (res.hit.def) this.damageStruct(res.hit, impactSpd * 0.35 * (d.mass || 1), drv);
-              if (impactSpd > 680 && !d.tough) for (const pid of v.seats) { const pp = pid && this.players.get(pid); if (pp) this.damagePlayer(pp, (impactSpd - 600) * 0.035, 'crash', null); }
+              if (impactSpd > 720 && !d.tough) for (const pid of v.seats) { const pp = pid && this.players.get(pid); if (pp) this.damagePlayer(pp, (impactSpd - 640) * 0.03, 'crash', null); }
               this.ev.push({x: v.x, y: v.y, zone: 'world', d: ['cr', Math.round(v.x), Math.round(v.y)]});
             }
-            if (res.bx) v.vx *= -0.08;
-            if (res.by) v.vy *= -0.08;
-            v.sp = v.vx * nCos + v.vy * nSin;
+            if (vDotN < 0) {
+              v.vx -= (1.06 * vDotN) * res.nx;
+              v.vy -= (1.06 * vDotN) * res.ny;
+              v.vx *= 0.94; v.vy *= 0.94;
+            }
+            // Grazing deflection aligns nose slightly with tangent so cars glance smoothly along fences & curbs
+            if (spd > 80 && Math.abs(res.nx) + Math.abs(res.ny) > 0.1) {
+              const tangAng = Math.atan2(v.vy, v.vx);
+              let diff = tangAng - v.a;
+              while (diff > Math.PI) diff -= 2 * Math.PI;
+              while (diff < -Math.PI) diff += 2 * Math.PI;
+              if (Math.abs(diff) < 0.72) v.a += diff * 0.35;
+            }
+            v.sp = v.vx * Math.cos(v.a) + v.vy * Math.sin(v.a);
           }
         }
         if (spd > 130 && ck !== 'fly' && !v.dead) this.ram(v, d, drv, spd);
@@ -2179,28 +2428,36 @@ class Game {
   sendBoard() { this.broadcast({t: 'board', L: [...this.players.values()].map(p => [p.id, p.name, p.team, p.kills, p.pk, p.deaths, p.ping, p.dead ? 1 : 0]), s: this.settings}); }
   invMsg(p) { return {t: 'inv', hb: p.hotbar.map(s => s ? [s.w, s.mag || 0, s.n || 0] : null), inv: p.inv.map(i => [i.k, i.n]), ammo: p.ammo, wear: p.wear, cap: this.cap(p), pfx: p.pfx}; }
   sendSnapshots() {
-    const now = this.now, full = this.tickN % 4 === 0, P = [];
+    const now = this.now, full = this.tickN % 4 === 0;
+    const pByZone = new Map();
     for (const p of this.players.values()) {
       const sl = p.hotbar[p.sel], w = sl ? WEAPONS[sl.w] : null; let f = 0;
       if (p.dead) f |= 1; if (p.light) f |= (p.pfx.light === 'cone' ? 2 : 512); if (now < p.reloadUntil) f |= 4; if (p.swim) f |= 8; if (p.input.sprint && p.st > 1) f |= 16;
       if (p.buf.burn > now) f |= 32; if (p.buf.stun > now) f |= 64; if (p.nvg) f |= 128; if (p.scope) f |= 256; if (now < p.spawnProt) f |= 1024; if (p.bleed) f |= 2048;
-      P.push([p.id, Math.round(p.x), Math.round(p.y), Math.round(Math.atan2(p.input.ay - p.y, p.input.ax - p.x) * 100), Math.round(p.hp), p.team, w ? w.i : -1, p.veh ? p.veh.id : 0, f, p.rebirths || 0, p.zone || 'world']);
+      const pz = p.zone || 'world';
+      let arr = pByZone.get(pz);
+      if (!arr) { arr = []; pByZone.set(pz, arr); }
+      arr.push([p.id, Math.round(p.x), Math.round(p.y), Math.round(Math.atan2(p.input.ay - p.y, p.input.ax - p.x) * 100), Math.round(p.hp), p.team, w ? w.i : -1, p.veh ? p.veh.id : 0, f, p.rebirths || 0]);
     }
     for (const p of this.players.values()) {
       if (!p.ws || p.ws.readyState !== 1 || p.ws.bufferedAmount > 2e6) continue;
       const cx = p.x, cy = p.y, pZone = p.zone || 'world', Rr = p.scope ? 2200 : 1500, R2 = Rr * Rr;
-      const zoneP = P.filter(q => q[10] === pZone);
+      const zoneP = pByZone.get(pZone) || [];
       const Z = [];
-      for (const z of this.zh.query(cx, cy, Rr, [])) {
+      snapZ.length = 0;
+      for (const z of this.zh.query(cx, cy, Rr, snapZ)) {
         if ((z.zone || 'world') !== pZone || z.hp <= 0) continue; const dd = d2(z.x, z.y, cx, cy); if (dd > R2) continue; const d = ZD[z.type];
         if (d.stealth && dd > 72900 && !(p.light && dd < 270400) && !p.nvg) continue;
         let f = 0; if (z.burrowed) f |= 1; if (z.burn > now) f |= 2; if (z.stun > now) f |= 4; if (now - z.atk < 300) f |= 8;
         Z.push([z.id, z.ti, Math.round(z.x), Math.round(z.y), Math.round(z.a * 10), Math.round(100 * z.hp / z.maxhp), f]); if (Z.length >= 320) break;
       }
       const V = [];
-      if (pZone === 'world') for (const v of this.vh.query(cx, cy, Rr + 200, [])) {
-        let f = 0; if (v.siren) f |= 1; if (v.emp > now || now < this.empUntil) f |= 2; if (v.seats[0]) f |= 4; if (v.alt > 0.5) f |= 8; if (v.broken) f |= 16; if (v.dead) f |= 32;
-        V.push([v.id, v.ti, Math.round(v.x), Math.round(v.y), Math.round(v.a * 100), Math.round(100 * v.hp / v.maxhp), v.seats[0] || 0, f, Math.round(v.sp || 0), Math.round((v.ta || v.a) * 100), Math.round(v.vx || 0), Math.round(v.vy || 0)]);
+      if (pZone === 'world') {
+        snapV.length = 0;
+        for (const v of this.vh.query(cx, cy, Rr + 200, snapV)) {
+          let f = 0; if (v.siren) f |= 1; if (v.emp > now || now < this.empUntil) f |= 2; if (v.seats[0]) f |= 4; if (v.alt > 0.5) f |= 8; if (v.broken) f |= 16; if (v.dead) f |= 32;
+          V.push([v.id, v.ti, Math.round(v.x), Math.round(v.y), Math.round(v.a * 100), Math.round(100 * v.hp / v.maxhp), v.seats[0] || 0, f, Math.round(v.sp || 0), Math.round((v.ta || v.a) * 100), Math.round(v.vx || 0), Math.round(v.vy || 0)]);
+        }
       }
       const Rp = []; for (const pr of this.proj) if ((pr.zone || 'world') === pZone && d2(pr.x, pr.y, cx, cy) < R2) Rp.push([pr.id, pr.itemFx ? (pr.itemFx.t === 'fire' ? 'molotov' : 'item') : (pr.w.kind || 'bullet'), Math.round(pr.x), Math.round(pr.y), Math.round(pr.a * 100), Math.round(pr.z * 100)]);
       const E = [];
@@ -2234,8 +2491,16 @@ class Game {
       if (full || zoneChanged || ev.length > 0) {
         const gRad = pZone === 'world' ? 1200 : 2200;
         const sRad = pZone === 'world' ? 1600 : 2200;
-        o.G = this.ih.query(cx, cy, gRad, []).filter(it => (it.zone || 'world') === pZone).map(it => [it.id, it.k, Math.round(it.x), Math.round(it.y), it.n, it.label || 0]);
-        o.S = this.sh.query(cx, cy, sRad, []).filter(s => (s.zone || 'world') === pZone).map(s => [s.id, s.kind, Math.round(s.x), Math.round(s.y), s.w, s.h, Math.round(100 * s.hp / s.maxhp), s.open ? 1 : 0, s.team, s.water >= 1 ? 1 : 0, s.owner]);
+        const G = []; snapG.length = 0;
+        for (const it of this.ih.query(cx, cy, gRad, snapG)) {
+          if ((it.zone || 'world') === pZone) G.push([it.id, it.k, Math.round(it.x), Math.round(it.y), it.n, it.label || 0]);
+        }
+        const S = []; snapS.length = 0;
+        for (const s of this.sh.query(cx, cy, sRad, snapS)) {
+          if ((s.zone || 'world') === pZone) S.push([s.id, s.kind, Math.round(s.x), Math.round(s.y), s.w, s.h, Math.round(100 * s.hp / s.maxhp), s.open ? 1 : 0, s.team, s.water >= 1 ? 1 : 0, s.owner]);
+        }
+        o.G = G;
+        o.S = S;
       }
       p.ws.send(JSON.stringify(o));
       if (p.dirty) { p.dirty = false; this.send(p, this.invMsg(p)); }

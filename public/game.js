@@ -6,10 +6,11 @@ const cv = $('game'), ctx = cv.getContext('2d');
 const lightCv = document.createElement('canvas'), lx = lightCv.getContext('2d');
 let VW = 0, VH = 0, DPR = 1;
 function resize() {
-  DPR = Math.min(2, window.devicePixelRatio || 1);
+  DPR = Math.min(1.5, window.devicePixelRatio || 1);
   VW = innerWidth; VH = innerHeight;
   cv.width = VW * DPR; cv.height = VH * DPR;
-  lightCv.width = Math.ceil(VW / 2); lightCv.height = Math.ceil(VH / 2);
+  lightCv.width = Math.max(160, Math.ceil(VW * 0.38));
+  lightCv.height = Math.max(120, Math.ceil(VH * 0.38));
   if (!$('bigmap').hidden) sizeBigmap();
 }
 addEventListener('resize', resize); resize();
@@ -34,7 +35,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;',
 let ws = null, D = null, M = null, myId = 0, settings = {}, me = null, inv = null, board = [], sky = null, cosmic = null, ping = 0;
 let tiles, region, TS = 80, MW = 0, MH = 0, WP = 0, HP = 0, WBY = {}, KNIFE = null, GLOCK = null;
 const snaps = []; let latest = null; const items = new Map(), structs = new Map(); let effects = [];
-const pred = {x: 0, y: 0, ps: -1};
+const pred = {x: 0, y: 0, ps: -1, a: 0};
 const vehPred = {id: 0, x: 0, y: 0, a: 0, sp: 0, vx: 0, vy: 0, steerAngle: 0, sa: 0, lastSkidAt: 0, active: false};
 let zoom = 1, userZoom = 1, camX = 0, camY = 0, shake = 0, frameN = 0, gameTime = 0.3, lastSend = 0;
 const keys = {}; const mouse = {x: 0, y: 0, l: false, r: false};
@@ -43,9 +44,11 @@ const reveals = [], fxs = [], decals = [], warns = [], drops = [], particles = [
 const TEAMCOL = ['#4cc9f0', '#ff4d4d', '#4d8bff', '#4dff88', '#ffd24d'];
 const TEAM_PAL = {};
 const VEH_PAL = {};
+const boardNames = new Map();
+const SPIKE_TRIG = Array.from({length: 8}, (_, k) => [Math.cos(k * 0.78539816), Math.sin(k * 0.78539816)]);
 let lastSnapZone = 'world';
-const bunkerStaticCache = { bunker: null, raid: null };
-let lastMmDraw = 0;
+const bunkerStaticCache = { bunker: null, raid: null, airport: null, university: null, hospital: null, mall: null, military: null, historic: null, museum: null, transit: null, industrial: null };
+let lastMmDraw = 0, _mmCv = null, _mmCtx = null;
 const hudCache = {};
 
 // Pre-baked offscreen radial glow sprites & cached text metrics (zero per-frame gradient/measure allocations)
@@ -82,11 +85,30 @@ const GLOW_SPR = {
   boom: makeGlowSprite([[0, 'rgba(255,255,220,0.95)'], [0.42, 'rgba(255,190,70,0.78)'], [1, 'rgba(80,40,20,0)']]),
   hurt: makeGlowSprite([[0, 'rgba(160,0,0,0)'], [0.55, 'rgba(160,0,0,0.28)'], [1, 'rgba(160,0,0,0.88)']])
 };
+const LIGHT_MASK_CIRCLE = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gr.addColorStop(0, 'rgba(0,0,0,1)');
+  gr.addColorStop(0.58, 'rgba(0,0,0,0.62)');
+  gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  return c;
+})();
+const LIGHT_MASK_CONE = (() => {
+  const c = document.createElement('canvas'); c.width = 192; c.height = 192;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(0, 96, 0, 0, 96, 192);
+  gr.addColorStop(0, 'rgba(0,0,0,1)');
+  gr.addColorStop(0.68, 'rgba(0,0,0,0.68)');
+  gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gr;
+  g.beginPath(); g.moveTo(0, 96); g.arc(0, 96, 192, -0.46, 0.46); g.closePath(); g.fill();
+  return c;
+})();
 function vehPal(hex) {
   let p = VEH_PAL[hex];
   if (!p) {
     const rgb = hex2(hex);
-    p = VEH_PAL[hex] = { top: shade(rgb, 1.18), mid: hex, bot: shade(rgb, 0.74) };
+    p = VEH_PAL[hex] = { top: shade(rgb, 1.18), mid: hex, bot: shade(rgb, 0.74), turret: shade(rgb, 0.8) };
   }
   return p;
 }
@@ -268,6 +290,8 @@ function onMsg(m) {
       break;
     case 'board':
       board = m.L; settings = m.s;
+      boardNames.clear();
+      for (let i = 0; i < board.length; i++) boardNames.set(board[i][0], board[i][1]);
       if (!$('board').hidden) renderBoard();
       if (!$('menu').hidden) renderMenu();
       break;
@@ -422,8 +446,13 @@ function b64(s) {
 }
 
 // ───────── static map helpers ─────────
-const RG = new Map();
+const RG = new Map(), ENT_GRID = new Map(), PORTAL_RECTS = new Set();
+let _rgSeen = null, _rgStamp = 1;
+const _rgOut = [], _egOut = [];
 function buildRectGrid() {
+  RG.clear(); ENT_GRID.clear(); PORTAL_RECTS.clear();
+  _rgSeen = new Int32Array(M.rects.length);
+  _rgStamp = 1;
   M.rects.forEach((r, i) => {
     for (let cx = Math.floor(r[0] / 320); cx <= Math.floor((r[0] + r[2]) / 320); cx++) {
       for (let cy = Math.floor(r[1] / 320); cy <= Math.floor((r[1] + r[3]) / 320); cy++) {
@@ -433,16 +462,45 @@ function buildRectGrid() {
       }
     }
   });
+  if (M.entrances) {
+    for (const ent of M.entrances) {
+      const k = Math.floor(ent.x / 640) * 65536 + Math.floor(ent.y / 640);
+      let a = ENT_GRID.get(k); if (!a) { a = []; ENT_GRID.set(k, a); }
+      a.push(ent);
+      for (const idx of rectsIn(ent.x - 40, ent.y - 40, ent.x + 40, ent.y + 40)) {
+        const q = M.rects[idx];
+        if (Math.abs(ent.x - (q[0] + q[2] / 2)) < 28 && Math.abs(ent.y - (q[1] + q[3])) < 28) {
+          PORTAL_RECTS.add(idx);
+        }
+      }
+    }
+  }
 }
 function rectsIn(x0, y0, x1, y1) {
-  const out = new Set();
+  _rgOut.length = 0;
+  if (!_rgSeen) return _rgOut;
+  if (++_rgStamp > 1000000000) { _rgSeen.fill(0); _rgStamp = 1; }
+  const st = _rgStamp;
   for (let cx = Math.floor(x0 / 320); cx <= Math.floor(x1 / 320); cx++) {
     for (let cy = Math.floor(y0 / 320); cy <= Math.floor(y1 / 320); cy++) {
       const a = RG.get(cx * 65536 + cy);
-      if (a) for (const i of a) out.add(i);
+      if (a) for (let j = 0; j < a.length; j++) {
+        const i = a[j];
+        if (_rgSeen[i] !== st) { _rgSeen[i] = st; _rgOut.push(i); }
+      }
     }
   }
-  return out;
+  return _rgOut;
+}
+function entrancesIn(x0, y0, x1, y1) {
+  _egOut.length = 0;
+  for (let cx = Math.floor(x0 / 640); cx <= Math.floor(x1 / 640); cx++) {
+    for (let cy = Math.floor(y0 / 640); cy <= Math.floor(y1 / 640); cy++) {
+      const a = ENT_GRID.get(cx * 65536 + cy);
+      if (a) for (let j = 0; j < a.length; j++) _egOut.push(a[j]);
+    }
+  }
+  return _egOut;
 }
 const tileAt = (x, y) => {
   const tx = Math.floor(x / TS), ty = Math.floor(y / TS);
@@ -501,9 +559,33 @@ function circleShelterCollide(x, y, r, plot, isAuth) {
   return false;
 }
 
+function interiorTypeOf(zone) {
+  if (!zone || zone === 'world') return null;
+  if (zone.startsWith('raid_')) return 'raid';
+  if (zone.startsWith('air_')) return 'airport';
+  if (zone.startsWith('univ_')) return 'university';
+  if (zone.startsWith('hosp_')) return 'hospital';
+  if (zone.startsWith('mall_')) return 'mall';
+  if (zone.startsWith('mil_')) return 'military';
+  if (zone.startsWith('hist_')) return 'historic';
+  if (zone.startsWith('mus_')) return 'museum';
+  if (zone.startsWith('hub_')) return 'transit';
+  if (zone.startsWith('ind_')) return 'industrial';
+  return 'bunker';
+}
+
+function getEntranceInfo(zone) {
+  if (!M || !M.entrances || !zone) return null;
+  if (!M._entMap) {
+    M._entMap = new Map();
+    for (const e of M.entrances) M._entMap.set(e.id, e);
+  }
+  return M._entMap.get(zone) || null;
+}
+
 function currentInteriorDef() {
   if (!D || !D.INTERIORS || !me || !me.zone || me.zone === 'world') return null;
-  return D.INTERIORS[me.zone.startsWith('raid_') ? 'raid' : 'bunker'] || null;
+  return D.INTERIORS[interiorTypeOf(me.zone)] || null;
 }
 
 function blockedAt(x, y, r, kind = 'walk') {
@@ -571,8 +653,8 @@ function moveCircle(e, dx, dy, r, kind = 'walk') {
   }
 }
 function moveVehiclePred(e, dx, dy, r, kind) {
-  const dist = Math.abs(dx) + Math.abs(dy);
-  if (dist < 0.01) return {bx: false, by: false};
+  const dist = Math.hypot(dx, dy);
+  if (dist < 0.01) return {hit: false, nx: 0, ny: 0};
   if (blockedAt(e.x, e.y, r, kind)) {
     let rescued = false;
     for (const rad of [6, 14, 24, 38]) {
@@ -582,28 +664,44 @@ function moveVehiclePred(e, dx, dy, r, kind) {
       }
       if (rescued) break;
     }
-    if (!rescued) return {bx: true, by: true};
+    if (!rescued) return {hit: true, nx: 1, ny: 0};
   }
-  const steps = Math.max(1, Math.ceil(dist / Math.max(6, r * 0.45)));
+  const steps = clamp(Math.ceil(dist / Math.max(5, r * 0.4)), 1, 16);
   const sx = dx / steps, sy = dy / steps;
-  let bx = false, by = false;
+  let hit = false, hnx = 0, hny = 0;
   for (let i = 0; i < steps; i++) {
-    if (!blockedAt(e.x + sx, e.y, r, kind)) e.x += sx;
-    else {
-      bx = true;
-      const nudge = Math.abs(sx) * 0.55;
-      if (!blockedAt(e.x + sx, e.y + nudge, r, kind)) { e.x += sx; e.y += nudge; }
-      else if (!blockedAt(e.x + sx, e.y - nudge, r, kind)) { e.x += sx; e.y -= nudge; }
-    }
-    if (!blockedAt(e.x, e.y + sy, r, kind)) e.y += sy;
-    else {
-      by = true;
-      const nudge = Math.abs(sy) * 0.55;
-      if (!blockedAt(e.x + nudge, e.y + sy, r, kind)) { e.x += nudge; e.y += sy; }
-      else if (!blockedAt(e.x - nudge, e.y + sy, r, kind)) { e.x -= nudge; e.y += sy; }
+    const nxPos = e.x + sx, nyPos = e.y + sy;
+    if (!blockedAt(nxPos, nyPos, r, kind)) {
+      e.x = nxPos; e.y = nyPos;
+    } else {
+      hit = true;
+      let gx = 0, gy = 0;
+      for (let k = 0; k < 8; k++) {
+        const ang = k * (Math.PI * 0.25);
+        const ox = Math.cos(ang), oy = Math.sin(ang);
+        if (blockedAt(nxPos + ox * 4, nyPos + oy * 4, r, kind)) {
+          gx -= ox; gy -= oy;
+        }
+      }
+      const gl = Math.hypot(gx, gy);
+      if (gl > 0.01) {
+        gx /= gl; gy /= gl;
+        const stepDotN = sx * gx + sy * gy;
+        if (stepDotN < 0) {
+          const tx = sx - gx * stepDotN, ty = sy - gy * stepDotN;
+          if (!blockedAt(e.x + tx, e.y + ty, r, kind)) { e.x += tx; e.y += ty; }
+          else if (!blockedAt(e.x + sx, e.y, r, kind)) { e.x += sx; gx = 0; gy = sy < 0 ? 1 : -1; }
+          else if (!blockedAt(e.x, e.y + sy, r, kind)) { e.y += sy; gx = sx < 0 ? 1 : -1; gy = 0; }
+        }
+        hnx = gx; hny = gy;
+      } else {
+        if (!blockedAt(e.x + sx, e.y, r, kind)) { e.x += sx; hnx = 0; hny = sy > 0 ? -1 : 1; }
+        else if (!blockedAt(e.x, e.y + sy, r, kind)) { e.y += sy; hnx = sx > 0 ? -1 : 1; hny = 0; }
+        else { hnx = sx !== 0 ? -Math.sign(sx) : 0; hny = sy !== 0 ? -Math.sign(sy) : 0; }
+      }
     }
   }
-  return {bx, by};
+  return {hit, nx: hnx, ny: hny};
 }
 const themeAt = (x, y) => M.themes[region[clamp(Math.floor(y / TS), 0, MH - 1) * MW + clamp(Math.floor(x / TS), 0, MW - 1)]];
 const regionName = (x, y) => M.rnames[region[clamp(Math.floor(y / TS), 0, MH - 1) * MW + clamp(Math.floor(x / TS), 0, MW - 1)]];
@@ -614,11 +712,12 @@ const TCOL = ['#1d4e89', '#3a86c8', '#e2cf8f', '#5d9b4c', '#3b6e34', '#3d3d42', 
 const hex2 = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
 const TRGB = TCOL.map(hex2);
 const shade = (rgb, f) => `rgb(${clamp(rgb[0] * f, 0, 255) | 0},${clamp(rgb[1] * f, 0, 255) | 0},${clamp(rgb[2] * f, 0, 255) | 0})`;
+const TRGB_SHADE = TRGB.map(rgb => [0.92, 0.96, 1.01, 1.06].map(f => shade(rgb, f)));
 const STY = {
   b: ['#6f6a64', '#4c4843'], stand: ['#6b6f78', '#3f434a'], stone: ['#b9a68a', '#7d6c55'], pit: ['#c8c8c8', '#777'], club: ['#e8dcc2', '#9c8c6e'], terminal: ['#b5c4cf', '#6b7c88'], hangar: ['#8c949c', '#596068'],
   police: ['#2c4e8a', '#152a52'], fire: ['#a8322d', '#5c1714'], court: ['#d8d0bd', '#8f8672'], museum: ['#ece6d8', '#a59c86'], science: ['#9fc7d8', '#4d7f94'], archive: ['#a39278', '#6b5c45'], bank: ['#cbb26a', '#7d6a2f'],
   post: ['#c0392b', '#6e1f17'], capitol: ['#efe9dc', '#a8a08a'], intl: ['#5d9cd6', '#2c5a85'], gov: ['#c9bea3', '#857a60'], civic: ['#a9a197', '#6b6358'], church: ['#7d7468', '#4a433a'], temple: ['#efe8d8', '#b0a68e'],
-  hall: ['#8fa3ad', '#53656e'], mall: ['#7fb8b0', '#3f6f68'], glass: ['#b7e3e0', '#5f9a97'], fence: ['#b9c2c9', '#7d868d'], stall: ['#d9534f', '#8a2b28'], fortwall: ['#8a7c68', '#544a3c'], tower: ['#7a6c58', '#463c2e'],
+  hall: ['#8fa3ad', '#53656e'], mall: ['#7fb8b0', '#3f6f68'], glass: ['#b7e3e0', '#5f9a97'], fence: ['#b9c2c9', '#7d868d'], milfence: ['#64748b', '#334155'], stall: ['#d9534f', '#8a2b28'], fortwall: ['#8a7c68', '#544a3c'], tower: ['#7a6c58', '#463c2e'],
   keep: ['#6e624f', '#3e3628'], palace: ['#efe0b8', '#b29a5a'], pagoda: ['#b8322a', '#6c1a14'], pyramid: ['#d8bf7a', '#9a8040'], mosque: ['#e8dcc0', '#a6967a'], minaret: ['#f0e6cc', '#a6967a'], dome: ['#f4f1ea', '#b5ae9e'],
   aqueduct: ['#c3ad8a', '#81704f'], farmhouse: ['#a5553a', '#5c2c1c'], manor: ['#c7b79b', '#7d6e55'], silo: ['#c9ccd1', '#80858c'], barn: ['#8c2f23', '#4f1811'], dam: ['#a7a7a2', '#62625e'], cottage: ['#bb6b3f', '#6b3a20'],
   house: ['#9b4a32', '#5a2a1c'], shop: ['#46607a', '#273647'], office: ['#5b6a78', '#343e47'], apartment: ['#7d6a5a', '#4a3e33'], hospital: ['#f2f2f2', '#9aa0a6'], gasstation: ['#e8b923', '#8a6c0e'], canopy: ['#e04b3a', '#7a261c'],
@@ -626,12 +725,12 @@ const STY = {
 };
 
 // ───────── chunked terrain renderer ─────────
-const CH = 16, CS = 0.75, CHPX = CH * TS * CS, chunkCache = new Map(); let chunkBuilds = 0;
+const CH = 12, CS = 0.72, CHPX = Math.round(CH * TS * CS), chunkCache = new Map(); let chunkBuilds = 0;
 function getChunk(cx, cy) {
   const k = cx * 1000 + cy; const c = chunkCache.get(k);
   if (c) { c.u = frameN; return c.cv; }
-  if (chunkBuilds >= 2) return null; chunkBuilds++;
-  if (chunkCache.size > 120) {
+  if (chunkBuilds >= 3) return null; chunkBuilds++;
+  if (chunkCache.size > 160) {
     let old = null, ou = Infinity;
     for (const [kk, v] of chunkCache) if (v.u < ou) { ou = v.u; old = kk; }
     chunkCache.delete(old);
@@ -649,7 +748,7 @@ function drawChunk(g, cx, cy) {
   for (let ty = ty0; ty < ty0 + CH; ty++) for (let tx = tx0; tx < tx0 + CH; tx++) {
     if (tx >= MW || ty >= MH) continue;
     const t = tiles[ty * MW + tx], x = tx * TS, y = ty * TS, h = hsh(tx, ty);
-    g.fillStyle = shade(TRGB[t], 0.92 + h * 0.16); g.fillRect(x, y, TS + 1, TS + 1);
+    g.fillStyle = TRGB_SHADE[t][(h * 4) | 0]; g.fillRect(x, y, TS + 1, TS + 1);
     const nb = (dx, dy) => { const xx = tx + dx, yy = ty + dy; return (xx < 0 || yy < 0 || xx >= MW || yy >= MH) ? -1 : tiles[yy * MW + xx]; };
     const nU = nb(0, -1), nD = nb(0, 1), nL = nb(-1, 0), nR = nb(1, 0);
     // Subtle terrain drop-shadow along southern/eastern ridge edges for natural 3D relief
@@ -699,19 +798,34 @@ function drawChunk(g, cx, cy) {
         }
         break;
       }
-      case 7: // Terraced Farmland Soil, Crop Furrows & Irrigation Trench
-        g.strokeStyle = 'rgba(65,40,18,.5)'; g.lineWidth = 4.5;
+      case 7: { // Cohesive Farmland Parcels (Wheat, Row Crops, Hay Bales & Wooden Rail Borders)
+        const cropKind = (Math.floor(tx / 3) * 7 + Math.floor(ty / 3) * 13) % 3;
+        g.strokeStyle = cropKind === 0 ? 'rgba(92,66,24,0.45)' : 'rgba(65,40,18,.5)'; g.lineWidth = 4;
         for (let k = 6; k < TS; k += 13) {
           g.beginPath(); g.moveTo(x, y + k); g.lineTo(x + TS, y + k); g.stroke();
-          g.fillStyle = 'rgba(94,148,58,.5)'; g.fillRect(x + (k % 7) * 9, y + k - 2.5, 7, 3.5);
+          g.fillStyle = cropKind === 0 ? 'rgba(234,179,8,0.58)' : cropKind === 1 ? 'rgba(101,163,13,0.62)' : 'rgba(77,124,15,0.48)';
+          g.fillRect(x + ((k + tx * 5) % 9), y + k - 3, cropKind === 0 ? 14 : 9, 4);
+          g.fillRect(x + 28 + ((k * 3) % 11), y + k - 3, cropKind === 0 ? 16 : 10, 4);
+          g.fillRect(x + 56, y + k - 3, 14, 4);
         }
-        if (h > 0.78) {
-          g.fillStyle = 'rgba(42,108,164,0.45)'; g.fillRect(x, y + TS - 7, TS, 4);
+        if (cropKind === 0 && h > 0.84) {
+          g.fillStyle = '#ca8a04'; g.beginPath(); g.arc(x + 40, y + 40, 8, 0, 7); g.fill();
+          g.strokeStyle = '#78350f'; g.lineWidth = 1.5; g.stroke();
+        } else if (h > 0.78) {
+          g.fillStyle = 'rgba(42,108,164,0.48)'; g.fillRect(x, y + TS - 7, TS, 4);
         }
+        g.strokeStyle = '#78350f'; g.lineWidth = 2.2;
+        if (nU === 5 || nU === 13 || nU === 3) { g.beginPath(); g.moveTo(x, y + 2); g.lineTo(x + TS, y + 2); g.stroke(); }
+        if (nL === 5 || nL === 13 || nL === 3) { g.beginPath(); g.moveTo(x + 2, y); g.lineTo(x + 2, y + TS); g.stroke(); }
         break;
-      case 0: case 1: { // Deep & Shallow Water with Bathymetry & Shoreline Surf
-        g.fillStyle = t === 0 ? 'rgba(8,28,60,.42)' : 'rgba(30,130,195,.25)';
+      }
+      case 0: case 1: { // Deep & Shallow Water with Bathymetry, Reef Shimmer & Shoreline Surf
+        g.fillStyle = t === 0 ? 'rgba(8,28,60,.42)' : 'rgba(28,136,198,.26)';
         g.fillRect(x, y, TS, TS);
+        if (t === 1 && h > 0.65 && (nU === 1 && nD === 1)) {
+          g.fillStyle = 'rgba(45,212,191,0.16)';
+          g.beginPath(); g.ellipse(x + 40, y + 40, 22, 13, h * 3, 0, 7); g.fill();
+        }
         if (t === 1 && (nU === 0 || nD === 0 || nL === 0 || nR === 0)) {
           g.fillStyle = 'rgba(18,75,135,0.28)';
           if (nU === 0) g.fillRect(x, y, TS, 10);
@@ -719,55 +833,137 @@ function drawChunk(g, cx, cy) {
           if (nL === 0) g.fillRect(x, y, 10, TS);
           if (nR === 0) g.fillRect(x + TS - 10, y, 10, TS);
         }
-        g.strokeStyle = t ? 'rgba(255,255,255,.28)' : 'rgba(180,225,255,.15)'; g.lineWidth = 2;
+        g.strokeStyle = t ? 'rgba(255,255,255,.3)' : 'rgba(180,225,255,.15)'; g.lineWidth = 2;
         for (let k = 0; k < 3; k++) {
           const yy = y + 12 + k * 25 + h * 8;
           g.beginPath(); g.moveTo(x + 6, yy); g.quadraticCurveTo(x + 30, yy - 5, x + 58, yy); g.stroke();
         }
         // Wet shore rim + whitewater foam along land edges
-        if (nU > 1) { g.fillStyle = 'rgba(220,242,255,.55)'; g.fillRect(x, y, TS, 6); }
-        if (nD > 1) { g.fillStyle = 'rgba(220,242,255,.55)'; g.fillRect(x, y + TS - 6, TS, 6); }
-        if (nL > 1) { g.fillStyle = 'rgba(220,242,255,.55)'; g.fillRect(x, y, 6, TS); }
-        if (nR > 1) { g.fillStyle = 'rgba(220,242,255,.55)'; g.fillRect(x + TS - 6, y, 6, TS); }
+        if (nU > 1) { g.fillStyle = 'rgba(224,244,255,.6)'; g.fillRect(x, y, TS, 6); }
+        if (nD > 1) { g.fillStyle = 'rgba(224,244,255,.6)'; g.fillRect(x, y + TS - 6, TS, 6); }
+        if (nL > 1) { g.fillStyle = 'rgba(224,244,255,.6)'; g.fillRect(x, y, 6, TS); }
+        if (nR > 1) { g.fillStyle = 'rgba(224,244,255,.6)'; g.fillRect(x + TS - 6, y, 6, TS); }
         break;
       }
-      case 8: { // Multi-tiered Mountain Rock Cliff (Sunlit Crest, Faceted Crags & Contour Edges)
-        g.fillStyle = shade(TRGB[8], 0.72 + h * 0.14); g.fillRect(x, y, TS, TS);
-        if (nU !== 8) { g.fillStyle = 'rgba(255,255,255,0.18)'; g.fillRect(x, y, TS, 6); }
-        if (nL !== 8) { g.fillStyle = 'rgba(255,255,255,0.14)'; g.fillRect(x, y, 6, TS); }
-        if (nD !== 8) { g.fillStyle = 'rgba(0,0,0,0.42)'; g.fillRect(x, y + TS - 8, TS, 8); }
-        if (nR !== 8) { g.fillStyle = 'rgba(0,0,0,0.34)'; g.fillRect(x + TS - 7, y, 7, TS); }
-        const px1 = x + 10 + h * 24, py1 = y + 8 + hsh(ty, tx) * 14;
-        g.fillStyle = 'rgba(0,0,0,.32)';
-        g.beginPath(); g.moveTo(px1, py1); g.lineTo(x + 74, y + 20 + h * 26); g.lineTo(x + 30, y + 76); g.closePath(); g.fill();
-        g.fillStyle = 'rgba(255,255,255,.14)';
-        g.beginPath(); g.moveTo(px1, py1); g.lineTo(x + 44, y + 36); g.lineTo(x + 12, y + 48); g.closePath(); g.fill();
-        g.strokeStyle = 'rgba(255,255,255,.18)'; g.lineWidth = 1.8;
-        g.beginPath(); g.moveTo(x + 14, y + 22); g.lineTo(x + 48, y + 58); g.moveTo(x + 30, y + 12); g.lineTo(x + 58, y + 40); g.stroke();
+      case 8: { // Natural Sculpted Alpine Massif / Mountain Cliff (Chamfered Ridges, Granite Crags, Scree & Snow Ledges)
+        const baseFallback = [nU, nD, nL, nR].find(n => n > 0 && n !== 8 && n !== 0 && n !== 1);
+        const underRgb = baseFallback !== undefined ? TRGB[baseFallback] : TRGB[9];
+        const nearSnow = nU === 9 || nD === 9 || nL === 9 || nR === 9 || nU === 10 || nD === 10;
+        const cUL = nU !== 8 && nL !== 8 ? 22 : 0;
+        const cUR = nU !== 8 && nR !== 8 ? 22 : 0;
+        const cDR = nD !== 8 && nR !== 8 ? 22 : 0;
+        const cDL = nD !== 8 && nL !== 8 ? 22 : 0;
+        if (cUL || cUR || cDR || cDL) {
+          g.fillStyle = shade(underRgb, 0.94 + h * 0.1);
+          g.fillRect(x, y, TS + 1, TS + 1);
+        }
+        g.save();
+        g.beginPath();
+        g.moveTo(x + cUL, y);
+        g.lineTo(x + TS - cUR, y);
+        if (cUR) g.lineTo(x + TS, y + cUR);
+        g.lineTo(x + TS, y + TS - cDR);
+        if (cDR) g.lineTo(x + TS - cDR, y + TS);
+        g.lineTo(x + cDL, y + TS);
+        if (cDL) g.lineTo(x, y + TS - cDL);
+        g.lineTo(x, y + cUL);
+        g.closePath();
+        g.clip();
+
+        g.fillStyle = shade(TRGB[8], 0.7 + h * 0.18); g.fillRect(x, y, TS, TS);
+        const ridgeX = x + 22 + h * 36, ridgeY = y + 14 + hsh(ty, tx) * 28;
+        // NW sunlit granite slope & SE deep shadow cliff face
+        g.fillStyle = 'rgba(255,255,255,0.13)';
+        g.beginPath(); g.moveTo(x, y); g.lineTo(x + TS, y); g.lineTo(ridgeX, ridgeY); g.lineTo(x, y + TS); g.closePath(); g.fill();
+        g.fillStyle = 'rgba(12,14,18,0.34)';
+        g.beginPath(); g.moveTo(ridgeX, ridgeY); g.lineTo(x + TS, y); g.lineTo(x + TS, y + TS); g.lineTo(x, y + TS); g.closePath(); g.fill();
+        // Snow dusting & frost veins when adjacent to alpine snow or glacier
+        if (nearSnow || h > 0.62) {
+          g.fillStyle = nearSnow ? 'rgba(241,245,249,0.52)' : 'rgba(241,245,249,0.22)';
+          g.beginPath(); g.moveTo(x + 8, y + 6); g.lineTo(ridgeX + 12, ridgeY - 4); g.lineTo(x + 32, y + 44); g.closePath(); g.fill();
+        }
+        // Crest highlight line & rock strata fractures
+        g.strokeStyle = 'rgba(255,255,255,0.24)'; g.lineWidth = 1.8;
+        g.beginPath(); g.moveTo(x + 8, y + TS - 14); g.lineTo(ridgeX, ridgeY); g.lineTo(x + TS - 8, y + 12); g.stroke();
+        g.strokeStyle = 'rgba(15,23,42,0.45)'; g.lineWidth = 1.4;
+        g.beginPath(); g.moveTo(ridgeX, ridgeY); g.lineTo(x + TS - 16, y + TS - 10); g.stroke();
+        if (nU !== 8) { g.fillStyle = 'rgba(255,255,255,0.22)'; g.fillRect(x, y, TS, 5); }
+        if (nL !== 8) { g.fillStyle = 'rgba(255,255,255,0.16)'; g.fillRect(x, y, 5, TS); }
+        if (nD !== 8) { g.fillStyle = 'rgba(0,0,0,0.42)'; g.fillRect(x, y + TS - 7, TS, 7); }
+        if (nR !== 8) { g.fillStyle = 'rgba(0,0,0,0.36)'; g.fillRect(x + TS - 7, y, 7, TS); }
+        g.restore();
         break;
       }
-      case 5: case 20: { // Paved Asphalt Road / Runway, Curb & Markings
+      case 5: case 20: { // Paved Asphalt Road / Bridge Span / Runway, Curb & Markings
         g.fillStyle = '#202329'; g.fillRect(x, y, TS, TS);
-        g.fillStyle = 'rgba(255,255,255,.035)';
-        for (let k = 0; k < 5; k++) g.fillRect(x + hsh(k, tx) * 70, y + hsh(ty, k) * 70, 3, 3);
-        if (h < 0.14) {
-          g.strokeStyle = 'rgba(10,12,16,.55)'; g.lineWidth = 1.2;
-          g.beginPath(); g.moveTo(x + 14, y + 18); g.lineTo(x + 32, y + 34); g.lineTo(x + 46, y + 29); g.stroke();
-        }
         const L = nL === t, Rr = nR === t, U = nU === t, Dn = nD === t;
-        g.fillStyle = 'rgba(240,242,248,.62)';
-        if (!U && (L || Rr)) g.fillRect(x, y, TS, 3.5);
-        if (!Dn && (L || Rr)) g.fillRect(x, y + TS - 3.5, TS, 3.5);
-        if (!L && (U || Dn)) g.fillRect(x, y, 3.5, TS);
-        if (!Rr && (U || Dn)) g.fillRect(x + TS - 3.5, y, 3.5, TS);
-        if (h > 0.86 && L && Rr) {
-          g.fillStyle = '#334155'; g.beginPath(); g.arc(x + TS * 0.5, y + TS * 0.25, 5, 0, 7); g.fill();
-          g.strokeStyle = '#64748b'; g.lineWidth = 1; g.stroke();
+        const wU = nU === 0 || nU === 1, wD = nD === 0 || nD === 1, wL = nL === 0 || nL === 1, wR = nR === 0 || nR === 1;
+        const bridgeH = t === 5 && (wU || wD), bridgeV = t === 5 && (wL || wR);
+        if (bridgeH || bridgeV) {
+          // Concrete bridge deck & truss girders over water crossings
+          g.fillStyle = '#2d333d'; g.fillRect(x, y, TS, TS);
+          g.fillStyle = '#64748b';
+          if (bridgeH) {
+            g.fillRect(x, y, TS, 7); g.fillRect(x, y + TS - 7, TS, 7);
+            g.fillStyle = '#94a3b8';
+            for (let gx = x + 6; gx < x + TS; gx += 20) {
+              g.fillRect(gx, y, 5, 9); g.fillRect(gx, y + TS - 9, 5, 9);
+            }
+            g.fillStyle = '#0f172a'; g.fillRect(x, y + 7, 2, TS - 14);
+          } else {
+            g.fillRect(x, y, 7, TS); g.fillRect(x + TS - 7, y, 7, TS);
+            g.fillStyle = '#94a3b8';
+            for (let gy = y + 6; gy < y + TS; gy += 20) {
+              g.fillRect(x, gy, 9, 5); g.fillRect(x + TS - 9, gy, 9, 5);
+            }
+            g.fillStyle = '#0f172a'; g.fillRect(x + 7, y, TS - 14, 2);
+          }
+        } else {
+          g.fillStyle = 'rgba(255,255,255,.035)';
+          for (let k = 0; k < 4; k++) g.fillRect(x + hsh(k, tx) * 70, y + hsh(ty, k) * 70, 3, 3);
+          if (h < 0.14) {
+            g.strokeStyle = 'rgba(10,12,16,.55)'; g.lineWidth = 1.2;
+            g.beginPath(); g.moveTo(x + 14, y + 18); g.lineTo(x + 32, y + 34); g.lineTo(x + 46, y + 29); g.stroke();
+          }
+          g.fillStyle = 'rgba(240,242,248,.62)';
+          if (!U && (L || Rr)) g.fillRect(x, y, TS, 3.5);
+          if (!Dn && (L || Rr)) g.fillRect(x, y + TS - 3.5, TS, 3.5);
+          if (!L && (U || Dn)) g.fillRect(x, y, 3.5, TS);
+          if (!Rr && (U || Dn)) g.fillRect(x + TS - 3.5, y, 3.5, TS);
+          if (h > 0.86 && L && Rr) {
+            g.fillStyle = '#334155'; g.beginPath(); g.arc(x + TS * 0.5, y + TS * 0.25, 5, 0, 7); g.fill();
+            g.strokeStyle = '#64748b'; g.lineWidth = 1; g.stroke();
+          }
         }
-        g.fillStyle = t === 20 ? '#ffffff' : '#ffd166';
-        if ((L || Rr) && (U || Dn)) {
-          g.fillStyle = 'rgba(255,255,255,.22)';
-          for (let cw = 12; cw < TS - 12; cw += 14) g.fillRect(x + cw, y + 6, 7, 12);
+        g.fillStyle = t === 20 ? '#f8fafc' : '#ffd166';
+        if (t === 20) {
+          // Runway markings: edge stripes, bold white centerline dashes, piano-key thresholds & touchdown blocks
+          if (!U) { g.fillStyle = '#e2e8f0'; g.fillRect(x, y + 3, TS, 3); }
+          if (!Dn) { g.fillStyle = '#e2e8f0'; g.fillRect(x, y + TS - 6, TS, 3); }
+          g.fillStyle = '#f8fafc';
+          if (L || Rr) {
+            if (!U || !Dn) {
+              const cyRun = !Dn ? y + 1 : y + TS - 5;
+              g.fillRect(x + 12, cyRun - 2, 34, 4);
+              g.fillRect(x + 54, cyRun - 2, 22, 4);
+            } else {
+              g.fillRect(x + 10, y + TS / 2 - 2.5, 28, 5);
+              g.fillRect(x + 48, y + TS / 2 - 2.5, 24, 5);
+            }
+            if (!L || !Rr) {
+              const kx = !L ? x + 6 : x + TS - 24;
+              for (let ry = y + 8; ry < y + TS - 8; ry += 12) g.fillRect(kx, ry, 18, 6);
+            }
+            if ((tx % 5 === 0) && (!U || !Dn)) {
+              g.fillRect(x + 18, !U ? y + 14 : y + TS - 26, 44, 10);
+            }
+          }
+        } else if ((L || Rr) && (U || Dn)) {
+          g.fillStyle = 'rgba(255,255,255,.24)';
+          if (U) for (let cw = 12; cw < TS - 12; cw += 14) g.fillRect(x + cw, y + 4, 7, 10);
+          if (Dn) for (let cw = 12; cw < TS - 12; cw += 14) g.fillRect(x + cw, y + TS - 14, 7, 10);
+          if (L) for (let cw = 12; cw < TS - 12; cw += 14) g.fillRect(x + 4, y + cw, 10, 7);
+          if (Rr) for (let cw = 12; cw < TS - 12; cw += 14) g.fillRect(x + TS - 14, y + cw, 10, 7);
         } else if (L || Rr) {
           g.fillRect(x + 8, y + TS / 2 - 3, 22, 2.5); g.fillRect(x + 40, y + TS / 2 - 3, 22, 2.5);
           g.fillRect(x + 8, y + TS / 2 + 1, 22, 2.5); g.fillRect(x + 40, y + TS / 2 + 1, 22, 2.5);
@@ -785,11 +981,13 @@ function drawChunk(g, cx, cy) {
         if (h > 0.78) { g.fillStyle = 'rgba(51,65,85,.5)'; g.fillRect(x + TS * 0.6, y + TS * 0.14, 14, 7); }
         break;
       case 11: // Volcanic Lava Fissures & Cooled Basalt Crust Plates
-        g.fillStyle = 'rgba(255,140,20,0.45)';
+        g.fillStyle = 'rgba(255,140,20,0.5)';
         g.fillRect(x + 8, y + 12 + h * 18, TS - 16, 12);
-        g.fillStyle = 'rgba(255,230,110,0.65)';
+        g.strokeStyle = 'rgba(255,220,90,0.72)'; g.lineWidth = 2.2;
+        g.beginPath(); g.moveTo(x + 6, y + 40 + h * 14); g.lineTo(x + 40, y + 26); g.lineTo(x + TS - 8, y + 48 - h * 12); g.stroke();
+        g.fillStyle = 'rgba(255,235,120,0.75)';
         g.beginPath(); g.arc(x + 26 + h * 26, y + 24 + hsh(ty, tx) * 32, 6, 0, 7); g.fill();
-        g.fillStyle = 'rgba(38,24,20,0.72)';
+        g.fillStyle = 'rgba(38,24,20,0.78)';
         g.beginPath(); g.moveTo(x + 4, y + 6); g.lineTo(x + 36, y + 16); g.lineTo(x + 18, y + 42); g.closePath(); g.fill();
         g.beginPath(); g.moveTo(x + 46, y + 44); g.lineTo(x + 76, y + 52); g.lineTo(x + 56, y + 74); g.closePath(); g.fill();
         break;
@@ -797,7 +995,13 @@ function drawChunk(g, cx, cy) {
         g.strokeStyle = 'rgba(180,175,160,0.45)'; g.lineWidth = 1.5;
         g.strokeRect(x + 6, y + 6, 32, 32); g.strokeRect(x + 38, y + 36, 34, 34);
         break;
-      case 13: // Gravel Dirt & Wilderness Trail Ruts
+      case 13: // Gravel Dirt, Historic Cobblestone & Country Lane Ruts
+        if (nU === 6 || nD === 6 || nL === 6 || nR === 6) {
+          g.fillStyle = 'rgba(148,140,126,0.34)';
+          for (let cy = y + 4; cy < y + TS - 8; cy += 16) for (let cx2 = x + 4; cx2 < x + TS - 8; cx2 += 16) {
+            g.fillRect(cx2 + ((cy / 16) & 1 ? 3 : 0), cy, 12, 11);
+          }
+        }
         g.fillStyle = 'rgba(70,52,32,0.34)';
         for (let k = 0; k < 6; k++) g.fillRect(x + hsh(k, tx) * 68, y + hsh(ty, k) * 68, 4, 3);
         if (nL === 13 || nR === 13) {
@@ -989,6 +1193,29 @@ function drawRect(g, r, skipRoofOverlay) {
     return;
   }
 
+  if (s === 'milfence') {
+    // High-security military compound perimeter fence: concrete footing + chain-link diamond mesh + barbed posts
+    g.fillStyle = '#334155'; g.fillRect(x, y, w, h);
+    g.fillStyle = '#1e293b'; g.fillRect(x + 2, y + 2, Math.max(2, w - 4), Math.max(2, h - 4));
+    g.strokeStyle = '#94a3b8'; g.lineWidth = 1.2;
+    if (w >= h) {
+      for (let fx = x + 6; fx < x + w - 4; fx += 12) {
+        g.beginPath(); g.moveTo(fx, y); g.lineTo(fx + 6, y + h); g.moveTo(fx + 6, y); g.lineTo(fx, y + h); g.stroke();
+      }
+      g.fillStyle = '#cbd5e1';
+      for (let px = x + 4; px <= x + w - 4; px += 48) g.fillRect(px - 2, y - 2, 5, h + 4);
+      g.fillStyle = '#ef4444'; g.fillRect(x + w * 0.5 - 3, y + h * 0.5 - 3, 6, 6);
+    } else {
+      for (let fy = y + 6; fy < y + h - 4; fy += 12) {
+        g.beginPath(); g.moveTo(x, fy); g.lineTo(x + w, fy + 6); g.moveTo(x + w, fy); g.lineTo(x, fy + 6); g.stroke();
+      }
+      g.fillStyle = '#cbd5e1';
+      for (let py = y + 4; py <= y + h - 4; py += 48) g.fillRect(x - 2, py - 2, w + 4, 5);
+    }
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 1; g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    return;
+  }
+
   // Ground-level sidewalk apron, curbing, corner shrubs & parking bay stripes around buildings
   if (w >= 64 && h >= 64) {
     g.fillStyle = 'rgba(130,138,148,0.34)';
@@ -1073,20 +1300,26 @@ function drawRect(g, r, skipRoofOverlay) {
       g.fillStyle = '#334155'; g.fillRect(x, y, w, h);
       drawPitchedRoof(g, x + w * 0.22, y, w * 0.56, h, st[0], st[1], 'v');
       drawPitchedRoof(g, x, y + h * 0.24, w, h * 0.52, shade(rgb, 0.92), st[1], 'h');
+      g.fillStyle = st[1];
+      for (let by = y + 18; by < y + h - 18; by += 28) {
+        g.fillRect(x - 4, by, 6, 8); g.fillRect(x + w - 2, by, 6, 8);
+      }
       g.fillStyle = '#1e293b'; g.beginPath(); g.arc(cx, cy, m * 0.16, 0, 7); g.fill();
       g.strokeStyle = '#f59e0b'; g.lineWidth = 2; g.stroke();
       g.fillStyle = '#38bdf8'; g.beginPath(); g.arc(cx, cy, m * 0.09, 0, 7); g.fill();
+      g.fillStyle = '#fde047';
+      g.fillRect(cx - 2, y + 10, 4, 16); g.fillRect(cx - 6, y + 14, 12, 4);
       break;
     }
     case 'mosque': case 'dome': case 'capitol': case 'palace': case 'temple': case 'court': case 'museum': {
       g.fillStyle = shade(rgb, 0.85); g.fillRect(x, y, w, h);
       g.fillStyle = st[0]; g.fillRect(x + 8, y + 8, w - 16, h - 16);
       g.strokeStyle = st[1]; g.lineWidth = 3; g.strokeRect(x + 1, y + 1, w - 2, h - 2);
-      // Granite entrance steps + perimeter colonnade pillars
-      g.fillStyle = 'rgba(241,245,249,0.55)'; g.fillRect(cx - 28, y + h, 56, 7);
-      g.fillStyle = shade(rgb, 1.25);
-      for (let px = x + 10; px < x + w - 10; px += 22) {
-        g.fillRect(px - 3, y + 2, 6, 6); g.fillRect(px - 3, y + h - 8, 6, 6);
+      // Granite entrance steps + classical portico columns & pediment
+      g.fillStyle = 'rgba(241,245,249,0.6)'; g.fillRect(cx - 34, y + h, 68, 9);
+      g.fillStyle = shade(rgb, 1.32);
+      for (let px = x + 10; px < x + w - 10; px += 20) {
+        g.beginPath(); g.arc(px, y + 5, 3.5, 0, 7); g.arc(px, y + h - 5, 3.5, 0, 7); g.fill();
       }
       if (s === 'mosque' || s === 'dome' || s === 'capitol') {
         const dr = m * 0.34;
@@ -1111,15 +1344,18 @@ function drawRect(g, r, skipRoofOverlay) {
       g.fillStyle = '#cbd5e1'; g.fillRect(x, y, w, h);
       g.fillStyle = '#e2e8f0'; g.fillRect(x + 8, y + 8, w - 16, h - 16);
       g.strokeStyle = '#64748b'; g.lineWidth = 3; g.strokeRect(x + 1, y + 1, w - 2, h - 2);
-      // Ambulance port canopy strip
-      g.fillStyle = '#ef4444'; g.fillRect(x + 10, y + h - 8, 34, 8);
-      // Helipad circle + perimeter corner lights
+      // Ambulance port canopy strip & emergency drop bay
+      g.fillStyle = '#ef4444'; g.fillRect(x + 10, y + h - 8, 38, 8);
+      // Helipad circle + crisp landing bracket & perimeter warning lights
       const hr = Math.min(m * 0.38, 64);
       g.fillStyle = '#1e293b'; g.beginPath(); g.arc(cx, cy, hr, 0, 7); g.fill();
       g.strokeStyle = '#fbbf24'; g.lineWidth = 2.5; g.setLineDash([8, 6]); g.stroke(); g.setLineDash([]);
       g.fillStyle = '#ef4444';
       g.fillRect(cx - hr * 0.16, cy - hr * 0.55, hr * 0.32, hr * 1.1);
       g.fillRect(cx - hr * 0.55, cy - hr * 0.16, hr * 1.1, hr * 0.32);
+      g.strokeStyle = '#f8fafc'; g.lineWidth = 2;
+      g.strokeRect(cx - hr * 0.72, cy - hr * 0.72, 8, 8);
+      g.strokeRect(cx + hr * 0.72 - 8, cy + hr * 0.72 - 8, 8, 8);
       if (w > 110) drawRooftopHVAC(g, x + 12, y + 12, 26, 22);
       if (w > 140) drawRooftopHVAC(g, x + w - 38, y + 12, 26, 22);
       break;
@@ -1154,19 +1390,40 @@ function drawRect(g, r, skipRoofOverlay) {
     }
     case 'hangar': case 'terminal': {
       if (s === 'hangar') {
-        g.fillStyle = '#475569'; g.fillRect(x, y, w, h);
-        const bg = g.createLinearGradient(x, y, x, y + h);
-        bg.addColorStop(0, '#64748b'); bg.addColorStop(0.5, '#cbd5e1'); bg.addColorStop(1, '#334155');
-        g.fillStyle = bg; g.fillRect(x + 4, y + 4, w - 8, h - 8);
-        g.strokeStyle = 'rgba(15,23,42,0.35)'; g.lineWidth = 2;
-        for (let rx = x + 16; rx < x + w - 10; rx += 18) {
-          g.beginPath(); g.moveTo(rx, y + 4); g.lineTo(rx, y + h - 4); g.stroke();
-        }
-      } else {
         g.fillStyle = '#334155'; g.fillRect(x, y, w, h);
+        const bg = g.createLinearGradient(x, y, x + w, y);
+        bg.addColorStop(0, '#475569'); bg.addColorStop(0.5, '#cbd5e1'); bg.addColorStop(1, '#475569');
+        g.fillStyle = bg; g.fillRect(x + 5, y + 5, w - 10, h - 10);
+        g.strokeStyle = 'rgba(15,23,42,0.4)'; g.lineWidth = 2;
+        for (let rx = x + 16; rx < x + w - 10; rx += 18) {
+          g.beginPath(); g.moveTo(rx, y + 5); g.lineTo(rx, y + h - 5); g.stroke();
+        }
+        // Heavy blast bay doors along north apron + safety chevron bar
+        g.fillStyle = '#f59e0b'; g.fillRect(x + 12, y + 2, w - 24, 5);
+        g.fillStyle = '#0f172a';
+        for (let bx = x + 16; bx < x + w - 22; bx += 20) g.fillRect(bx, y + 2, 10, 5);
+        g.fillStyle = '#1e293b'; g.fillRect(x + 18, y + h * 0.42, w - 36, 12);
+      } else {
+        g.fillStyle = '#1e293b'; g.fillRect(x, y, w, h);
         g.fillStyle = '#64748b'; g.fillRect(x + 6, y + 6, w - 12, h - 12);
-        g.fillStyle = 'rgba(56,189,248,0.45)'; g.fillRect(x + 16, cy - 14, w - 32, 28);
-        g.strokeStyle = '#bae6fd'; g.lineWidth = 1.5; g.strokeRect(x + 16, cy - 14, w - 32, 28);
+        g.fillStyle = '#94a3b8'; g.fillRect(x + 12, y + 12, w - 24, h - 24);
+        // Illuminated skylight atrium glass spine
+        const glassH = Math.min(34, h * 0.28);
+        g.fillStyle = 'rgba(56,189,248,0.5)'; g.fillRect(x + 18, cy - glassH / 2, w - 36, glassH);
+        g.strokeStyle = '#bae6fd'; g.lineWidth = 1.6; g.strokeRect(x + 18, cy - glassH / 2, w - 36, glassH);
+        for (let sx = x + 36; sx < x + w - 24; sx += 36) {
+          g.beginPath(); g.moveTo(sx, cy - glassH / 2); g.lineTo(sx, cy + glassH / 2); g.stroke();
+        }
+        // Jetbridge docking arms projecting toward apron for large terminals/piers
+        if (w > 120) {
+          g.fillStyle = '#cbd5e1';
+          const stepJ = w > 500 ? 84 : 48;
+          for (let jx = x + 36; jx < x + w - 28; jx += stepJ) {
+            g.fillRect(jx, y - 22, 12, 24);
+            g.fillStyle = '#38bdf8'; g.fillRect(jx - 3, y - 26, 18, 5);
+            g.fillStyle = '#cbd5e1';
+          }
+        }
       }
       break;
     }
@@ -2068,6 +2325,10 @@ function updateLocal(dt, now) {
     const walk = (tileProp && tileProp.walk) || 1;
     const spd = me.spd * walk * (sprint && me.st > 1 && l ? 1.45 : 1);
     moveCircle(pred, nx * spd * dt + me.pl[0] * dt, ny * spd * dt + me.pl[1] * dt, 16);
+    if (D && M) {
+      const wm = worldMouse();
+      pred.a = Math.atan2(wm.y - pred.y, wm.x - pred.x);
+    }
   } else if (me.veh && latest && latest.V) {
     const sv = latest.V.get(me.veh);
     if (sv) {
@@ -2109,29 +2370,31 @@ function updateLocal(dt, now) {
         let lat = -vehPred.vx * sinA + vehPred.vy * cosA;
 
         if (thr > 0) {
-          fwd += d.accel * thr * dt * (fwd < -10 ? 3.8 : 1.18);
+          const launchBoost = Math.abs(fwd) < 90 ? 1.35 : 1.18;
+          fwd += d.accel * thr * dt * (fwd < -10 ? 4.2 : launchBoost);
         } else if (thr < 0) {
-          if (fwd > 20) fwd -= Math.min(fwd, d.accel * 4.4 * dt);
-          else fwd += d.accel * thr * dt * 1.5;
+          if (fwd > 20) fwd -= Math.min(fwd, d.accel * 4.8 * dt);
+          else fwd += d.accel * thr * dt * 1.65;
         } else {
-          const rollingDrag = (P.drag || 1.0) * (heli ? 1.0 : 1.7);
+          const rollingDrag = (P.drag || 1.0) * (heli ? 0.95 : 1.55);
           fwd -= fwd * Math.min(1, rollingDrag * dt);
         }
 
-        if (braking && d.kind === 'car') fwd *= Math.exp(-3.6 * dt);
-        if (fwd > maxS) fwd -= (fwd - maxS) * Math.min(1, 4.5 * dt);
-        if (fwd < -maxS * 0.55) fwd = -maxS * 0.55;
+        if (braking && d.kind === 'car') fwd *= Math.exp(-2.8 * dt);
+        if (fwd > maxS) fwd -= (fwd - maxS) * Math.min(1, 5.2 * dt);
+        if (fwd < -maxS * 0.58) fwd = -maxS * 0.58;
 
-        vehPred.sa += (steer - vehPred.sa) * Math.min(1, 16 * dt);
-        const spdNorm = Math.min(1.15, Math.abs(fwd) / 140);
-        const tf = heli ? 1 : (0.55 + spdNorm * 0.62);
-        if (Math.abs(fwd) > 6 || heli) {
-          vehPred.a += vehPred.sa * d.turn * tf * dt * (fwd < -5 && !heli ? -1 : 1);
+        vehPred.sa += (steer - vehPred.sa) * Math.min(1, 18 * dt);
+        const absFwd = Math.abs(fwd);
+        const steerCurve = heli ? 1 : clamp(0.42 + (absFwd / 120) * 0.72 - Math.max(0, (absFwd - 480) / 1400) * 0.28, 0.35, 1.12);
+        const driftTurn = braking && d.kind === 'car' && absFwd > 140 ? 1.24 : 1;
+        if (absFwd > 5 || heli) {
+          vehPred.a += vehPred.sa * d.turn * steerCurve * driftTurn * dt * (fwd < -5 && !heli ? -1 : 1);
         }
         vehPred.steerAngle = lerp(vehPred.steerAngle, vehPred.sa * 0.48, Math.min(1, dt * 18));
 
         const nCos = Math.cos(vehPred.a), nSin = Math.sin(vehPred.a);
-        const latGrip = (d.kind === 'car' ? (P.grip || 1) : 1) * (d.grip || 1) * (braking ? 2.4 : 9.5);
+        const latGrip = (d.kind === 'car' ? (P.grip || 1) : 1) * (d.grip || 1) * (braking ? 2.1 : 10.5);
         lat *= Math.exp(-latGrip * dt);
 
         vehPred.vx = nCos * fwd - nSin * lat;
@@ -2140,11 +2403,25 @@ function updateLocal(dt, now) {
 
         const ck = heli ? ((sv[7] & 8) ? 'fly' : 'car') : d.kind;
         const colR = Math.max(14, Math.round(d.r * 0.78));
-        if (Math.hypot(vehPred.vx, vehPred.vy) > 0.5) {
+        const spdNow = Math.hypot(vehPred.vx, vehPred.vy);
+        if (spdNow > 0.5) {
           const res = moveVehiclePred(vehPred, vehPred.vx * dt, vehPred.vy * dt, colR, ck);
-          if (res.bx) vehPred.vx *= -0.08;
-          if (res.by) vehPred.vy *= -0.08;
-          vehPred.sp = vehPred.vx * nCos + vehPred.vy * nSin;
+          if (res.hit) {
+            const vDotN = vehPred.vx * res.nx + vehPred.vy * res.ny;
+            if (vDotN < 0) {
+              vehPred.vx -= (1.06 * vDotN) * res.nx;
+              vehPred.vy -= (1.06 * vDotN) * res.ny;
+              vehPred.vx *= 0.94; vehPred.vy *= 0.94;
+            }
+            if (spdNow > 80 && Math.abs(res.nx) + Math.abs(res.ny) > 0.1) {
+              const tangAng = Math.atan2(vehPred.vy, vehPred.vx);
+              let diff = tangAng - vehPred.a;
+              while (diff > Math.PI) diff -= 2 * Math.PI;
+              while (diff < -Math.PI) diff += 2 * Math.PI;
+              if (Math.abs(diff) < 0.72) vehPred.a += diff * 0.35;
+            }
+          }
+          vehPred.sp = vehPred.vx * Math.cos(vehPred.a) + vehPred.vy * Math.sin(vehPred.a);
         }
 
         // Latency-compensated reconciliation with server (deadband + forward extrapolation)
@@ -2170,10 +2447,11 @@ function updateLocal(dt, now) {
 
         pred.x = vehPred.x; pred.y = vehPred.y;
 
-        if (d.kind === 'car' && Math.abs(vehPred.sp) > 165 && (braking || Math.abs(steer) > 0.25) && now - vehPred.lastSkidAt > 65) {
+        if (d.kind === 'car' && (Math.abs(lat) > 75 || (Math.abs(vehPred.sp) > 155 && (braking || Math.abs(steer) > 0.25))) && now - vehPred.lastSkidAt > 55) {
           vehPred.lastSkidAt = now;
           addDecal(vehPred.x - nCos * 18, vehPred.y - nSin * 18, 'skid', 15, vehPred.a);
-          if (Math.random() < 0.45) burst(vehPred.x - nCos * 22, vehPred.y - nSin * 22, 1, 'rgba(165,165,165,0.45)', 38, 260, 3.2);
+          const dustCol = (tile === 9 || tile === 10) ? 'rgba(241,245,249,0.55)' : (tile === 2 || tile === 18) ? 'rgba(226,207,143,0.48)' : 'rgba(165,165,165,0.45)';
+          if (Math.random() < 0.65) burst(vehPred.x - nCos * 22, vehPred.y - nSin * 22, 1, dustCol, 42, 270, 3.6);
         }
       } else {
         const iv = myVehicle(now);
@@ -2236,11 +2514,16 @@ function daylight() {
   if (f.has('polarnight') || f.has('eclipse')) l = Math.min(l, 0.15);
   return l;
 }
+let _fxKey = '', _fxSet = new Set();
 function fxNow() {
-  const s = new Set();
-  if (sky) s.add(sky.fx);
-  if (cosmic) s.add(cosmic.fx);
-  return s;
+  const k = (sky ? sky.fx : '') + '|' + (cosmic ? cosmic.fx : '');
+  if (k !== _fxKey) {
+    _fxKey = k;
+    _fxSet.clear();
+    if (sky && sky.fx) _fxSet.add(sky.fx);
+    if (cosmic && cosmic.fx) _fxSet.add(cosmic.fx);
+  }
+  return _fxSet;
 }
 function clockStr() {
   const m = Math.floor(gameTime * 24 * 60), h = Math.floor(m / 60) % 24;
@@ -2311,6 +2594,9 @@ function render(now, dt) {
 
     // Draw enterable building interiors, animated roofs, and doorway portals
     drawBuildingInteriors(now, inView, selfX, selfY, vx0, vy0, vx1, vy1);
+
+    // Draw sub-map entrance portals (Universities, Hospitals, Malls, Military Bases)
+    drawBuildingEntrances(now, inView, selfX, selfY, vx0, vy0, vx1, vy1);
   }
 
   // Decals (tire skids, blood, scorch, corpses)
@@ -2616,6 +2902,7 @@ function render(now, dt) {
   }
 
   // Vehicles (ground)
+  const isNightNow = daylight() < 0.65;
   const vlist = [];
   for (const [id, v] of b.V) {
     let x, y, an;
@@ -2627,7 +2914,7 @@ function render(now, dt) {
     if (!inView(x, y, 120)) continue;
     vlist.push([v, x, y, an]);
   }
-  for (const [v, x, y, an] of vlist) if (!(v[7] & 8)) drawVehicle(v, x, y, an, now, selfX, selfY, (v[0] === me.veh ? inVeh : null));
+  for (const [v, x, y, an] of vlist) if (!(v[7] & 8)) drawVehicle(v, x, y, an, now, selfX, selfY, (v[0] === me.veh ? inVeh : null), isNightNow);
 
   // Zombies
   for (const [id, z] of b.Z) {
@@ -2641,7 +2928,7 @@ function render(now, dt) {
     if (p[7]) continue;
     let x, y, an;
     if (id === myId) {
-      x = pred.x; y = pred.y; const w = worldMouse(); an = Math.atan2(w.y - y, w.x - x);
+      x = pred.x; y = pred.y; const w = worldMouse(); an = Math.atan2(w.y - y, w.x - x); pred.a = an;
     } else {
       [x, y, an] = lerpArr(a.P.get(id), p, u, 1, 2, 3, 100);
     }
@@ -2659,7 +2946,7 @@ function render(now, dt) {
   }
 
   // Flying helicopters
-  for (const [v, x, y, an] of vlist) if (v[7] & 8) drawVehicle(v, x, y, an, now, selfX, selfY, (v[0] === me.veh ? inVeh : null));
+  for (const [v, x, y, an] of vlist) if (v[7] & 8) drawVehicle(v, x, y, an, now, selfX, selfY, (v[0] === me.veh ? inVeh : null), isNightNow);
 
   // Particles
   for (let i = particles.length - 1; i >= 0; i--) {
@@ -3142,8 +3429,10 @@ function drawBuildingInteriors(now, inView, selfX, selfY, vx0, vy0, vx1, vy1) {
       }
     }
 
+    const hasPortal = PORTAL_RECTS.has(idx);
+
     // Doorway threshold & prompt when near entrance
-    if (distToDoor < 260 || isInside) {
+    if (!hasPortal && (distToDoor < 260 || isInside)) {
       ctx.save();
       ctx.fillStyle = '#14171d';
       ctx.fillRect(doorX0, y + h - 16, doorW, 20);
@@ -3270,7 +3559,7 @@ function drawShelterPlots(now, inView, selfX, selfY) {
     const gateX0 = plot.x - gateW / 2;
     const gateX1 = plot.x + gateW / 2;
 
-    const isAuthorized = me && (me.id === plot.owner || (plot.team > 0 && me.team === plot.team) || !plot.owner);
+    const isAuthorized = me && (me.id === plot.owner || (plot.team > 0 && me.team === plot.team) || settings.mode === 'coop' || !plot.owner);
     const distToGate = Math.hypot(selfX - plot.x, selfY - (y0 + S));
     const gateOpen = isAuthorized && distToGate < 140;
 
@@ -3366,6 +3655,20 @@ function drawShelterPlots(now, inView, selfX, selfY) {
       [x0 + 26, y0 + 26], [x0 + S - 26, y0 + 26],
       [x0 + 26, y0 + S - 26], [x0 + S - 26, y0 + S - 26]
     ];
+    // Acquire nearest zombie targets for all 4 corner turrets in ONE single scan
+    const cornerTargets = [null, null, null, null];
+    const maxR = 750 * 750;
+    if (latest && latest.Z && latest.Z.size > 0) {
+      const plotMaxD2 = (S * 0.6 + 760) * (S * 0.6 + 760);
+      const bestD = [maxR, maxR, maxR, maxR];
+      for (const z of latest.Z.values()) {
+        if (d2(plot.x, plot.y, z[2], z[3]) > plotMaxD2) continue;
+        for (let i = 0; i < 4; i++) {
+          const zd = d2(corners[i][0], corners[i][1], z[2], z[3]);
+          if (zd < bestD[i]) { bestD[i] = zd; cornerTargets[i] = z; }
+        }
+      }
+    }
 
     for (let i = 0; i < 4; i++) {
       const [cx, cy] = corners[i];
@@ -3383,16 +3686,8 @@ function drawShelterPlots(now, inView, selfX, selfY) {
       ctx.fillStyle = '#1e293b'; ctx.beginPath(); ctx.arc(cx, cy, 18, 0, 7); ctx.fill();
       ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1.5; ctx.stroke();
 
-      let targetA = null;
-      if (latest && latest.Z && latest.Z.size > 0) {
-        let nearestZ = null, minZD = 750 * 750;
-        for (const z of latest.Z.values()) {
-          const zd = d2(cx, cy, z[2], z[3]);
-          if (zd < minZD) { minZD = zd; nearestZ = z; }
-        }
-        if (nearestZ) targetA = Math.atan2(nearestZ[3] - cy, nearestZ[2] - cx);
-      }
-      const aimAngle = targetA !== null ? targetA : ((now / 1500 + i * 1.57) % 6.28);
+      const nearestZ = cornerTargets[i];
+      const aimAngle = nearestZ ? Math.atan2(nearestZ[3] - cy, nearestZ[2] - cx) : ((now / 1500 + i * 1.57) % 6.28);
 
       ctx.save();
       ctx.translate(cx, cy);
@@ -3620,138 +3915,477 @@ function drawRaidBunkers(now, inView, selfX, selfY) {
   }
 }
 
-function buildBunkerStaticCanvas(idef, isRaid) {
+const ENT_META = {
+  airport: { icon: '✈️', label: 'AIRPORT', accent: '#38bdf8', glow: 'rgba(56,189,248,0.38)', verb: 'Enter' },
+  university: { icon: '🎓', label: 'UNIVERSITY', accent: '#f59e0b', glow: 'rgba(245,158,11,0.34)', verb: 'Enter' },
+  hospital: { icon: '🏥', label: 'HOSPITAL', accent: '#10b981', glow: 'rgba(16,185,129,0.34)', verb: 'Enter' },
+  mall: { icon: '🛍️', label: 'SHOPPING MALL', accent: '#2dd4bf', glow: 'rgba(45,212,191,0.34)', verb: 'Enter' },
+  military: { icon: '🪖', label: 'MILITARY BASE', accent: '#ef4444', glow: 'rgba(239,68,68,0.34)', verb: 'Breach' },
+  historic: { icon: '🏛️', label: 'HISTORIC SITE', accent: '#eab308', glow: 'rgba(234,179,8,0.34)', verb: 'Enter' },
+  museum: { icon: '🖼️', label: 'CULTURAL HALL', accent: '#f472b6', glow: 'rgba(244,114,182,0.34)', verb: 'Enter' },
+  transit: { icon: '🏟️', label: 'TRANSIT HUB', accent: '#38bdf8', glow: 'rgba(56,189,248,0.34)', verb: 'Enter' },
+  industrial: { icon: '🏭', label: 'POWER WORKS', accent: '#fb923c', glow: 'rgba(251,146,60,0.34)', verb: 'Breach' }
+};
+
+function drawBuildingEntrances(now, inView, selfX, selfY, vx0, vy0, vx1, vy1) {
+  if (!M || !M.entrances) return;
+  const list = vx0 !== undefined ? entrancesIn(vx0 - 200, vy0 - 200, vx1 + 200, vy1 + 200) : M.entrances;
+  for (const ent of list) {
+    if (!inView(ent.x, ent.y, 200)) continue;
+    const meta = ENT_META[ent.type] || ENT_META.university;
+    const pulse = 0.5 + 0.5 * Math.sin(now / 260 + ent.x * 0.01);
+    const dist = Math.hypot(selfX - ent.x, selfY - ent.y);
+    const isNear = dist < 120;
+
+    ctx.save();
+    // Glowing entrance pad right in front of building doorway
+    ctx.fillStyle = meta.glow;
+    ctx.beginPath();
+    ctx.ellipse(ent.x, ent.y + 4, 46 + pulse * 4, 24 + pulse * 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(10,16,26,0.92)';
+    traceChamferRect(ctx, ent.x - 42, ent.y - 16, 84, 34, 8);
+    ctx.fill();
+    ctx.strokeStyle = isNear ? '#ffd700' : meta.accent;
+    ctx.lineWidth = isNear ? 2.5 : 1.8;
+    ctx.stroke();
+
+    // Animated chevron arrows pointing into doorway
+    const hop = ((now % 900) / 900) * 6;
+    ctx.strokeStyle = isNear ? '#ffd700' : meta.accent;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(ent.x - 10, ent.y + 4 - hop); ctx.lineTo(ent.x, ent.y - 4 - hop); ctx.lineTo(ent.x + 10, ent.y + 4 - hop);
+    ctx.stroke();
+
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 11px system-ui';
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.92)';
+    const badge = `${meta.icon} ${meta.label}`;
+    ctx.strokeText(badge, ent.x, ent.y - 28);
+    ctx.fillStyle = meta.accent;
+    ctx.fillText(badge, ent.x, ent.y - 28);
+
+    if (dist < 175) {
+      const prompt = `${meta.icon} Press [E] to ${meta.verb} ${ent.name}`;
+      ctx.font = 'bold 12px system-ui';
+      const tw = txtW('bold 12px system-ui', prompt) + 22;
+      ctx.fillStyle = 'rgba(8,14,24,0.94)';
+      ctx.fillRect(ent.x - tw / 2, ent.y + 26, tw, 24);
+      ctx.strokeStyle = isNear ? '#ffd700' : meta.accent;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(ent.x - tw / 2, ent.y + 26, tw, 24);
+      ctx.fillStyle = isNear ? '#ffd700' : '#f8fafc';
+      ctx.fillText(prompt, ent.x, ent.y + 38);
+    }
+    ctx.restore();
+  }
+}
+
+function buildBunkerStaticCanvas(idef, mode) {
   const W = idef.w, H = idef.h;
   const cv2 = document.createElement('canvas');
   cv2.width = W; cv2.height = H;
   const g = cv2.getContext('2d');
+  const isRaid = mode === 'raid';
+  const isBunkerOrRaid = mode === 'bunker' || mode === 'raid';
 
-  // Outer armored bunker hull
+  // Outer hull & bespoke rich floor base matched to building theme
+  const floorCols = {
+    airport: '#182230',
+    hospital: '#dce7ee',
+    university: '#2c2219',
+    mall: '#1e293b',
+    military: '#171d18',
+    historic: '#3b3227',
+    museum: '#e4ddd0',
+    transit: '#1a2433',
+    industrial: '#1a1e24'
+  };
   g.fillStyle = '#0b1017';
   g.fillRect(0, 0, W, H);
-
-  // Main brushed epoxy floor
-  g.fillStyle = '#121822';
+  g.fillStyle = floorCols[mode] || '#121822';
   g.fillRect(0, 0, W, H);
 
-  // Wing-specific floor materials, batched grids & architectural trim
+  // Room-specific floor materials, subtle checkerboard/parquet, ambient shadow & architectural trim
   for (const rm of idef.rooms) {
     g.fillStyle = rm.tint || 'rgba(255,255,255,0.03)';
     g.fillRect(rm.x, rm.y, rm.w, rm.h);
 
-    g.strokeStyle = rm.id === 'medbay' ? 'rgba(16,185,129,0.09)' : rm.id === 'vault' ? 'rgba(239,68,68,0.09)' : 'rgba(148,163,184,0.065)';
+    if (mode === 'airport') {
+      g.strokeStyle = rm.id === 'hangar_vault' ? 'rgba(239,68,68,0.16)' : (rm.id === 'atc' || rm.id === 'gates_w') ? 'rgba(56,189,248,0.16)' : rm.id === 'gates_e' ? 'rgba(16,185,129,0.14)' : 'rgba(148,163,184,0.11)';
+    } else if (mode === 'university') {
+      g.strokeStyle = rm.id === 'biolab' ? 'rgba(56,189,248,0.14)' : rm.id === 'infirmary' ? 'rgba(16,185,129,0.12)' : 'rgba(217,119,6,0.12)';
+    } else if (mode === 'hospital') {
+      g.strokeStyle = rm.id === 'quarantine' ? 'rgba(239,68,68,0.18)' : 'rgba(15,118,110,0.16)';
+    } else if (mode === 'mall') {
+      g.strokeStyle = rm.id === 'concourse' ? 'rgba(45,212,191,0.14)' : 'rgba(148,163,184,0.12)';
+    } else if (mode === 'military') {
+      g.strokeStyle = rm.id === 'vault' ? 'rgba(239,68,68,0.14)' : 'rgba(132,204,22,0.11)';
+    } else if (mode === 'historic') {
+      g.strokeStyle = rm.id === 'sanctum' ? 'rgba(251,191,36,0.18)' : 'rgba(214,195,165,0.12)';
+    } else if (mode === 'museum') {
+      g.strokeStyle = rm.id === 'rotunda' ? 'rgba(14,165,233,0.14)' : 'rgba(15,23,42,0.1)';
+    } else if (mode === 'transit') {
+      g.strokeStyle = rm.id === 'ops' ? 'rgba(56,189,248,0.16)' : 'rgba(148,163,184,0.11)';
+    } else if (mode === 'industrial') {
+      g.strokeStyle = rm.id === 'turbine' ? 'rgba(245,158,11,0.14)' : 'rgba(100,116,139,0.14)';
+    } else {
+      g.strokeStyle = rm.id === 'medbay' ? 'rgba(16,185,129,0.09)' : rm.id === 'vault' ? 'rgba(239,68,68,0.09)' : 'rgba(148,163,184,0.065)';
+    }
     g.lineWidth = 1;
-    const step = rm.id === 'medbay' ? 28 : 40;
+    const step = (mode === 'hospital' || rm.id === 'medbay' || mode === 'museum') ? 32 : 40;
     g.beginPath();
     for (let gx = rm.x + step; gx < rm.x + rm.w; gx += step) { g.moveTo(gx, rm.y); g.lineTo(gx, rm.y + rm.h); }
     for (let gy = rm.y + step; gy < rm.y + rm.h; gy += step) { g.moveTo(rm.x, gy); g.lineTo(rm.x + rm.w, gy); }
     g.stroke();
 
+    // Inner ambient occlusion perimeter fade for depth
+    g.fillStyle = 'rgba(0,0,0,0.08)';
+    g.fillRect(rm.x, rm.y, rm.w, 10);
+    g.fillRect(rm.x, rm.y, 10, rm.h);
+
     g.strokeStyle = rm.accent || '#475569';
-    g.globalAlpha = 0.28; g.lineWidth = 2;
+    g.globalAlpha = 0.36; g.lineWidth = 2;
     traceChamferRect(g, rm.x + 8, rm.y + 8, rm.w - 16, rm.h - 16, 16);
     g.stroke();
 
-    g.fillStyle = rm.accent || '#94a3b8';
-    g.globalAlpha = 0.34; g.font = 'bold 17px system-ui';
+    g.fillStyle = (mode === 'hospital' || mode === 'museum') ? '#0f172a' : (rm.accent || '#94a3b8');
+    g.globalAlpha = (mode === 'hospital' || mode === 'museum') ? 0.62 : 0.45;
+    g.font = 'bold 17px system-ui';
     g.textAlign = 'center'; g.textBaseline = 'middle';
     g.fillText(rm.name, rm.x + rm.w / 2, rm.y + 34);
     g.globalAlpha = 1;
   }
 
-  // Under-floor Glass Plasma & Coolant Conduit Channels
-  const conduitCol = isRaid ? 'rgba(248,113,113,0.45)' : 'rgba(168,85,247,0.48)';
-  g.lineWidth = 8; g.strokeStyle = '#090d14';
-  g.beginPath();
-  g.moveTo(300, 300); g.lineTo(1500, 300);
-  g.moveTo(300, 900); g.lineTo(1500, 900);
-  g.moveTo(300, 300); g.lineTo(300, 900);
-  g.moveTo(900, 300); g.lineTo(900, 900);
-  g.moveTo(1500, 300); g.lineTo(1500, 900);
-  g.stroke();
-  g.lineWidth = 2.5; g.strokeStyle = conduitCol; g.stroke();
+  if (isBunkerOrRaid) {
+    const conduitCol = isRaid ? 'rgba(248,113,113,0.45)' : 'rgba(168,85,247,0.48)';
+    g.lineWidth = 8; g.strokeStyle = '#090d14';
+    g.beginPath();
+    g.moveTo(300, 300); g.lineTo(1500, 300);
+    g.moveTo(300, 900); g.lineTo(1500, 900);
+    g.moveTo(300, 300); g.lineTo(300, 900);
+    g.moveTo(900, 300); g.lineTo(900, 900);
+    g.moveTo(1500, 300); g.lineTo(1500, 900);
+    g.stroke();
+    g.lineWidth = 2.5; g.strokeStyle = conduitCol; g.stroke();
 
-  // WING 1 (NW): ARMORY & BALLISTICS BAY
-  g.fillStyle = '#291f14'; g.fillRect(52, 260, 36, 220);
-  g.strokeStyle = '#f59e0b'; g.lineWidth = 1.8; g.strokeRect(52, 260, 36, 220);
-  for (let wy = 278; wy < 468; wy += 24) {
-    g.fillStyle = '#94a3b8'; g.fillRect(58, wy, 24, 5);
-    g.fillStyle = '#fbbf24'; g.fillRect(74, wy + 1, 6, 3);
-  }
-  for (let lx2 = 220; lx2 <= 360; lx2 += 70) {
-    g.strokeStyle = 'rgba(245,158,11,0.18)'; g.lineWidth = 1;
-    g.strokeRect(lx2 - 22, 66, 44, 56);
-    g.fillStyle = '#7f1d1d'; g.beginPath(); g.arc(lx2, 84, 9, 0, 7); g.fill();
-    g.strokeStyle = '#fca5a5'; g.lineWidth = 1; g.stroke();
-  }
-  g.fillStyle = '#365314'; g.fillRect(420, 92, 46, 26); g.fillRect(474, 92, 34, 26);
-  g.strokeStyle = '#84cc16'; g.lineWidth = 1.2; g.strokeRect(420, 92, 46, 26); g.strokeRect(474, 92, 34, 26);
-
-  // WING 2 (NC): CENTRAL COMMAND ATRIUM
-  g.fillStyle = '#0f172a'; g.fillRect(680, 250, 74, 26); g.fillRect(1046, 250, 74, 26);
-  g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(680, 250, 74, 26); g.strokeRect(1046, 250, 74, 26);
-  g.fillStyle = '#38bdf8'; g.fillRect(692, 255, 22, 6); g.fillRect(720, 255, 22, 6);
-  g.fillRect(1058, 255, 22, 6); g.fillRect(1086, 255, 22, 6);
-  // Elevator caution floor chevrons
-  g.strokeStyle = 'rgba(251,191,36,0.28)'; g.lineWidth = 2; g.strokeRect(844, 72, 112, 92);
-
-  // WING 3 (NE): BIO-MED & SURGERY WING
-  for (let i = 0; i < 3; i++) {
-    const by = 320 + i * 68;
-    g.fillStyle = '#0f2922'; g.fillRect(1370, by, 76, 40);
-    g.strokeStyle = '#10b981'; g.lineWidth = 1.5; g.strokeRect(1370, by, 76, 40);
-    g.fillStyle = '#cbd5e1'; g.fillRect(1376, by + 6, 16, 28);
-    g.fillStyle = '#0d9488'; g.fillRect(1394, by + 6, 46, 28);
-    g.fillStyle = '#020617'; g.fillRect(1454, by + 8, 20, 16);
-  }
-  for (let cx2 = 1660; cx2 <= 1720; cx2 += 56) {
-    g.fillStyle = '#042f2e'; g.beginPath(); g.arc(cx2, 190, 20, 0, 7); g.fill();
-    g.strokeStyle = '#2dd4bf'; g.lineWidth = 2.5; g.stroke();
-  }
-
-  // WING 4 (SW): ENGINEERING & ARMOR BAY
-  g.strokeStyle = 'rgba(251,146,60,0.38)'; g.lineWidth = 4; g.strokeRect(70, 660, 470, 120);
-  for (let ax = 120; ax <= 240; ax += 60) {
-    g.fillStyle = '#1e293b'; g.fillRect(ax - 14, 678, 28, 28);
-    g.strokeStyle = '#fb923c'; g.lineWidth = 1.5; g.strokeRect(ax - 14, 678, 28, 28);
-    g.fillStyle = '#94a3b8'; g.beginPath(); g.arc(ax, 692, 8, 0, 7); g.fill();
-  }
-  g.fillStyle = '#b91c1c'; g.fillRect(62, 990, 56, 36);
-  g.strokeStyle = '#fca5a5'; g.lineWidth = 1.2; g.strokeRect(62, 990, 56, 36);
-
-  // WING 5 (SC): REACTOR & HYDROPONICS LAB
-  for (const py of [720, 790, 860]) {
-    g.fillStyle = '#064e3b'; g.fillRect(640, py, 140, 40);
-    g.strokeStyle = '#34d399'; g.lineWidth = 1.5; g.strokeRect(640, py, 140, 40);
-    for (let hx = 656; hx < 770; hx += 22) {
-      g.fillStyle = '#4ade80'; g.beginPath(); g.arc(hx, py + 20, 7, 0, 7); g.fill();
-      g.fillStyle = '#bbf7d0'; g.beginPath(); g.arc(hx - 2, py + 18, 2.5, 0, 7); g.fill();
+    g.fillStyle = '#291f14'; g.fillRect(52, 260, 36, 220);
+    g.strokeStyle = '#f59e0b'; g.lineWidth = 1.8; g.strokeRect(52, 260, 36, 220);
+    for (let wy = 278; wy < 468; wy += 24) {
+      g.fillStyle = '#94a3b8'; g.fillRect(58, wy, 24, 5);
+      g.fillStyle = '#fbbf24'; g.fillRect(74, wy + 1, 6, 3);
     }
+    for (let lx2 = 220; lx2 <= 360; lx2 += 70) {
+      g.strokeStyle = 'rgba(245,158,11,0.18)'; g.lineWidth = 1;
+      g.strokeRect(lx2 - 22, 66, 44, 56);
+      g.fillStyle = '#7f1d1d'; g.beginPath(); g.arc(lx2, 84, 9, 0, 7); g.fill();
+      g.strokeStyle = '#fca5a5'; g.lineWidth = 1; g.stroke();
+    }
+    g.fillStyle = '#365314'; g.fillRect(420, 92, 46, 26); g.fillRect(474, 92, 34, 26);
+    g.strokeStyle = '#84cc16'; g.lineWidth = 1.2; g.strokeRect(420, 92, 46, 26); g.strokeRect(474, 92, 34, 26);
+
+    g.fillStyle = '#0f172a'; g.fillRect(680, 250, 74, 26); g.fillRect(1046, 250, 74, 26);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(680, 250, 74, 26); g.strokeRect(1046, 250, 74, 26);
+    g.fillStyle = '#38bdf8'; g.fillRect(692, 255, 22, 6); g.fillRect(720, 255, 22, 6);
+    g.fillRect(1058, 255, 22, 6); g.fillRect(1086, 255, 22, 6);
+    g.strokeStyle = 'rgba(251,191,36,0.28)'; g.lineWidth = 2; g.strokeRect(844, 72, 112, 92);
+
+    for (let i = 0; i < 3; i++) {
+      const by = 320 + i * 68;
+      g.fillStyle = '#0f2922'; g.fillRect(1370, by, 76, 40);
+      g.strokeStyle = '#10b981'; g.lineWidth = 1.5; g.strokeRect(1370, by, 76, 40);
+      g.fillStyle = '#cbd5e1'; g.fillRect(1376, by + 6, 16, 28);
+      g.fillStyle = '#0d9488'; g.fillRect(1394, by + 6, 46, 28);
+      g.fillStyle = '#020617'; g.fillRect(1454, by + 8, 20, 16);
+    }
+    for (let cx2 = 1660; cx2 <= 1720; cx2 += 56) {
+      g.fillStyle = '#042f2e'; g.beginPath(); g.arc(cx2, 190, 20, 0, 7); g.fill();
+      g.strokeStyle = '#2dd4bf'; g.lineWidth = 2.5; g.stroke();
+    }
+
+    g.strokeStyle = 'rgba(251,146,60,0.38)'; g.lineWidth = 4; g.strokeRect(70, 660, 470, 120);
+    for (let ax = 120; ax <= 240; ax += 60) {
+      g.fillStyle = '#1e293b'; g.fillRect(ax - 14, 678, 28, 28);
+      g.strokeStyle = '#fb923c'; g.lineWidth = 1.5; g.strokeRect(ax - 14, 678, 28, 28);
+      g.fillStyle = '#94a3b8'; g.beginPath(); g.arc(ax, 692, 8, 0, 7); g.fill();
+    }
+    g.fillStyle = '#b91c1c'; g.fillRect(62, 990, 56, 36);
+    g.strokeStyle = '#fca5a5'; g.lineWidth = 1.2; g.strokeRect(62, 990, 56, 36);
+
+    for (const py of [720, 790, 860]) {
+      g.fillStyle = '#064e3b'; g.fillRect(640, py, 140, 40);
+      g.strokeStyle = '#34d399'; g.lineWidth = 1.5; g.strokeRect(640, py, 140, 40);
+      for (let hx = 656; hx < 770; hx += 22) {
+        g.fillStyle = '#4ade80'; g.beginPath(); g.arc(hx, py + 20, 7, 0, 7); g.fill();
+        g.fillStyle = '#bbf7d0'; g.beginPath(); g.arc(hx - 2, py + 18, 2.5, 0, 7); g.fill();
+      }
+    }
+    g.fillStyle = '#475569';
+    g.fillRect(894, 800, 12, 42); g.fillRect(894, 958, 12, 42);
+    g.fillRect(800, 894, 42, 12); g.fillRect(958, 894, 42, 12);
+
+    g.fillStyle = '#78350f'; g.fillRect(1630, 840, 80, 44); g.fillRect(1630, 904, 80, 44);
+    g.fillStyle = '#fbbf24'; g.fillRect(1642, 850, 22, 10); g.fillRect(1672, 850, 22, 10);
+    g.fillStyle = '#38bdf8'; g.fillRect(1642, 914, 22, 10); g.fillRect(1672, 914, 22, 10);
+
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(226,232,240,0.28)'; g.textAlign = 'center';
+    g.fillText('← ARMORY', 555, 300); g.fillText('BIO-MED →', 1245, 300);
+    g.fillText('REACTOR ↓', 900, 575); g.fillText('VAULT ↓', 1500, 575);
+  } else if (mode === 'university') {
+    g.fillStyle = '#451a03'; g.fillRect(855, 660, 90, 480);
+    g.strokeStyle = '#d97706'; g.lineWidth = 2; g.strokeRect(855, 660, 90, 480);
+    g.fillStyle = 'rgba(180,83,9,0.28)'; g.fillRect(60, 430, 320, 120);
+    for (const bx of [130, 270, 410]) {
+      g.fillStyle = '#78350f'; g.fillRect(bx - 3, 148, 28, 234);
+      g.fillStyle = '#fbbf24'; for (let sy = 160; sy < 370; sy += 22) g.fillRect(bx + 2, sy, 18, 6);
+    }
+    g.fillStyle = '#064e3b'; g.fillRect(790, 54, 220, 16);
+    g.strokeStyle = '#a16207'; g.lineWidth = 2; g.strokeRect(790, 54, 220, 16);
+    g.fillStyle = '#0f172a'; g.fillRect(1260, 90, 440, 38);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(1260, 90, 440, 38);
+    g.strokeStyle = 'rgba(245,158,11,0.35)'; g.lineWidth = 2;
+    g.strokeRect(1260, 660, 460, 460);
+    g.beginPath(); g.arc(1490, 890, 55, 0, 7); g.stroke();
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(254,243,199,0.45)'; g.textAlign = 'center';
+    g.fillText('← LIBRARY', 540, 300); g.fillText('BIO-LAB →', 1250, 300);
+    g.fillText('← CAFETERIA', 540, 900); g.fillText('LECTURE HALL ↑', 900, 645);
+  } else if (mode === 'hospital') {
+    g.fillStyle = 'rgba(13,148,136,0.18)'; g.fillRect(855, 680, 90, 460);
+    g.fillStyle = 'rgba(239,68,68,0.25)'; g.fillRect(894, 680, 12, 460);
+    g.fillStyle = 'rgba(239,68,68,0.28)';
+    g.fillRect(884, 955, 32, 92); g.fillRect(854, 985, 92, 32);
+    g.strokeStyle = '#0d9488'; g.lineWidth = 3;
+    g.beginPath(); g.arc(280, 287, 92, 0, 7); g.stroke();
+    for (const [bx, by] of [[660, 220], [1045, 220], [660, 410], [1045, 410]]) {
+      g.fillStyle = '#0f766e'; g.fillRect(bx + 4, by + 4, 87, 36);
+      g.fillStyle = '#f8fafc'; g.fillRect(bx + 6, by + 8, 20, 28);
+      g.fillStyle = '#020617'; g.fillRect(bx + 98, by + 10, 22, 16);
+    }
+    g.fillStyle = '#64748b'; g.fillRect(54, 680, 38, 280);
+    g.strokeStyle = '#0f172a'; g.lineWidth = 1.5;
+    for (let my = 695; my < 950; my += 36) g.strokeRect(58, my, 30, 28);
+    g.strokeStyle = 'rgba(239,68,68,0.4)'; g.lineWidth = 3;
+    g.strokeRect(1290, 80, 450, 470);
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(15,23,42,0.55)'; g.textAlign = 'center';
+    g.fillText('← SURGERY', 500, 300); g.fillText('QUARANTINE →', 1290, 300);
+    g.fillText('← PHARMACY', 500, 900); g.fillText('ICU WARD ↑', 900, 665);
+  } else if (mode === 'mall') {
+    g.strokeStyle = 'rgba(45,212,191,0.22)'; g.lineWidth = 2;
+    for (let cy = 440; cy <= 1060; cy += 140) {
+      g.beginPath();
+      g.moveTo(960, cy - 42); g.lineTo(1002, cy); g.lineTo(960, cy + 42); g.lineTo(918, cy);
+      g.closePath(); g.stroke();
+    }
+    g.fillStyle = '#0f766e'; g.fillRect(862, 682, 196, 126);
+    g.fillStyle = '#0ea5e9'; g.fillRect(878, 698, 164, 94);
+    for (let fy = 660; fy < 1200; fy += 40) for (let fx = 40; fx < 480; fx += 40) {
+      if (((fx + fy) / 40) % 2 === 0) { g.fillStyle = 'rgba(251,146,60,0.08)'; g.fillRect(fx, fy, 40, 40); }
+    }
+    for (let cy = 120; cy <= 500; cy += 90) {
+      g.fillStyle = '#be185d'; g.fillRect(1460, cy, 55, 16);
+      g.fillStyle = '#f472b6'; g.fillRect(1464, cy + 4, 47, 8);
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(226,232,240,0.36)'; g.textAlign = 'center';
+    g.fillText('← SPORTING GOODS', 455, 305); g.fillText('DEPT STORE →', 1455, 305);
+    g.fillText('← FOOD COURT', 455, 925); g.fillText('SECURITY VAULT →', 1465, 925);
+    g.fillText('TECH EMPORIUM ↑', 960, 335);
+  } else if (mode === 'military') {
+    g.strokeStyle = 'rgba(245,158,11,0.32)'; g.lineWidth = 3;
+    g.strokeRect(54, 670, 470, 260);
+    g.font = 'bold 18px system-ui'; g.fillStyle = 'rgba(245,158,11,0.22)'; g.textAlign = 'center';
+    g.fillText('MOTORPOOL BAY 01', 288, 700);
+    g.fillStyle = '#291f14'; g.fillRect(52, 180, 34, 240);
+    g.strokeStyle = '#f59e0b'; g.lineWidth = 1.6; g.strokeRect(52, 180, 34, 240);
+    for (let wy = 198; wy < 408; wy += 24) {
+      g.fillStyle = '#94a3b8'; g.fillRect(58, wy, 22, 5);
+    }
+    for (let by = 90; by <= 490; by += 80) {
+      g.fillStyle = '#1e293b'; g.fillRect(1390, by, 72, 34);
+      g.fillStyle = '#365314'; g.fillRect(1408, by + 4, 48, 26);
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(226,232,240,0.34)'; g.textAlign = 'center';
+    g.fillText('← ARMORY', 520, 305); g.fillText('BARRACKS →', 1390, 305);
+    g.fillText('← MOTORPOOL', 520, 925); g.fillText('ORDNANCE VAULT →', 1410, 925);
+    g.fillText('WAR ROOM ↑', 960, 720);
+  } else if (mode === 'historic') {
+    // Crimson/Gold sacred nave carpet runner + stained glass light projections
+    g.fillStyle = '#7f1d1d'; g.fillRect(855, 220, 90, 840);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 2.5; g.strokeRect(855, 220, 90, 840);
+    // Ornamental rose mosaic ring under the sanctum
+    g.strokeStyle = 'rgba(251,191,36,0.32)'; g.lineWidth = 3;
+    g.beginPath(); g.arc(900, 340, 118, 0, 7); g.stroke();
+    g.beginPath(); g.arc(900, 340, 84, 0, 7); g.stroke();
+    // Stained-glass colored light rays cast along side aisles
+    const glassCols = ['rgba(56,189,248,0.12)', 'rgba(244,114,182,0.12)', 'rgba(251,191,36,0.14)'];
+    for (let i = 0; i < 3; i++) {
+      g.fillStyle = glassCols[i];
+      g.fillRect(600, 160 + i * 160, 120, 64);
+      g.fillRect(1080, 160 + i * 160, 120, 64);
+    }
+    // High Altar Golden Candle Candelabra & Choir Pews
+    g.fillStyle = '#5c3317';
+    for (let py = 490; py <= 610; py += 38) {
+      g.fillRect(720, py, 100, 16); g.fillRect(980, py, 100, 16);
+    }
+    // Sarcophagi brass plaques in Catacombs
+    g.fillStyle = '#ca8a04'; g.fillRect(185, 780, 40, 26); g.fillRect(365, 780, 40, 26);
+    // Scriptorium illuminated vellum scrolls
+    g.fillStyle = '#fef3c7';
+    g.fillRect(1430, 250, 22, 16); g.fillRect(1480, 250, 22, 16); g.fillRect(1430, 410, 24, 16);
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(253,230,138,0.45)'; g.textAlign = 'center';
+    g.fillText('← RELIQUARY', 515, 300); g.fillText('SCRIPTORIUM →', 1275, 300);
+    g.fillText('← CATACOMBS', 515, 900); g.fillText('TREASURY →', 1275, 900);
+    g.fillText('SANCTUM ↑', 900, 685);
+  } else if (mode === 'museum') {
+    // Checkered imperial marble tiles in Grand Rotunda & Foyer
+    for (let ry = 40; ry < 1180; ry += 50) for (let rx = 570; rx < 1290; rx += 50) {
+      if (((rx + ry) / 50) % 2 === 0) { g.fillStyle = 'rgba(15,23,42,0.06)'; g.fillRect(rx, ry, 50, 50); }
+    }
+    // Red velvet VIP carpet in Rotunda
+    g.fillStyle = '#881337'; g.fillRect(880, 420, 100, 640);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 2; g.strokeRect(880, 420, 100, 640);
+    // Velvet rope stanchions around display cases
+    g.strokeStyle = '#dc2626'; g.lineWidth = 2.5;
+    g.strokeRect(840, 295, 180, 130);
+    g.fillStyle = '#eab308';
+    for (const [vx, vy] of [[840, 295], [1020, 295], [840, 425], [1020, 425]]) {
+      g.beginPath(); g.arc(vx, vy, 5, 0, 7); g.fill();
+    }
+    // Framed masterpieces along Art Gallery wall
+    for (let gy = 140; gy <= 460; gy += 80) {
+      g.fillStyle = '#854d0e'; g.fillRect(42, gy, 14, 52);
+      g.fillStyle = gy % 160 === 140 ? '#38bdf8' : '#f472b6'; g.fillRect(46, gy + 6, 7, 40);
+    }
+    // Gold bullion pallets in Treasury Vault
+    for (let bx = 1620; bx <= 1720; bx += 48) {
+      g.fillStyle = '#f59e0b'; g.fillRect(bx, 850, 34, 24);
+      g.fillStyle = '#fde047'; g.fillRect(bx + 4, 854, 10, 16); g.fillRect(bx + 18, 854, 10, 16);
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(15,23,42,0.58)'; g.textAlign = 'center';
+    g.fillText('← GALLERY', 495, 305); g.fillText('COUNCIL HALL →', 1355, 305);
+    g.fillText('← ARCHIVES', 495, 915); g.fillText('BULLION VAULT →', 1355, 915);
+    g.fillText('ROTUNDA ↑', 930, 695);
+  } else if (mode === 'transit') {
+    // Airport / Concourse guideway lanes & boarding gate chevrons
+    g.fillStyle = 'rgba(56,189,248,0.14)'; g.fillRect(885, 420, 90, 640);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.setLineDash([12, 8]);
+    g.beginPath(); g.moveTo(930, 440); g.lineTo(930, 1050); g.stroke(); g.setLineDash([]);
+    // Baggage conveyor track oval (West-North)
+    g.strokeStyle = '#475569'; g.lineWidth = 14;
+    g.strokeRect(140, 215, 220, 106);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 1.5;
+    g.strokeRect(140, 215, 220, 106);
+    // Runway departure status screens in Control Tower
+    g.fillStyle = '#020617'; g.fillRect(720, 56, 420, 22);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(720, 56, 420, 22);
+    g.fillStyle = '#22c55e'; g.fillRect(736, 63, 46, 8); g.fillStyle = '#fbbf24'; g.fillRect(800, 63, 56, 8); g.fillStyle = '#38bdf8'; g.fillRect(880, 63, 72, 8);
+    // Security Screening X-Ray Belt
+    g.fillStyle = '#334155'; g.fillRect(845, 645, 170, 56);
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(226,232,240,0.4)'; g.textAlign = 'center';
+    g.fillText('← BAGGAGE', 475, 305); g.fillText('VIP LOUNGE →', 1375, 305);
+    g.fillText('← BISTRO', 475, 915); g.fillText('CUSTOMS VAULT →', 1380, 915);
+    g.fillText('CONTROL TOWER ↑', 930, 395);
+  } else if (mode === 'airport') {
+    // Central Departure Spine Guideway & Security Queuing Corridors
+    g.fillStyle = 'rgba(56,189,248,0.12)'; g.fillRect(1140, 490, 120, 910);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.setLineDash([16, 10]);
+    g.beginPath(); g.moveTo(1200, 510); g.lineTo(1200, 1380); g.stroke(); g.setLineDash([]);
+    // Dual Baggage Carousels (West-North)
+    for (const [bx, by, bw, bh] of [[140, 160, 260, 76], [140, 320, 260, 76]]) {
+      g.strokeStyle = '#475569'; g.lineWidth = 14; g.strokeRect(bx, by, bw, bh);
+      g.strokeStyle = '#fbbf24'; g.lineWidth = 1.6; g.strokeRect(bx, by, bw, bh);
+    }
+    // Check-In Ticketing Desks (Center-South) with green/blue computer bays
+    for (const cx of [780, 1380]) {
+      g.fillStyle = '#0f172a'; g.fillRect(cx, 1140, 240, 44);
+      g.strokeStyle = '#38bdf8'; g.lineWidth = 1.6; g.strokeRect(cx, 1140, 240, 44);
+      for (let kx = cx + 24; kx < cx + 224; kx += 48) {
+        g.fillStyle = '#38bdf8'; g.fillRect(kx, 1148, 22, 10);
+      }
+    }
+    // TSA Screening Conveyors & Metal Detector Arches (Center-Mid)
+    for (const sx of [830, 1410]) {
+      g.fillStyle = '#1e293b'; g.fillRect(sx, 680, 160, 46);
+      g.strokeStyle = '#2dd4bf'; g.lineWidth = 1.8; g.strokeRect(sx, 680, 160, 46);
+      g.fillStyle = 'rgba(250,204,21,0.18)'; g.fillRect(sx - 18, 662, 196, 82);
+    }
+    // Boarding Gate Panorama Glass Wall & Flight Information Display (North Concourse)
+    g.fillStyle = 'rgba(56,189,248,0.22)'; g.fillRect(676, 30, 1048, 20);
+    g.fillStyle = '#020617'; g.fillRect(1040, 56, 320, 22);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(1040, 56, 320, 22);
+    // Gate Seating Rows (Gates A1-A3 & B1-B3)
+    for (const [gx, gy] of [[760, 175], [760, 285], [1460, 175], [1460, 285]]) {
+      g.fillStyle = '#1e3a8a'; g.fillRect(gx, gy, 160, 28);
+      g.strokeStyle = '#60a5fa'; g.lineWidth = 1.2; g.strokeRect(gx, gy, 160, 28);
+    }
+    // ATC Radar Console Desk & Radar Plot Zone (East-North)
+    g.fillStyle = '#020617'; g.fillRect(1930, 165, 220, 44);
+    g.strokeStyle = '#0ea5e9'; g.lineWidth = 1.6; g.strokeRect(1930, 165, 220, 44);
+    g.strokeStyle = 'rgba(14,165,233,0.32)'; g.lineWidth = 2;
+    g.beginPath(); g.arc(2040, 110, 44, 0, 7); g.stroke();
+    // Customs Hangar Vault Hazard Perimeter & Gold Bullion Pallets (East-South)
+    g.strokeStyle = 'rgba(239,68,68,0.38)'; g.lineWidth = 3;
+    g.strokeRect(1785, 1030, 560, 415);
+    for (let bx = 2040; bx <= 2140; bx += 48) {
+      g.fillStyle = '#f59e0b'; g.fillRect(bx, 1280, 34, 24);
+      g.fillStyle = '#fde047'; g.fillRect(bx + 4, 1284, 10, 16); g.fillRect(bx + 18, 1284, 10, 16);
+    }
+    g.font = 'bold 11px system-ui'; g.fillStyle = 'rgba(226,232,240,0.44)'; g.textAlign = 'center';
+    g.fillText('← BAGGAGE CLAIM', 560, 260); g.fillText('ATC TOWER →', 1840, 260);
+    g.fillText('← DUTY-FREE DINER', 560, 755); g.fillText('VIP LOUNGE →', 1840, 755);
+    g.fillText('← CARGO OPS', 560, 1245); g.fillText('CUSTOMS VAULT →', 1840, 1245);
+    g.fillText('GATES A1-A3 ↑', 940, 460); g.fillText('GATES B1-B3 ↑', 1460, 460);
+  } else if (mode === 'industrial') {
+    // Yellow-black hazard perimeter stripes & turbine safety rings
+    g.strokeStyle = 'rgba(245,158,11,0.34)'; g.lineWidth = 3;
+    g.strokeRect(620, 230, 560, 220);
+    // Heavy steel floor grating & coolant pipelines
+    g.strokeStyle = '#0ea5e9'; g.lineWidth = 6;
+    g.beginPath();
+    g.moveTo(240, 255); g.lineTo(780, 255);
+    g.moveTo(240, 425); g.lineTo(780, 425);
+    g.moveTo(1020, 325); g.lineTo(1430, 325);
+    g.stroke();
+    g.strokeStyle = '#bae6fd'; g.lineWidth = 1.5; g.stroke();
+    // Copper transformer coils (East-North)
+    for (const ty of [220, 400]) {
+      g.fillStyle = '#9a3412'; g.fillRect(1440, ty + 6, 110, 48);
+      g.fillStyle = '#ea580c'; g.fillRect(1450, ty + 14, 90, 32);
+    }
+    // Machine shop crane gantry tracks (West-South)
+    g.strokeStyle = '#fb923c'; g.lineWidth = 2.5;
+    g.strokeRect(70, 680, 420, 280);
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(253,186,116,0.45)'; g.textAlign = 'center';
+    g.fillText('← COOLANT PUMP', 515, 300); g.fillText('SUBSTATION →', 1275, 300);
+    g.fillText('← MACHINE SHOP', 515, 900); g.fillText('BREAKER VAULT →', 1275, 900);
+    g.fillText('TURBINE HALL ↑', 900, 675);
   }
-  g.fillStyle = '#475569';
-  g.fillRect(894, 800, 12, 42); g.fillRect(894, 958, 12, 42);
-  g.fillRect(800, 894, 42, 12); g.fillRect(958, 894, 42, 12);
 
-  // WING 6 (SE): CONTAINMENT & VAULT SECTOR
-  g.fillStyle = '#78350f'; g.fillRect(1630, 840, 80, 44); g.fillRect(1630, 904, 80, 44);
-  g.fillStyle = '#fbbf24'; g.fillRect(1642, 850, 22, 10); g.fillRect(1672, 850, 22, 10);
-  g.fillStyle = '#38bdf8'; g.fillRect(1642, 914, 22, 10); g.fillRect(1672, 914, 22, 10);
-
-  // Directional floor stencils at thresholds
-  g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(226,232,240,0.28)'; g.textAlign = 'center';
-  g.fillText('← ARMORY', 555, 300); g.fillText('BIO-MED →', 1245, 300);
-  g.fillText('REACTOR ↓', 900, 575); g.fillText('VAULT ↓', 1500, 575);
-
-  // Armored Pneumatic Blast Door Frames at all 7 thresholds
-  const doorThresholds = [
+  // Door Threshold Frames
+  const doorThresholds = idef.doorThresholds || [
     [590, 240, 20, 120, false], [590, 840, 20, 120, false],
     [1190, 240, 20, 120, false], [1190, 840, 20, 120, false],
     [240, 590, 120, 20, true], [840, 590, 120, 20, true], [1440, 590, 120, 20, true]
   ];
+  const accentMap = {
+    airport: 'rgba(56,189,248,0.68)',
+    hospital: 'rgba(16,185,129,0.55)',
+    university: 'rgba(245,158,11,0.55)',
+    mall: 'rgba(45,212,191,0.55)',
+    historic: 'rgba(234,179,8,0.65)',
+    museum: 'rgba(244,114,182,0.55)',
+    transit: 'rgba(56,189,248,0.58)',
+    industrial: 'rgba(251,146,60,0.6)',
+    raid: 'rgba(248,113,113,0.65)',
+    military: 'rgba(248,113,113,0.65)'
+  };
+  const doorAccent = accentMap[mode] || 'rgba(56,189,248,0.6)';
   for (const [dx, dy, dw, dh, horiz] of doorThresholds) {
-    g.fillStyle = isRaid ? 'rgba(239,68,68,0.22)' : 'rgba(56,189,248,0.2)';
+    g.fillStyle = 'rgba(15,23,42,0.26)';
     g.fillRect(dx, dy, dw, dh);
-    g.strokeStyle = isRaid ? 'rgba(248,113,113,0.65)' : 'rgba(56,189,248,0.6)';
+    g.strokeStyle = doorAccent;
     g.lineWidth = 2; g.strokeRect(dx, dy, dw, dh);
     g.fillStyle = '#475569';
     if (horiz) {
@@ -3761,13 +4395,17 @@ function buildBunkerStaticCanvas(idef, isRaid) {
     }
   }
 
-  // Beveled Armored Bulkhead Walls & Fixtures
+  // Beveled Walls & Solid Fixtures
+  const wallFillMap = { airport: '#1e293b', university: '#451a03', hospital: '#64748b', mall: '#334155', historic: '#78664e', museum: '#475569', transit: '#243447', industrial: '#292e36' };
+  const wallEdgeMap = { airport: '#38bdf8', university: '#b45309', hospital: '#94a3b8', historic: '#d97706', museum: '#cbd5e1', transit: '#38bdf8', industrial: '#f59e0b' };
+  const wallFill = wallFillMap[mode] || '#1f2937';
+  const wallEdge = wallEdgeMap[mode] || '#64748b';
   for (const w of idef.walls) {
     const [wx, wy, ww, wh] = w;
-    g.fillStyle = 'rgba(0,0,0,0.48)'; g.fillRect(wx + 5, wy + 5, ww, wh);
-    g.fillStyle = '#1f2937'; g.fillRect(wx, wy, ww, wh);
-    g.fillStyle = '#334155'; g.fillRect(wx + 2, wy + 2, Math.max(0, ww - 4), Math.max(0, Math.min(8, wh - 4)));
-    g.strokeStyle = '#64748b'; g.lineWidth = 2; g.strokeRect(wx, wy, ww, wh);
+    g.fillStyle = 'rgba(0,0,0,0.45)'; g.fillRect(wx + 5, wy + 5, ww, wh);
+    g.fillStyle = wallFill; g.fillRect(wx, wy, ww, wh);
+    g.fillStyle = 'rgba(255,255,255,0.12)'; g.fillRect(wx + 2, wy + 2, Math.max(0, ww - 4), Math.max(0, Math.min(8, wh - 4)));
+    g.strokeStyle = wallEdge; g.lineWidth = 2; g.strokeRect(wx, wy, ww, wh);
     g.fillStyle = '#475569';
     if (ww > 100 && wh <= 32) {
       for (let px = wx + 32; px < wx + ww - 20; px += 80) g.fillRect(px - 3, wy - 2, 6, wh + 4);
@@ -3781,67 +4419,176 @@ function buildBunkerStaticCanvas(idef, isRaid) {
 function drawActiveInterior(zone, now, selfX, selfY) {
   const idef = currentInteriorDef();
   if (!idef) return;
-  const isRaid = zone.startsWith('raid_');
+  const kind = interiorTypeOf(zone);
+  const isRaid = kind === 'raid';
+  const isBunkerOrRaid = kind === 'bunker' || kind === 'raid';
   const W = idef.w, H = idef.h;
-  const cacheKey = isRaid ? 'raid' : 'bunker';
-  if (!bunkerStaticCache[cacheKey]) bunkerStaticCache[cacheKey] = buildBunkerStaticCanvas(idef, isRaid);
+  if (!bunkerStaticCache[kind]) bunkerStaticCache[kind] = buildBunkerStaticCanvas(idef, kind);
 
   ctx.save();
-  // Subterranean bedrock cavern void
   ctx.fillStyle = '#040609';
   ctx.fillRect(-1600, -1600, W + 3200, H + 3200);
-  ctx.strokeStyle = isRaid ? '#ef4444' : '#38bdf8';
+  const metaB = ENT_META[kind];
+  const borderCol = metaB ? metaB.accent : isRaid ? '#ef4444' : '#38bdf8';
+  ctx.strokeStyle = borderCol;
   ctx.lineWidth = 3.5;
   ctx.strokeRect(-22, -22, W + 44, H + 44);
 
-  // Blit cached static bunker architecture in a single drawImage call
-  ctx.drawImage(bunkerStaticCache[cacheKey], 0, 0);
+  // Blit cached static interior architecture
+  ctx.drawImage(bunkerStaticCache[kind], 0, 0);
 
-  // ═════════ ANIMATED INTERIOR EFFECTS OVERLAY ═════════
-  // Pulsing coolant nodes flowing along conduits
-  const flow = (now * 0.16) % 300;
-  ctx.fillStyle = isRaid ? '#f87171' : '#c084fc';
-  for (let fx = 300 + flow; fx < 1500; fx += 300) {
-    ctx.beginPath(); ctx.arc(fx, 300, 3, 0, 7); ctx.arc(fx, 900, 3, 0, 7); ctx.fill();
+  // ═════════ THEME-SPECIFIC ANIMATED OVERLAYS ═════════
+  if (isBunkerOrRaid) {
+    const flow = (now * 0.16) % 300;
+    ctx.fillStyle = isRaid ? '#f87171' : '#c084fc';
+    for (let fx = 300 + flow; fx < 1500; fx += 300) {
+      ctx.beginPath(); ctx.arc(fx, 300, 3, 0, 7); ctx.arc(fx, 900, 3, 0, 7); ctx.fill();
+    }
+    const holoPulse = 0.5 + 0.5 * Math.sin(now / 320);
+    ctx.strokeStyle = `rgba(56,189,248,${0.4 + holoPulse * 0.45})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(900, 290, 56, 24, 0, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(900, 290, 26 + holoPulse * 10, 12 + holoPulse * 4, 0, 0, 7); ctx.stroke();
+    ctx.save(); ctx.translate(900, 290); ctx.rotate(now / 700);
+    ctx.strokeStyle = 'rgba(56,189,248,0.65)'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(48, 0); ctx.stroke();
+    ctx.restore();
+
+    ctx.strokeStyle = '#4ade80'; ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    for (let i = 0; i < 3; i++) {
+      const by = 320 + i * 68;
+      const ecgY = by + 16 + Math.sin(now / 90 + i) * 3;
+      ctx.moveTo(1456, by + 16); ctx.lineTo(1462, ecgY); ctx.lineTo(1472, by + 16);
+    }
+    ctx.stroke();
+    for (let cx2 = 1660; cx2 <= 1720; cx2 += 56) {
+      ctx.fillStyle = `rgba(45,212,191,${0.35 + 0.25 * Math.sin(now / 240 + cx2)})`;
+      ctx.beginPath(); ctx.arc(cx2, 190, 12, 0, 7); ctx.fill();
+    }
+    ctx.drawImage(GLOW_SPR.purple, 810, 810, 180, 180);
+    ctx.strokeStyle = '#c084fc'; ctx.lineWidth = 3.5;
+    ctx.beginPath(); ctx.arc(900, 900, 36 + Math.sin(now / 180) * 4, now / 350, now / 350 + 4.4); ctx.stroke();
+    ctx.beginPath(); ctx.arc(900, 900, 52, -now / 420, -now / 420 + 3.8); ctx.stroke();
+
+    const laserAlpha = 0.35 + 0.3 * Math.sin(now / 220);
+    ctx.strokeStyle = `rgba(239,68,68,${laserAlpha})`; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let ly = 720; ly <= 790; ly += 24) { ctx.moveTo(1260, ly); ctx.lineTo(1720, ly); }
+    ctx.stroke();
+  } else if (kind === 'university') {
+    for (let fx = 1340; fx <= 1660; fx += 80) {
+      ctx.fillStyle = `rgba(56,189,248,${0.4 + 0.35 * Math.sin(now / 250 + fx)})`;
+      ctx.beginPath(); ctx.arc(fx, 110, 8, 0, 7); ctx.fill();
+    }
+  } else if (kind === 'hospital') {
+    ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    for (const [bx, by] of [[660, 220], [1045, 220], [660, 410], [1045, 410]]) {
+      const ey = by + 18 + Math.sin(now / 85 + bx) * 4;
+      ctx.moveTo(bx + 100, by + 18); ctx.lineTo(bx + 108, ey); ctx.lineTo(bx + 116, by + 18);
+    }
+    ctx.stroke();
+    const qAlpha = 0.28 + 0.25 * Math.sin(now / 220);
+    ctx.fillStyle = `rgba(239,68,68,${qAlpha})`;
+    ctx.beginPath(); ctx.arc(1310, 100, 10, 0, 7); ctx.arc(1720, 100, 10, 0, 7); ctx.fill();
+  } else if (kind === 'mall') {
+    const rPulse = (now / 45) % 44;
+    ctx.strokeStyle = `rgba(186,230,253,${0.65 - rPulse / 68})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(960, 745, 14 + rPulse, 8 + rPulse * 0.55, 0, 0, 7); ctx.stroke();
+    ctx.strokeStyle = `rgba(239,68,68,${0.3 + 0.25 * Math.sin(now / 200)})`; ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    for (let ly = 870; ly <= 940; ly += 22) { ctx.moveTo(1460, ly); ctx.lineTo(1860, ly); }
+    ctx.stroke();
+  } else if (kind === 'military') {
+    const holoPulse = 0.5 + 0.5 * Math.sin(now / 300);
+    ctx.strokeStyle = `rgba(56,189,248,${0.45 + holoPulse * 0.4})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(960, 365, 68, 28, 0, 0, 7); ctx.stroke();
+    ctx.save(); ctx.translate(960, 365); ctx.rotate(now / 620);
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(58, 0); ctx.stroke();
+    ctx.restore();
+    ctx.strokeStyle = `rgba(239,68,68,${0.35 + 0.3 * Math.sin(now / 210)})`; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    for (let ly = 720; ly <= 810; ly += 24) { ctx.moveTo(1400, ly); ctx.lineTo(1860, ly); }
+    ctx.stroke();
+  } else if (kind === 'historic') {
+    // Flickering golden votive altar candles & warm sanctum brazier glow
+    for (const [cx2, cy2] of [[845, 165], [900, 165], [955, 165], [640, 260], [1160, 260]]) {
+      const flk = 7 + Math.sin(now / 110 + cx2) * 2.5;
+      ctx.fillStyle = 'rgba(251,191,36,0.28)';
+      ctx.beginPath(); ctx.arc(cx2, cy2, flk * 2.2, 0, 7); ctx.fill();
+      ctx.fillStyle = '#fde047';
+      ctx.beginPath(); ctx.arc(cx2, cy2, flk * 0.55, 0, 7); ctx.fill();
+    }
+  } else if (kind === 'museum') {
+    // Rotating gallery spotlight sweep & Treasury vault lasers
+    const spotA = now / 900;
+    ctx.fillStyle = 'rgba(251,191,36,0.12)';
+    ctx.beginPath(); ctx.arc(930 + Math.cos(spotA) * 55, 360 + Math.sin(spotA) * 35, 42, 0, 7); ctx.fill();
+    ctx.strokeStyle = `rgba(239,68,68,${0.28 + 0.25 * Math.sin(now / 210)})`; ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    for (let ly = 760; ly <= 830; ly += 22) { ctx.moveTo(1360, ly); ctx.lineTo(1790, ly); }
+    ctx.stroke();
+  } else if (kind === 'airport') {
+    // Dual animated baggage claim carousels (4 luggage cases per loop)
+    for (const [cx0, cy0] of [[140, 160], [140, 320]]) {
+      const cw = 260, ch = 76, perim = (cw + ch) * 2;
+      for (let b = 0; b < 4; b++) {
+        const ph = ((now / 42 + b * (perim / 4) + (cy0 > 200 ? 90 : 0)) % perim);
+        let bx = cx0, by = cy0;
+        if (ph < cw) { bx = cx0 + ph; by = cy0; }
+        else if (ph < cw + ch) { bx = cx0 + cw; by = cy0 + (ph - cw); }
+        else if (ph < cw * 2 + ch) { bx = cx0 + cw - (ph - cw - ch); by = cy0 + ch; }
+        else { bx = cx0; by = cy0 + ch - (ph - cw * 2 - ch); }
+        ctx.fillStyle = b % 2 === 0 ? '#0284c7' : '#d97706';
+        ctx.fillRect(bx - 10, by - 7, 20, 14);
+        ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 1.5; ctx.strokeRect(bx - 10, by - 7, 20, 14);
+      }
+    }
+    // Rotating Air Traffic Control radar scope sweep (ATC Wing)
+    ctx.save(); ctx.translate(2040, 110); ctx.rotate(now / 420);
+    ctx.strokeStyle = 'rgba(56,189,248,0.65)'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(42, 0); ctx.stroke();
+    ctx.restore();
+    // Flight departure LED lights & Customs Vault security lasers
+    const gateBlink = 0.45 + 0.45 * Math.sin(now / 260);
+    ctx.fillStyle = `rgba(34,197,94,${gateBlink})`;
+    ctx.beginPath(); ctx.arc(1062, 67, 5, 0, 7); ctx.arc(1338, 67, 5, 0, 7); ctx.fill();
+    ctx.strokeStyle = `rgba(239,68,68,${0.3 + 0.25 * Math.sin(now / 210)})`; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let ly = 1045; ly <= 1105; ly += 22) { ctx.moveTo(1790, ly); ctx.lineTo(2340, ly); }
+    ctx.stroke();
+  } else if (kind === 'transit') {
+    // Animated conveyor suitcases + radar sweep in Control Tower
+    for (let b = 0; b < 4; b++) {
+      const ph = ((now / 45 + b * 145) % 580);
+      let bx = 140, by = 215;
+      if (ph < 220) { bx = 140 + ph; by = 215; }
+      else if (ph < 326) { bx = 360; by = 215 + (ph - 220); }
+      else if (ph < 546) { bx = 360 - (ph - 326); by = 321; }
+      else { bx = 140; by = 321 - (ph - 546); }
+      ctx.fillStyle = b % 2 === 0 ? '#0284c7' : '#d97706';
+      ctx.fillRect(bx - 10, by - 7, 20, 14);
+      ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 1.5; ctx.strokeRect(bx - 10, by - 7, 20, 14);
+    }
+    ctx.save(); ctx.translate(930, 160); ctx.rotate(now / 480);
+    ctx.strokeStyle = 'rgba(56,189,248,0.5)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(44, 0); ctx.stroke();
+    ctx.restore();
+  } else if (kind === 'industrial') {
+    // Rotating hydro-turbine rotors & electric arcs on transformers
+    for (const tx of [845, 955]) {
+      ctx.save(); ctx.translate(tx, 325); ctx.rotate((now / 240) * (tx < 900 ? 1 : -1));
+      ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 4;
+      for (let b = 0; b < 4; b++) { ctx.rotate(Math.PI / 2); ctx.beginPath(); ctx.moveTo(-26, 0); ctx.lineTo(26, 0); ctx.stroke(); }
+      ctx.restore();
+    }
+    if (Math.random() < 0.35) {
+      ctx.strokeStyle = 'rgba(56,189,248,0.8)'; ctx.lineWidth = 2;
+      const sx2 = 1445 + Math.random() * 100, sy2 = (Math.random() < 0.5 ? 250 : 430);
+      ctx.beginPath(); ctx.moveTo(sx2, sy2); ctx.lineTo(sx2 + (Math.random() - 0.5) * 26, sy2 + (Math.random() - 0.5) * 22); ctx.stroke();
+    }
   }
 
-  // Hologram Tactical Map Projection over Command Table
-  const holoPulse = 0.5 + 0.5 * Math.sin(now / 320);
-  ctx.strokeStyle = `rgba(56,189,248,${0.4 + holoPulse * 0.45})`; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.ellipse(900, 290, 56, 24, 0, 0, 7); ctx.stroke();
-  ctx.beginPath(); ctx.ellipse(900, 290, 26 + holoPulse * 10, 12 + holoPulse * 4, 0, 0, 7); ctx.stroke();
-  ctx.save(); ctx.translate(900, 290); ctx.rotate(now / 700);
-  ctx.strokeStyle = 'rgba(56,189,248,0.65)'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(48, 0); ctx.stroke();
-  ctx.restore();
-
-  // Live ECG monitors + Bubbling Cryo-Stasis Tubes
-  ctx.strokeStyle = '#4ade80'; ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  for (let i = 0; i < 3; i++) {
-    const by = 320 + i * 68;
-    const ecgY = by + 16 + Math.sin(now / 90 + i) * 3;
-    ctx.moveTo(1456, by + 16); ctx.lineTo(1462, ecgY); ctx.lineTo(1472, by + 16);
-  }
-  ctx.stroke();
-  for (let cx2 = 1660; cx2 <= 1720; cx2 += 56) {
-    ctx.fillStyle = `rgba(45,212,191,${0.35 + 0.25 * Math.sin(now / 240 + cx2)})`;
-    ctx.beginPath(); ctx.arc(cx2, 190, 12, 0, 7); ctx.fill();
-  }
-
-  // Zero-Point Reactor Plasma Containment Core (center 900, 900)
-  ctx.drawImage(GLOW_SPR.purple, 810, 810, 180, 180);
-  ctx.strokeStyle = '#c084fc'; ctx.lineWidth = 3.5;
-  ctx.beginPath(); ctx.arc(900, 900, 36 + Math.sin(now / 180) * 4, now / 350, now / 350 + 4.4); ctx.stroke();
-  ctx.beginPath(); ctx.arc(900, 900, 52, -now / 420, -now / 420 + 3.8); ctx.stroke();
-
-  // Vault laser security grid
-  const laserAlpha = 0.35 + 0.3 * Math.sin(now / 220);
-  ctx.strokeStyle = `rgba(239,68,68,${laserAlpha})`; ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  for (let ly = 720; ly <= 790; ly += 24) { ctx.moveTo(1260, ly); ctx.lineTo(1720, ly); }
-  ctx.stroke();
-
-  // 12 Interactive Stations with Octagonal Industrial Plinths
+  // Interactive Stations
   let nearestSt = null, nearestDist = Infinity;
   for (const st of idef.stations) {
     const d = Math.hypot(st.x - selfX, st.y - selfY);
@@ -3853,13 +4600,12 @@ function drawActiveInterior(zone, now, selfX, selfY) {
     const pulse = 0.5 + 0.5 * Math.sin(now / 260 + st.x * 0.01);
     const padColor = st.kind === 'exit_lift' ? '#38bdf8' : st.kind === 'reactor_core' ? '#c084fc' : st.kind === 'vault_locker' ? '#ef4444' : '#4ade80';
 
-    ctx.fillStyle = isNear ? 'rgba(255,215,0,0.18)' : 'rgba(15,23,42,0.8)';
+    ctx.fillStyle = isNear ? 'rgba(255,215,0,0.18)' : 'rgba(15,23,42,0.84)';
     ctx.beginPath(); ctx.arc(st.x, st.y, 35, 0, 7); ctx.fill();
     ctx.strokeStyle = isNear ? '#ffd700' : padColor;
     ctx.lineWidth = isNear ? 3 : 2;
     ctx.beginPath(); ctx.arc(st.x, st.y, 35 + (isNear ? pulse * 5 : 0), 0, 7); ctx.stroke();
 
-    // Octagonal console housing
     ctx.fillStyle = '#0f172a';
     ctx.beginPath();
     for (let k = 0; k < 8; k++) {
@@ -3901,12 +4647,22 @@ function drawActiveInterior(zone, now, selfX, selfY) {
     }
   }
 
-  ctx.fillStyle = isRaid ? '#f87171' : '#38bdf8';
+  const entInfo = getEntranceInfo(zone);
+  const entName = entInfo ? entInfo.name.toUpperCase() : kind.toUpperCase();
+  ctx.fillStyle = borderCol;
   ctx.font = 'bold 15px system-ui';
   ctx.textAlign = 'center';
-  const titleTxt = isRaid
+  const titleTxt = kind === 'raid'
     ? `☢️ MILITARY RAID BUNKER #${zone.slice(5)} · CLEAR GUARDIANS & CRACK VAULT`
-    : `🛡️ UNDERGROUND SHELTER BUNKER (PLOT #${zone.slice(7)}) · 6-WING OPERATIONS`;
+    : kind === 'university'
+      ? `🎓 ${entName} · UNIVERSITY CAMPUS INTERIOR`
+      : kind === 'hospital'
+        ? `🏥 ${entName} · MEDICAL & QUARANTINE COMPLEX`
+        : kind === 'mall'
+          ? `🛍️ ${entName} · SHOPPING MALL CONCOURSE`
+          : kind === 'military'
+            ? `🪖 ${entName} · MILITARY BASE COMMAND`
+            : `🛡️ UNDERGROUND SHELTER BUNKER (PLOT #${zone.slice(7)}) · 6-WING OPERATIONS`;
   ctx.fillText(titleTxt, W / 2, 16);
 
   ctx.restore();
@@ -4015,7 +4771,7 @@ function drawPlayer(p, x, y, a, isMe, now) {
     ctx.font = '16px sans-serif'; ctx.fillText(rebirths > 0 ? '⚛️' : '★', x + Math.cos(now / 150) * 14, y - 26);
   }
   if (!isMe) {
-    const row = board.find(r => r[0] === p[0]); const name = row ? row[1] : '?';
+    const name = boardNames.get(p[0]) || '?';
     const tag = rebirths > 0 ? `[⚛️ Ascendant ${rebirths}] ${name}` : name;
     ctx.font = '600 13px system-ui'; ctx.textAlign = 'center'; ctx.lineWidth = 3; ctx.strokeStyle = '#000';
     ctx.strokeText(tag, x, y - 30); ctx.fillStyle = col; ctx.fillText(tag, x, y - 30);
@@ -4215,11 +4971,15 @@ function drawZombie(z, x, y, a, now) {
   if (t === 'frozen') { ctx.strokeStyle = '#e8fbff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, r - 2, 0, 7); ctx.stroke(); }
   if (t === 'behemoth') {
     ctx.fillStyle = '#2a0505';
+    ctx.beginPath();
     for (let k = 0; k < 8; k++) {
-      ctx.save(); ctx.rotate(k * 0.785);
-      ctx.beginPath(); ctx.moveTo(r - 4, -6); ctx.lineTo(r + 12, 0); ctx.lineTo(r - 4, 6); ctx.fill();
-      ctx.restore();
+      const ca = SPIKE_TRIG[k][0], sa = SPIKE_TRIG[k][1];
+      const bx = (r - 4) * ca, by = (r - 4) * sa, tx2 = (r + 12) * ca, ty2 = (r + 12) * sa;
+      ctx.moveTo(bx + sa * 6, by - ca * 6);
+      ctx.lineTo(tx2, ty2);
+      ctx.lineTo(bx - sa * 6, by + ca * 6);
     }
+    ctx.fill();
   }
   ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.beginPath(); ctx.arc(r * 0.35, 0, r * 0.45, 0, 7); ctx.fill();
   // Glowing eye halos
@@ -4245,7 +5005,7 @@ function drawZombie(z, x, y, a, now) {
   }
 }
 
-function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh) {
+function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh, isNight) {
   const t = D.VLIST[v[1]], d = D.VEH[t], f = v[7], L = d.len, Wd = d.wid, dead = f & 32, fly = f & 8;
   const steerAng = currentInVeh ? currentInVeh.steerAngle : 0;
   const isBraking = currentInVeh && (keys.Space || (keys.KeyS && currentInVeh.sp > 15));
@@ -4368,7 +5128,7 @@ function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh) {
 
     // Twin halogen headlights
     if (!dead) {
-      const isNight = daylight() < 0.65;
+      if (isNight === undefined) isNight = daylight() < 0.65;
       const isDriving = (me && v[0] === me.veh) || isNight || (spdMag > 20);
       if (isDriving) {
         ctx.fillStyle = 'rgba(255, 250, 205, 0.22)';
@@ -4449,7 +5209,7 @@ function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh) {
       if (f & 1 && now % 400 < 200) { ctx.fillStyle = '#ff2a2a'; ctx.fillRect(L * 0.05, -Wd / 2, 8, Wd); }
     }
     if (t === 'tank' || t === 'apc' || t === 'humvee' || t === 'hovercraft') {
-      ctx.rotate(v[9] / 100 - a); ctx.fillStyle = shade(hex2(d.c), 0.8);
+      ctx.rotate(v[9] / 100 - a); ctx.fillStyle = vehPal(d.c).turret;
       if (t === 'tank') {
         ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(0, 0, Wd * 0.38, 0, 7); ctx.fill(); ctx.stroke();
@@ -4583,16 +5343,20 @@ function drawLighting(b, a, u, now, selfX, selfY, inVeh, vlist) {
   const S = (x, y) => [((x - camX) * zoom + VW / 2) * sc, ((y - camY) * zoom + VH / 2) * sc];
   const L = (x, y, r, i = 1) => {
     const [sx, sy] = S(x, y), sr = r * zoom * sc;
-    if (sx < -sr || sy < -sr || sx > W2 + sr || sy > H2 + sr) return;
-    const g = lx.createRadialGradient(sx, sy, 0, sx, sy, sr);
-    g.addColorStop(0, `rgba(0,0,0,${i})`); g.addColorStop(0.6, `rgba(0,0,0,${i * 0.6})`); g.addColorStop(1, 'rgba(0,0,0,0)');
-    lx.fillStyle = g; lx.beginPath(); lx.arc(sx, sy, sr, 0, 7); lx.fill();
+    if (sx < -sr || sy < -sr || sx > W2 + sr || sy > H2 + sr || sr < 1) return;
+    lx.globalAlpha = clamp(i, 0, 1);
+    lx.drawImage(LIGHT_MASK_CIRCLE, sx - sr, sy - sr, sr * 2, sr * 2);
   };
   const C = (x, y, ang, len, spread, i = 1) => {
     const [sx, sy] = S(x, y), sl = len * zoom * sc;
-    const g = lx.createRadialGradient(sx, sy, 0, sx, sy, sl);
-    g.addColorStop(0, `rgba(0,0,0,${i})`); g.addColorStop(0.7, `rgba(0,0,0,${i * 0.7})`); g.addColorStop(1, 'rgba(0,0,0,0)');
-    lx.fillStyle = g; lx.beginPath(); lx.moveTo(sx, sy); lx.arc(sx, sy, sl, ang - spread, ang + spread); lx.closePath(); lx.fill();
+    if (sx < -sl || sy < -sl || sx > W2 + sl || sy > H2 + sl || sl < 2) return;
+    lx.save();
+    lx.translate(sx, sy);
+    lx.rotate(ang);
+    lx.scale(sl / 192, (sl * (spread / 0.46)) / 192);
+    lx.globalAlpha = clamp(i, 0, 1);
+    lx.drawImage(LIGHT_MASK_CONE, 0, -96);
+    lx.restore();
   };
   L(selfX, selfY, 210, 0.85);
   for (const [id, p] of b.P) {
@@ -4613,8 +5377,8 @@ function drawLighting(b, a, u, now, selfX, selfY, inVeh, vlist) {
     for (const rm of idef.rooms) {
       L(rm.x + rm.w / 2, rm.y + rm.h / 2, Math.max(rm.w, rm.h) * 0.65, 0.85);
     }
-    L(900, 900, 260, 0.95);
-    L(900, 290, 240, 0.9);
+    L(idef.spawnX || idef.w / 2, idef.spawnY || idef.h * 0.8, 280, 0.95);
+    L(idef.w / 2, idef.h / 2, 260, 0.9);
   } else {
     for (const plot of shelterPlots) {
       L(plot.x, plot.y, 220, 0.75);
@@ -4628,6 +5392,7 @@ function drawLighting(b, a, u, now, selfX, selfY, inVeh, vlist) {
     else if (type === 'fire') L(x, y, r * 2.2, 0.9);
     else if (type === 'drop') L(x, y, 200, 0.6);
   }
+  lx.globalAlpha = 1;
   ctx.drawImage(lightCv, 0, 0, VW, VH);
   if (!idef && fx.has('bloodmoon')) { ctx.fillStyle = 'rgba(120,0,0,.16)'; ctx.fillRect(0, 0, VW, VH); }
 }
@@ -4906,6 +5671,16 @@ function interactionHint(x, y) {
     }
   }
 
+  // Check Enterable Building Sub-Map Portals (Universities, Hospitals, Malls, Military Bases, etc.)
+  if (M && M.entrances) {
+    for (const ent of entrancesIn(x - 140, y - 140, x + 140, y + 140)) {
+      if (Math.hypot(ent.x - x, ent.y - y) < 110) {
+        const meta = ENT_META[ent.type] || ENT_META.university;
+        return `E — ${meta.verb} ${ent.name} (${meta.label} Interior)`;
+      }
+    }
+  }
+
   // Check near shelter plot lift or terminal
   const np = findNearestPlot(x, y, 260);
   if (np) {
@@ -5031,10 +5806,13 @@ function getObjectiveTarget(selfX, selfY) {
   return null;
 }
 
-function renderMinimapDOM(now) {
-  const mmCv = $('minimap-canvas');
-  if (!mmCv || !latest || !me) return;
-  const mmCtx = mmCv.getContext('2d');
+function renderMinimapDOM(now, inVehRef) {
+  if (!_mmCv) {
+    _mmCv = $('minimap-canvas');
+    _mmCtx = _mmCv ? _mmCv.getContext('2d') : null;
+  }
+  const mmCv = _mmCv, mmCtx = _mmCtx;
+  if (!mmCv || !mmCtx || !latest || !me) return;
   const w = mmCv.width, h = mmCv.height;
   const cx = w / 2, cy = h / 2, r = w / 2;
   const selfX = pred.x, selfY = pred.y;
@@ -5177,6 +5955,19 @@ function renderMinimapDOM(now) {
       }
     }
 
+    // Enterable Building Sub-Map Portals
+    if (M && M.entrances) {
+      const halfR = range * 0.6;
+      for (const ent of entrancesIn(selfX - halfR, selfY - halfR, selfX + halfR, selfY + halfR)) {
+        const [ex, ey] = worldToMm(ent.x, ent.y);
+        if (Math.hypot(ex - cx, ey - cy) < r - 4) {
+          const meta = ENT_META[ent.type] || ENT_META.university;
+          mmCtx.fillStyle = meta.accent;
+          mmCtx.fillRect(ex - 2.5, ey - 2.5, 5, 5);
+        }
+      }
+    }
+
     // Golden Shelter Plots
     for (const plot of shelterPlots) {
       let [px, py] = worldToMm(plot.x, plot.y);
@@ -5226,7 +6017,7 @@ function renderMinimapDOM(now) {
   }
 
   // Center player survivor arrowhead rotated to aim heading
-  const aimA = me.veh ? (vehPred.a || pred.a) : pred.a;
+  const aimA = inVehRef ? inVehRef.a : (me.veh && vehPred.active ? vehPred.a : (pred.a || 0));
   mmCtx.save();
   mmCtx.translate(cx, cy);
   mmCtx.rotate(aimA);
@@ -5245,10 +6036,10 @@ function renderMinimapDOM(now) {
 
   mmCtx.restore();
 
-  // Compass Bearing & Coordinates in DOM
+  // Compass Bearing & Coordinates in DOM (0° = North, 90° = East matching top compass tape)
   const bearingEl = $('mm-bearing');
   if (bearingEl) {
-    let deg = Math.round(((aimA * 180 / Math.PI) % 360 + 360) % 360);
+    let deg = Math.round(((aimA * 180 / Math.PI + 90) % 360 + 360) % 360);
     const cardinals = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
     const card = cardinals[Math.round(deg / 45) % 8];
     bearingEl.textContent = `${String(deg).padStart(3, '0')}° ${card}`;
@@ -5261,7 +6052,9 @@ function renderMinimapDOM(now) {
 
   const rangeEl = $('mm-range-text');
   if (rangeEl) {
-    rangeEl.textContent = idef ? 'BNK' : `${Math.round(minimapRange / 36)}M`;
+    const itype = interiorTypeOf(me && me.zone);
+    const shortTag = { university: 'UNIV', hospital: 'HOSP', mall: 'MALL', military: 'MIL', historic: 'HIST', museum: 'MUS', transit: 'HUB', industrial: 'IND', raid: 'RAID' };
+    rangeEl.textContent = (itype && shortTag[itype]) || (idef ? 'BNK' : `${Math.round(minimapRange / 36)}M`);
   }
 }
 
@@ -5306,10 +6099,10 @@ function updateDomHUD(now, inVeh) {
   const hudEl = $('hud');
   if (!hudEl || hudEl.hidden) return;
 
-  // Throttle Top-Right Minimap Canvas to ~24fps to save CPU/GPU without losing smoothness
-  if (now - lastMmDraw >= 42) {
+  // Throttle Top-Right Minimap Canvas to ~15fps to save CPU/GPU without losing smoothness
+  if (now - lastMmDraw >= 66) {
     lastMmDraw = now;
-    renderMinimapDOM(now);
+    renderMinimapDOM(now, inVeh);
   }
 
   // 1. Top bar resources & sector (cached DOM writes)
@@ -5317,19 +6110,28 @@ function updateDomHUD(now, inVeh) {
   setTextCached('cores', $('hud-cores'), `${me.prestigeTokens || 0}`);
   setTextCached('clock', $('hud-clock'), clockStr());
   const z = me.zone || 'world';
+  const itype = interiorTypeOf(z);
+  const entInfo = getEntranceInfo(z);
   const sectorStr = z.startsWith('bunker_')
     ? `BUNKER #${z.slice(7)}`
     : z.startsWith('raid_')
       ? `RAID #${z.slice(5)}`
-      : `${gridName(pred.x, pred.y)} · ${regionName(pred.x, pred.y)}`;
+      : entInfo
+        ? entInfo.name.toUpperCase()
+        : `${gridName(pred.x, pred.y)} · ${regionName(pred.x, pred.y)}`;
   setTextCached('sector', $('hud-sector'), sectorStr);
 
   // 1b. Campaign Mission & Rotating Contract Box
   const zPill = $('hud-zone-pill');
   if (zPill && hudCache.zone !== z) {
     hudCache.zone = z;
-    zPill.className = 'zone-pill' + (z.startsWith('bunker_') ? ' bunker' : z.startsWith('raid_') ? ' raid' : '');
-    zPill.textContent = z.startsWith('bunker_') ? '🛡️ BUNKER' : z.startsWith('raid_') ? '☢️ RAID' : '🌍 SURFACE';
+    zPill.className = 'zone-pill' + (itype ? ' ' + itype : '');
+    const pillLabels = {
+      bunker: '🛡️ BUNKER', raid: '☢️ RAID', airport: '✈️ AIRPORT', university: '🎓 UNIVERSITY', hospital: '🏥 HOSPITAL',
+      mall: '🛍️ MALL', military: '🪖 MILITARY', historic: '🏛️ HISTORIC', museum: '🖼️ GALLERY',
+      transit: '🏟️ TRANSIT', industrial: '🏭 POWER WORKS'
+    };
+    zPill.textContent = (itype && pillLabels[itype]) || '🌍 SURFACE';
   }
   if (me.mission) {
     setTextCached('mTitle', $('hud-mis-title'), me.mission.title || '');
@@ -5448,9 +6250,11 @@ function updateDomHUD(now, inVeh) {
     }
     if (wpnDeck) {
       let curW = null, curSlot = null;
-      if (inv && inv.hb && inv.hb[me.sel]) {
-        curSlot = inv.hb[me.sel];
-        curW = WBY[curSlot[0]];
+      if (inv && inv.hb) {
+        if (inv.hb[me.sel]) {
+          curSlot = inv.hb[me.sel];
+          curW = WBY[curSlot[0]];
+        }
       } else {
         curW = me.sel === 0 ? WBY[KNIFE] : (me.sel === 1 ? WBY[GLOCK] : null);
       }
@@ -5649,6 +6453,18 @@ function drawBigmap() {
       g.fillText(String(i + 1), ox - 10, y + 800 * s);
     }
   }
+  // Region district labels when zoomed out enough for strategic overview
+  if (s < 0.14 && M && M.rnames) {
+    g.font = 'bold 11px system-ui';
+    g.textAlign = 'center';
+    for (let ry = 0; ry < 5; ry++) for (let rx = 0; rx < 5; rx++) {
+      const [cx2, cy2] = W2((rx + 0.5) * 6400, (ry + 0.5) * 6400);
+      const rname = M.rnames[ry * 5 + rx];
+      if (!rname) continue;
+      g.fillStyle = 'rgba(0,0,0,0.55)'; g.fillText(rname.toUpperCase(), cx2 + 1, cy2 + 1);
+      g.fillStyle = 'rgba(226,232,240,0.68)'; g.fillText(rname.toUpperCase(), cx2, cy2);
+    }
+  }
 
   // Draw 16 Shelter plots on Big Map
   for (const plot of shelterPlots) {
@@ -5670,6 +6486,25 @@ function drawBigmap() {
       if (s > 0.04) {
         g.font = 'bold 11px system-ui'; g.fillStyle = '#fca5a5';
         g.fillText(`☢️ ${rb.name}`, rx, ry - 12);
+      }
+    }
+  }
+
+  // Draw Enterable Sub-Map Locations (Universities, Hospitals, Malls, Military, Historic, Museums, Transit, Industrial)
+  if (M && M.entrances) {
+    for (const ent of M.entrances) {
+      const [ex, ey] = W2(ent.x, ent.y);
+      if (ex < -40 || ey < -40 || ex > VW + 40 || ey > VH + 40) continue;
+      const meta = ENT_META[ent.type] || ENT_META.university;
+      g.fillStyle = meta.accent;
+      g.beginPath(); g.arc(ex, ey, s > 0.08 ? 5 : 3.8, 0, 7); g.fill();
+      g.strokeStyle = '#000'; g.lineWidth = 1.4; g.stroke();
+      if (s > 0.085) {
+        g.font = 'bold 10px system-ui'; g.lineWidth = 2.5; g.strokeStyle = '#000';
+        const lbl = `${meta.icon} ${ent.name}`;
+        g.strokeText(lbl, ex, ey - 9);
+        g.fillStyle = meta.accent;
+        g.fillText(lbl, ex, ey - 9);
       }
     }
   }
@@ -5703,9 +6538,9 @@ function drawBigmap() {
   g.fillStyle = '#ffd166'; g.strokeStyle = '#000'; g.lineWidth = 2;
   g.beginPath(); g.arc(mx, my, 6 + Math.sin(now / 200) * 1.5, 0, 7); g.fill(); g.stroke();
 
-  g.textAlign = 'left'; g.fillStyle = 'rgba(0,0,0,.75)'; g.fillRect(10, VH - 36, 720, 26);
+  g.textAlign = 'left'; g.fillStyle = 'rgba(0,0,0,.8)'; g.fillRect(10, VH - 36, Math.min(VW - 20, 1080), 26);
   g.fillStyle = '#cfd6df'; g.font = '12px system-ui';
-  g.fillText('Wheel zoom · drag pan · click = waypoint · right-click = clear · M / Esc close · 🏰 Shelter Plots · ☢️ Raid Bunkers', 18, VH - 20);
+  g.fillText('Wheel zoom · drag pan · click = waypoint · M / Esc close · 🏰 Shelters · ☢️ Raids · 🎓 Univ · 🏥 Hosp · 🛍️ Mall · 🪖 Mil · 🏛️ Historic · 🖼️ Civic · 🏟️ Hubs · 🏭 Power', 18, VH - 20);
 
   requestAnimationFrame(drawBigmap);
 }
