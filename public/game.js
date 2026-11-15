@@ -36,7 +36,7 @@ let ws = null, D = null, M = null, myId = 0, settings = {}, me = null, inv = nul
 let tiles, region, TS = 80, MW = 0, MH = 0, WP = 0, HP = 0, WBY = {}, KNIFE = null, GLOCK = null;
 const snaps = []; let latest = null; const items = new Map(), structs = new Map(); let effects = [];
 const pred = {x: 0, y: 0, ps: -1, a: 0};
-const vehPred = {id: 0, x: 0, y: 0, a: 0, sp: 0, vx: 0, vy: 0, steerAngle: 0, sa: 0, lastSkidAt: 0, active: false};
+const vehPred = {id: 0, x: 0, y: 0, a: 0, sp: 0, vx: 0, vy: 0, alt: 0, steerAngle: 0, sa: 0, lastSkidAt: 0, active: false};
 let zoom = 1, userZoom = 1, camX = 0, camY = 0, shake = 0, frameN = 0, gameTime = 0.3, lastSend = 0;
 const keys = {}; const mouse = {x: 0, y: 0, l: false, r: false};
 let mode = null, waypoint = null, chatOpen = false, masterVol = +(localStorage.getItem('dw_vol') || 0.6);
@@ -571,6 +571,19 @@ function interiorTypeOf(zone) {
   if (zone.startsWith('mus_')) return 'museum';
   if (zone.startsWith('hub_')) return 'transit';
   if (zone.startsWith('ind_')) return 'industrial';
+  if (zone.startsWith('pol_')) return 'police';
+  if (zone.startsWith('fire_')) return 'fire';
+  if (zone.startsWith('bank_')) return 'bank';
+  if (zone.startsWith('stad_')) return 'stadium';
+  if (zone.startsWith('aqua_')) return 'aquarium';
+  if (zone.startsWith('sci_')) return 'science';
+  if (zone.startsWith('baz_')) return 'bazaar';
+  if (zone.startsWith('pyr_')) return 'pyramid';
+  if (zone.startsWith('mosq_')) return 'mosque';
+  if (zone.startsWith('cap_')) return 'capitol';
+  if (zone.startsWith('pal_')) return 'palace';
+  if (zone.startsWith('grn_')) return 'greenhouse';
+  if (zone.startsWith('mill_')) return 'mill';
   return 'bunker';
 }
 
@@ -615,6 +628,7 @@ function blockedAt(x, y, r, kind = 'walk') {
         if (!s) {
           if (kind === 'car') s = tp.vsolid;
           else if (kind === 'boat') s = !tp.water;
+          else if (kind === 'amphib') s = tp.vsolid && !tp.water;
         }
         if (s && circRect(x, y, r, tx * TS, ty * TS, TS, TS)) return true;
       }
@@ -657,7 +671,7 @@ function moveVehiclePred(e, dx, dy, r, kind) {
   if (dist < 0.01) return {hit: false, nx: 0, ny: 0};
   if (blockedAt(e.x, e.y, r, kind)) {
     let rescued = false;
-    for (const rad of [6, 14, 24, 38]) {
+    for (const rad of [6, 14, 24, 38, 56, 78]) {
       for (let k = 0; k < 8 && !rescued; k++) {
         const ang = k * Math.PI * 0.25, px = e.x + Math.cos(ang) * rad, py = e.y + Math.sin(ang) * rad;
         if (!blockedAt(px, py, r, kind)) { e.x = px; e.y = py; rescued = true; }
@@ -2343,24 +2357,45 @@ function updateLocal(dt, now) {
           vehPred.sp = sv[8];
           vehPred.vx = sv[10] !== undefined ? sv[10] : Math.cos(vehPred.a) * vehPred.sp;
           vehPred.vy = sv[11] !== undefined ? sv[11] : Math.sin(vehPred.a) * vehPred.sp;
+          vehPred.alt = (sv[7] & 8) ? 1 : 0;
           vehPred.steerAngle = 0;
           vehPred.sa = 0;
           vehPred.lastSkidAt = 0;
           vehPred.active = true;
         }
 
-        // ── 0ms Drive Lag: Server-matched Forward/Lateral Tire Physics ──
+        // ── 0ms Drive/Flight Lag: Server-matched Forward/Lateral & Aviation Physics ──
         const disabled = !!(me.vb || (me.vf !== undefined && me.vf <= 0) || (sv[7] & 2));
         const thr = disabled ? 0 : -my, steer = mx, boost = sprint && !disabled, braking = brake;
-        const heli = d.kind === 'heli';
+        const isAir = !!d.air;
+        const liftMode = d.liftMode || (d.kind === 'heli' ? 'vtol' : null);
+        const prevFwd = Math.abs(vehPred.sp || 0);
+        if (isAir) {
+          if (liftMode === 'vtol') {
+            vehPred.alt = !disabled ? Math.min(1, vehPred.alt + dt * 0.85) : Math.max(0, vehPred.alt - dt * 0.45);
+          } else {
+            const takeoff = d.takeoffSpd || 280, stall = d.stallSpd || 200;
+            if (!disabled && prevFwd >= takeoff) vehPred.alt = Math.min(1, vehPred.alt + dt * 0.9);
+            else if (disabled || prevFwd < stall) vehPred.alt = Math.max(0, vehPred.alt - dt * 0.45);
+          }
+          if ((sv[7] & 8) && vehPred.alt < 0.52) vehPred.alt = lerp(vehPred.alt, 1, Math.min(1, dt * 4));
+          else if (!(sv[7] & 8) && vehPred.alt > 0.65 && prevFwd < (d.stallSpd || 180)) vehPred.alt = lerp(vehPred.alt, 0, Math.min(1, dt * 4));
+        } else {
+          vehPred.alt = 0;
+        }
+
         const tile = tileAt(vehPred.x, vehPred.y);
         const P = D.TILES[tile] || {};
         let tm;
-        if (heli) tm = (sv[7] & 8) ? 1 : 0.25;
-        else if (d.kind === 'boat') tm = P.water ? 1 : 0.05;
+        const isRoad = tile === 5 || tile === 20 || tile === 16 || tile === 6;
+        if (isAir) {
+          if (vehPred.alt > 0.5) tm = 1;
+          else if (d.floatWater && P.water) tm = 0.95;
+          else if (isRoad) tm = 1.15;
+          else tm = liftMode === 'vtol' ? 0.3 : 0.65;
+        } else if (d.kind === 'boat') tm = P.water ? 1 : 0.05;
         else if (d.kind === 'hover') tm = P.water ? 1 : Math.max(0.55, P.veh || 1);
         else {
-          const isRoad = tile === 5 || tile === 20 || tile === 16 || tile === 6;
           tm = isRoad ? 1.35 : (d.terrain && d.terrain[tile] !== undefined ? d.terrain[tile] : (P.veh || 1));
         }
         const maxS = d.speed * tm * (boost ? 1.32 : 1);
@@ -2374,35 +2409,39 @@ function updateLocal(dt, now) {
           fwd += d.accel * thr * dt * (fwd < -10 ? 4.2 : launchBoost);
         } else if (thr < 0) {
           if (fwd > 20) fwd -= Math.min(fwd, d.accel * 4.8 * dt);
-          else fwd += d.accel * thr * dt * 1.65;
+          else fwd += d.accel * thr * dt * (isAir && vehPred.alt > 0.5 ? 0.4 : 1.65);
         } else {
-          const rollingDrag = (P.drag || 1.0) * (heli ? 0.95 : 1.55);
+          const rollingDrag = (P.drag || 1.0) * (isAir ? (vehPred.alt > 0.5 && liftMode !== 'vtol' ? 0.35 : 0.9) : 1.55);
           fwd -= fwd * Math.min(1, rollingDrag * dt);
         }
 
-        if (braking && d.kind === 'car') fwd *= Math.exp(-2.8 * dt);
+        if (braking && !isAir) fwd *= Math.exp(-2.8 * dt);
+        if (braking && isAir && vehPred.alt <= 0.5) fwd *= Math.exp(-3.4 * dt);
         if (fwd > maxS) fwd -= (fwd - maxS) * Math.min(1, 5.2 * dt);
-        if (fwd < -maxS * 0.58) fwd = -maxS * 0.58;
+        if (fwd < -maxS * (isAir ? 0.25 : 0.58)) fwd = -maxS * (isAir ? 0.25 : 0.58);
 
         vehPred.sa += (steer - vehPred.sa) * Math.min(1, 18 * dt);
         const absFwd = Math.abs(fwd);
-        const steerCurve = heli ? 1 : clamp(0.42 + (absFwd / 120) * 0.72 - Math.max(0, (absFwd - 480) / 1400) * 0.28, 0.35, 1.12);
+        const vtol = liftMode === 'vtol';
+        const steerCurve = isAir
+          ? (vtol ? 1 : (vehPred.alt > 0.5 ? 0.85 : clamp(0.45 + absFwd / 260, 0.35, 1.0)))
+          : clamp(0.42 + (absFwd / 120) * 0.72 - Math.max(0, (absFwd - 480) / 1400) * 0.28, 0.35, 1.12);
         const driftTurn = braking && d.kind === 'car' && absFwd > 140 ? 1.24 : 1;
-        if (absFwd > 5 || heli) {
-          vehPred.a += vehPred.sa * d.turn * steerCurve * driftTurn * dt * (fwd < -5 && !heli ? -1 : 1);
+        if (absFwd > 5 || (isAir && vtol)) {
+          vehPred.a += vehPred.sa * d.turn * steerCurve * driftTurn * dt * (fwd < -5 && !vtol ? -1 : 1);
         }
         vehPred.steerAngle = lerp(vehPred.steerAngle, vehPred.sa * 0.48, Math.min(1, dt * 18));
 
         const nCos = Math.cos(vehPred.a), nSin = Math.sin(vehPred.a);
-        const latGrip = (d.kind === 'car' ? (P.grip || 1) : 1) * (d.grip || 1) * (braking ? 2.1 : 10.5);
+        const latGrip = (d.kind === 'car' ? (P.grip || 1) : (isAir ? 1.4 : 1)) * (d.grip || 1) * (braking && !isAir ? 2.1 : 10.5);
         lat *= Math.exp(-latGrip * dt);
 
         vehPred.vx = nCos * fwd - nSin * lat;
         vehPred.vy = nSin * fwd + nCos * lat;
         vehPred.sp = fwd;
 
-        const ck = heli ? ((sv[7] & 8) ? 'fly' : 'car') : d.kind;
-        const colR = Math.max(14, Math.round(d.r * 0.78));
+        const ck = isAir ? (vehPred.alt > 0.5 ? 'fly' : (d.floatWater ? 'amphib' : 'car')) : d.kind;
+        const colR = Math.max(14, Math.round(d.r * 0.72));
         const spdNow = Math.hypot(vehPred.vx, vehPred.vy);
         if (spdNow > 0.5) {
           const res = moveVehiclePred(vehPred, vehPred.vx * dt, vehPred.vy * dt, colR, ck);
@@ -2424,22 +2463,23 @@ function updateLocal(dt, now) {
           vehPred.sp = vehPred.vx * Math.cos(vehPred.a) + vehPred.vy * Math.sin(vehPred.a);
         }
 
-        // Latency-compensated reconciliation with server (deadband + forward extrapolation)
+        // Latency-compensated reconciliation with server (speed-adaptive deadband + forward extrapolation)
         const sX = sv[2], sY = sv[3], sA = sv[4] / 100, sSp = sv[8];
         const sVx = sv[10] !== undefined ? sv[10] : Math.cos(sA) * sSp;
         const sVy = sv[11] !== undefined ? sv[11] : Math.sin(sA) * sSp;
         const lag = clamp((now - latest.t) / 1000 + ping / 2000, 0, 0.14);
         const targetX = sX + sVx * lag, targetY = sY + sVy * lag;
         const distErr = Math.hypot(vehPred.x - targetX, vehPred.y - targetY);
-        if (distErr > 280) {
+        const deadband = Math.max(20, spdNow * 0.045);
+        if (distErr > Math.max(280, spdNow * 0.45)) {
           vehPred.x = sX; vehPred.y = sY; vehPred.a = sA; vehPred.sp = sSp;
           vehPred.vx = sVx; vehPred.vy = sVy;
-        } else if (distErr > 16) {
-          const blend = Math.min(1, dt * (distErr > 65 ? 7 : 3.8));
+        } else if (distErr > deadband) {
+          const blend = Math.min(1, dt * (distErr > 75 ? 6.5 : 3.5));
           vehPred.x = lerp(vehPred.x, targetX, blend);
           vehPred.y = lerp(vehPred.y, targetY, blend);
           vehPred.a = angLerp(vehPred.a, sA, Math.min(1, dt * 6));
-          if (distErr > 32) {
+          if (distErr > deadband * 1.8) {
             vehPred.vx = lerp(vehPred.vx, sVx, Math.min(1, dt * 4));
             vehPred.vy = lerp(vehPred.vy, sVy, Math.min(1, dt * 4));
           }
@@ -2447,7 +2487,7 @@ function updateLocal(dt, now) {
 
         pred.x = vehPred.x; pred.y = vehPred.y;
 
-        if (d.kind === 'car' && (Math.abs(lat) > 75 || (Math.abs(vehPred.sp) > 155 && (braking || Math.abs(steer) > 0.25))) && now - vehPred.lastSkidAt > 55) {
+        if ((d.kind === 'car' || (isAir && vehPred.alt <= 0.5 && !P.water)) && (Math.abs(lat) > 75 || (Math.abs(vehPred.sp) > 155 && (braking || Math.abs(steer) > 0.25))) && now - vehPred.lastSkidAt > 55) {
           vehPred.lastSkidAt = now;
           addDecal(vehPred.x - nCos * 18, vehPred.y - nSin * 18, 'skid', 15, vehPred.a);
           const dustCol = (tile === 9 || tile === 10) ? 'rgba(241,245,249,0.55)' : (tile === 2 || tile === 18) ? 'rgba(226,207,143,0.48)' : 'rgba(165,165,165,0.45)';
@@ -2482,6 +2522,7 @@ function myVehicle(now) {
       x: vehPred.x,
       y: vehPred.y,
       a: vehPred.a,
+      alt: vehPred.alt,
       steerAngle: vehPred.steerAngle,
       v,
       vx: vehPred.vx,
@@ -2498,6 +2539,7 @@ function myVehicle(now) {
     x: v[2] + vx * age,
     y: v[3] + vy * age,
     a,
+    alt: (v[7] & 8) ? 1 : 0,
     steerAngle: 0,
     v, vx, vy,
     speed: Math.hypot(vx, vy),
@@ -2914,7 +2956,11 @@ function render(now, dt) {
     if (!inView(x, y, 120)) continue;
     vlist.push([v, x, y, an]);
   }
-  for (const [v, x, y, an] of vlist) if (!(v[7] & 8)) drawVehicle(v, x, y, an, now, selfX, selfY, (v[0] === me.veh ? inVeh : null), isNightNow);
+  for (const [v, x, y, an] of vlist) {
+    const iv = v[0] === me.veh ? inVeh : null;
+    const isFly = iv ? iv.alt > 0.5 : !!(v[7] & 8);
+    if (!isFly) drawVehicle(v, x, y, an, now, selfX, selfY, iv, isNightNow);
+  }
 
   // Zombies
   for (const [id, z] of b.Z) {
@@ -2945,8 +2991,12 @@ function render(now, dt) {
     drawProj(r[1], x, y, an, z, now);
   }
 
-  // Flying helicopters
-  for (const [v, x, y, an] of vlist) if (v[7] & 8) drawVehicle(v, x, y, an, now, selfX, selfY, (v[0] === me.veh ? inVeh : null), isNightNow);
+  // Flying aircraft (helicopters, planes, seaplanes)
+  for (const [v, x, y, an] of vlist) {
+    const iv = v[0] === me.veh ? inVeh : null;
+    const isFly = iv ? iv.alt > 0.5 : !!(v[7] & 8);
+    if (isFly) drawVehicle(v, x, y, an, now, selfX, selfY, iv, isNightNow);
+  }
 
   // Particles
   for (let i = particles.length - 1; i >= 0; i--) {
@@ -3042,9 +3092,16 @@ function archGroup(s) {
     case 'shop': case 'mall': case 'hall': case 'gasstation': case 'club': case 'stall': return 'commercial';
     case 'science': case 'museum': case 'archive': case 'aquarium': case 'glass': return 'science_museum';
     case 'terminal': case 'hangar': return 'transit';
-    case 'church': case 'temple': case 'mosque': case 'dome': case 'palace': case 'pagoda': case 'pyramid':
-    case 'capitol': case 'court': case 'gov': case 'civic': case 'embassy': case 'intl': case 'campus': return 'civic_sacred';
-    case 'keep': case 'fortwall': case 'tower': case 'checkpoint': case 'barn': return 'fort_rural';
+    case 'church': return 'church';
+    case 'temple': case 'pyramid': case 'pagoda': return 'ancient_sacred';
+    case 'mosque': case 'dome': return 'mosque';
+    case 'palace': return 'palace';
+    case 'capitol': case 'gov': case 'civic': case 'embassy': case 'intl': return 'government';
+    case 'court': return 'courtroom';
+    case 'campus': return 'campus';
+    case 'post': return 'post';
+    case 'keep': case 'fortwall': case 'tower': case 'checkpoint': case 'barn':
+    case 'windmill': case 'watermill': case 'silo': case 'dam': return 'fort_rural';
     default: return 'office';
   }
 }
@@ -3078,85 +3135,145 @@ function drawStyledBuildingInterior(r, s, st, now) {
   const doorX0 = cx - doorW / 2, doorX1 = doorX0 + doorW;
 
   ctx.save();
-  // 1. Style-matched interior floor base & batched pattern strokes
-  if (grp === 'residential' || grp === 'office') {
-    ctx.fillStyle = grp === 'residential' ? '#3a281d' : '#1e2430';
+  // 1. Style-matched interior floor base & rich surface materials
+  if (grp === 'residential' || grp === 'office' || grp === 'post' || grp === 'campus' || grp === 'courtroom') {
+    const floorBg = grp === 'residential' ? (s === 'manor' ? '#4a2b18' : '#422c1f')
+      : grp === 'campus' ? '#362619'
+      : grp === 'courtroom' ? '#3a281c'
+      : grp === 'post' ? '#242b38'
+      : '#1e2533';
+    ctx.fillStyle = floorBg;
     ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
-    ctx.strokeStyle = grp === 'residential' ? 'rgba(20,10,4,0.38)' : 'rgba(255,255,255,0.045)';
+    ctx.strokeStyle = (grp === 'residential' || grp === 'campus' || grp === 'courtroom') ? 'rgba(20,10,4,0.42)' : 'rgba(255,255,255,0.05)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let fy = y + 14; fy < y + h - 8; fy += 12) { ctx.moveTo(x + 6, fy); ctx.lineTo(x + w - 6, fy); }
+    for (let fy = y + 14; fy < y + h - 8; fy += 10) { ctx.moveTo(x + 6, fy); ctx.lineTo(x + w - 6, fy); }
     ctx.stroke();
     if (grp === 'residential' && w > 110 && h > 100) {
-      ctx.fillStyle = 'rgba(153, 27, 27, 0.45)';
-      ctx.fillRect(x + w * 0.16, y + h * 0.48, w * 0.36, h * 0.28);
-      ctx.strokeStyle = 'rgba(251, 191, 36, 0.35)'; ctx.lineWidth = 1.5;
-      ctx.strokeRect(x + w * 0.16 + 3, y + h * 0.48 + 3, w * 0.36 - 6, h * 0.28 - 6);
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(x + w - 66, y + th, 66 - th, 44);
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      for (let ty = y + th; ty < y + th + 40; ty += 12) for (let tx2 = x + w - 64; tx2 < x + w - th - 6; tx2 += 12) {
+        if (((tx2 + ty) % 24) < 12) ctx.fillRect(tx2, ty, 6, 6);
+      }
+      ctx.fillStyle = s === 'manor' ? 'rgba(127,29,29,0.72)' : 'rgba(153, 27, 27, 0.55)';
+      ctx.fillRect(x + w * 0.14, y + h * 0.45, w * 0.38, h * 0.30);
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.5)'; ctx.lineWidth = 1.5;
+      ctx.strokeRect(x + w * 0.14 + 3, y + h * 0.45 + 3, w * 0.38 - 6, h * 0.30 - 6);
     }
     if (grp === 'office' && w > 110) {
-      ctx.fillStyle = '#166534'; ctx.beginPath(); ctx.arc(x + 24, y + h - 26, 6, 0, 7); ctx.fill();
-      ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(x + 24, y + h - 26, 3.5, 0, 7); ctx.fill();
+      ctx.fillStyle = 'rgba(15,23,42,0.45)';
+      ctx.fillRect(x + th + 4, y + th + 4, w - th * 2 - 8, h - th * 2 - 8);
+      ctx.fillStyle = '#78350f'; ctx.beginPath(); ctx.arc(x + 24, y + h - 26, 7.5, 0, 7); ctx.fill();
+      ctx.fillStyle = '#15803d'; ctx.beginPath(); ctx.arc(x + 24, y + h - 26, 6.5, 0, 7); ctx.fill();
+      ctx.fillStyle = '#4ade80'; ctx.beginPath(); ctx.arc(x + 23, y + h - 27, 3, 0, 7); ctx.fill();
+    }
+    if (grp === 'courtroom') {
+      ctx.fillStyle = '#7f1d1d'; ctx.fillRect(cx - Math.min(20, w * 0.12), y + 48, Math.min(40, w * 0.24), h - 62);
     }
   } else if (grp === 'hospital' || grp === 'science_museum') {
-    ctx.fillStyle = s === 'aquarium' ? '#0c2336' : grp === 'hospital' ? '#dce6ec' : '#1b2635';
+    const smBg = s === 'aquarium' ? '#0b2236'
+      : s === 'glass' ? '#133126'
+      : s === 'archive' ? '#32251b'
+      : s === 'museum' ? '#ded5c5'
+      : grp === 'hospital' ? '#dce8ee'
+      : '#1b2635';
+    ctx.fillStyle = smBg;
     ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
-    ctx.strokeStyle = grp === 'hospital' ? 'rgba(15,118,110,0.14)' : 'rgba(56,189,248,0.08)';
+    ctx.strokeStyle = grp === 'hospital' ? 'rgba(15,118,110,0.16)'
+      : s === 'glass' ? 'rgba(74,222,128,0.14)'
+      : s === 'museum' ? 'rgba(15,23,42,0.1)'
+      : s === 'archive' ? 'rgba(217,119,6,0.12)'
+      : 'rgba(56,189,248,0.1)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let fx = x + 20; fx < x + w - 10; fx += 18) { ctx.moveTo(fx, y + 6); ctx.lineTo(fx, y + h - 6); }
+    for (let fy = y + 20; fy < y + h - 10; fy += 18) { ctx.moveTo(x + 6, fy); ctx.lineTo(x + w - 6, fy); }
+    ctx.stroke();
+    if (grp === 'hospital') {
+      ctx.fillStyle = 'rgba(239,68,68,0.24)'; ctx.fillRect(cx - 5, y + 16, 10, h - 30);
+      ctx.fillStyle = 'rgba(13,148,136,0.12)'; ctx.fillRect(x + th, cy - 4, w - th * 2, 8);
+    }
+  } else if (grp === 'bank' || grp === 'church' || grp === 'ancient_sacred' || grp === 'mosque' || grp === 'palace' || grp === 'government') {
+    const stoneBg = grp === 'ancient_sacred' ? (s === 'pagoda' ? '#3d1c17' : '#5c4b2b')
+      : grp === 'church' ? '#2c2926'
+      : grp === 'mosque' ? '#e5dec9'
+      : '#d6ccb6';
+    ctx.fillStyle = stoneBg;
+    ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
+    ctx.fillStyle = (grp === 'ancient_sacred' || grp === 'church') ? 'rgba(0,0,0,0.15)' : 'rgba(15,23,42,0.09)';
+    for (let fy = y + 12; fy < y + h - 16; fy += 20) {
+      for (let fx = x + 12; fx < x + w - 16; fx += 20) {
+        if (((fx + fy) % 40) < 20) ctx.fillRect(fx, fy, 10, 10);
+      }
+    }
+    if (grp === 'mosque') {
+      ctx.fillStyle = '#065f46';
+      ctx.fillRect(x + th + 6, y + th + 8, w - th * 2 - 12, h - th * 2 - 16);
+      ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 1.6;
+      ctx.strokeRect(x + th + 9, y + th + 11, w - th * 2 - 18, h - th * 2 - 22);
+    } else if (grp === 'government') {
+      ctx.fillStyle = '#1e3a8a';
+      ctx.beginPath(); ctx.arc(cx, cy, Math.min(28, Math.min(w, h) * 0.24), 0, 7); ctx.fill();
+      ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2; ctx.stroke();
+    } else if (grp !== 'ancient_sacred') {
+      ctx.fillStyle = grp === 'bank' ? '#7f1d1d' : grp === 'palace' ? '#991b1b' : '#7f1d1d';
+      ctx.fillRect(cx - Math.min(22, w * 0.14), y + 22, Math.min(44, w * 0.28), h - 36);
+      ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 1.2;
+      ctx.strokeRect(cx - Math.min(22, w * 0.14) + 2, y + 24, Math.min(44, w * 0.28) - 4, h - 40);
+    }
+  } else if (grp === 'fire') {
+    ctx.fillStyle = '#242930'; ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
+    ctx.fillStyle = 'rgba(220,38,38,0.22)'; ctx.fillRect(x + 18, y + 18, w - 36, h - 36);
+    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+    ctx.strokeRect(x + 22, y + 22, w - 44, h - 44); ctx.setLineDash([]);
+  } else if (grp === 'police') {
+    ctx.fillStyle = '#182232'; ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
+    ctx.strokeStyle = 'rgba(59,130,246,0.18)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let fx = x + 20; fx < x + w - 10; fx += 20) { ctx.moveTo(fx, y + 6); ctx.lineTo(fx, y + h - 6); }
+    for (let fy = y + 20; fy < y + h - 10; fy += 20) { ctx.moveTo(x + 6, fy); ctx.lineTo(x + w - 6, fy); }
+    ctx.stroke();
+  } else if (grp === 'transit') {
+    ctx.fillStyle = s === 'hangar' ? '#232830' : '#172333';
+    ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
+    if (s === 'hangar') {
+      ctx.strokeStyle = 'rgba(250,204,21,0.48)'; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+      ctx.strokeRect(x + 20, y + 20, w - 40, h - 40); ctx.setLineDash([]);
+    } else {
+      ctx.fillStyle = 'rgba(56,189,248,0.09)';
+      for (let fy = y + 16; fy < y + h - 16; fy += 22) ctx.fillRect(x + 12, fy, w - 24, 9);
+      ctx.strokeStyle = 'rgba(251,191,36,0.4)'; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+      ctx.beginPath(); ctx.moveTo(cx, y + 18); ctx.lineTo(cx, y + h - 18); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  } else {
+    ctx.fillStyle = (s === 'barn' || s === 'watermill' || s === 'windmill') ? '#3b281a'
+      : s === 'club' ? '#160d24'
+      : s === 'stall' ? '#342419'
+      : s === 'gasstation' ? '#202631'
+      : '#1b2029';
+    ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
+    ctx.strokeStyle = s === 'club' ? 'rgba(236,72,153,0.09)' : s === 'gasstation' ? 'rgba(250,204,21,0.1)' : 'rgba(255,255,255,0.05)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let fx = x + 20; fx < x + w - 10; fx += 20) { ctx.moveTo(fx, y + 6); ctx.lineTo(fx, y + h - 6); }
     for (let fy = y + 20; fy < y + h - 10; fy += 20) { ctx.moveTo(x + 6, fy); ctx.lineTo(x + w - 6, fy); }
     ctx.stroke();
-    if (grp === 'hospital') {
-      ctx.fillStyle = 'rgba(239,68,68,0.22)'; ctx.fillRect(cx - 5, y + 18, 10, h - 32);
-    }
-  } else if (grp === 'bank' || grp === 'civic_sacred') {
-    ctx.fillStyle = s === 'pyramid' ? '#5c4b2b' : s === 'church' ? '#2c2926' : '#cfc5b0';
-    ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
-    ctx.fillStyle = s === 'pyramid' ? 'rgba(0,0,0,0.14)' : 'rgba(15,23,42,0.08)';
-    for (let fy = y + 12; fy < y + h - 16; fy += 24) {
-      for (let fx = x + 12; fx < x + w - 16; fx += 24) {
-        if (((fx + fy) % 48) < 24) ctx.fillRect(fx, fy, 12, 12);
-      }
-    }
-    ctx.fillStyle = s === 'mosque' ? '#065f46' : s === 'bank' ? '#7f1d1d' : '#991b1b';
-    ctx.fillRect(cx - Math.min(22, w * 0.14), y + 24, Math.min(44, w * 0.28), h - 38);
-    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 1;
-    ctx.strokeRect(cx - Math.min(22, w * 0.14) + 2, y + 26, Math.min(44, w * 0.28) - 4, h - 42);
-  } else if (grp === 'fire') {
-    ctx.fillStyle = '#252930'; ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
-    ctx.fillStyle = 'rgba(220,38,38,0.25)'; ctx.fillRect(x + 18, y + 18, w - 36, h - 36);
-    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
-    ctx.strokeRect(x + 22, y + 22, w - 44, h - 44); ctx.setLineDash([]);
-  } else if (grp === 'police') {
-    ctx.fillStyle = '#192231'; ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
-    ctx.strokeStyle = 'rgba(59,130,246,0.16)'; ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let fx = x + 20; fx < x + w - 10; fx += 24) { ctx.moveTo(fx, y + 6); ctx.lineTo(fx, y + h - 6); }
-    for (let fy = y + 20; fy < y + h - 10; fy += 24) { ctx.moveTo(x + 6, fy); ctx.lineTo(x + w - 6, fy); }
-    ctx.stroke();
-  } else {
-    ctx.fillStyle = s === 'barn' ? '#3b281a' : '#1b2029';
-    ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
-    ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let fx = x + 20; fx < x + w - 10; fx += 24) { ctx.moveTo(fx, y + 6); ctx.lineTo(fx, y + h - 6); }
-    for (let fy = y + 20; fy < y + h - 10; fy += 24) { ctx.moveTo(x + 6, fy); ctx.lineTo(x + w - 6, fy); }
-    ctx.stroke();
   }
 
   // 2. Interior architectural half-partitions, cast wall shadows & doorway arches
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
   ctx.fillRect(x + th, y + th, w - th * 2, 7);
   ctx.fillRect(x + th, y + th + 7, 7, h - th * 2 - 7);
   const midX = x + Math.floor(w * 0.5), midY = y + Math.floor(h * 0.48);
   if (w > 135 && h > 120) {
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
     const nStub = Math.max(18, Math.floor(h * 0.24));
     ctx.fillRect(midX - 3, y + th, 6, nStub);
     ctx.fillRect(x + th, midY - 3, Math.floor(w * 0.26), 6);
     ctx.fillRect(x + w - th - Math.floor(w * 0.26), midY - 3, Math.floor(w * 0.26), 6);
-    // Archway jambs
-    ctx.fillStyle = '#64748b';
+    ctx.fillStyle = '#94a3b8';
     ctx.fillRect(midX - 5, y + th + nStub - 3, 10, 4);
     ctx.fillRect(x + th + Math.floor(w * 0.26) - 2, midY - 5, 4, 10);
     ctx.fillRect(x + w - th - Math.floor(w * 0.26) - 2, midY - 5, 4, 10);
@@ -3165,162 +3282,452 @@ function drawStyledBuildingInterior(r, s, st, now) {
   // 3. Bespoke Furnishing & Props per Building Archetype
   switch (grp) {
     case 'residential': {
-      // Bedroom (NW): bed + nightstand + lamp
-      drawInteriorBed(x + 18, y + 18, 30, 20, '#3b82f6', '#f8fafc', false);
-      ctx.fillStyle = '#78350f'; ctx.fillRect(x + 51, y + 18, 10, 10);
-      ctx.fillStyle = '#fde047'; ctx.beginPath(); ctx.arc(x + 56, y + 23, 2.5, 0, 7); ctx.fill();
-      // Kitchen (NE): counter + sink + stove + fridge
+      // Bedroom (NW): bed + nightstand + glowing bedside lamp + wardrobe
+      drawInteriorBed(x + 18, y + 18, 32, 21, '#3b82f6', '#f8fafc', false);
+      ctx.fillStyle = '#78350f'; ctx.fillRect(x + 53, y + 18, 10, 10);
+      ctx.fillStyle = '#fde047'; ctx.beginPath(); ctx.arc(x + 58, y + 23, 2.8, 0, 7); ctx.fill();
+      ctx.fillStyle = '#451a03'; ctx.fillRect(x + 18, y + 43, 22, 7);
+      // Kitchen (NE): marble counter, 4-burner stove, twin steel sink, fridge
       if (w > 105) {
-        ctx.fillStyle = '#475569'; ctx.fillRect(x + w - 62, y + 16, 44, 14);
-        ctx.fillStyle = '#0f172a'; ctx.fillRect(x + w - 58, y + 19, 10, 8);
-        ctx.fillStyle = '#94a3b8'; ctx.fillRect(x + w - 42, y + 19, 12, 8);
-        ctx.fillStyle = '#e2e8f0'; ctx.fillRect(x + w - 27, y + 16, 11, 14);
+        ctx.fillStyle = '#64748b'; ctx.fillRect(x + w - 64, y + 16, 46, 15);
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(x + w - 61, y + 18, 13, 11);
+        ctx.fillStyle = '#f97316';
+        ctx.fillRect(x + w - 59, y + 20, 3, 3); ctx.fillRect(x + w - 53, y + 20, 3, 3);
+        ctx.fillStyle = '#cbd5e1'; ctx.fillRect(x + w - 45, y + 19, 13, 9);
+        ctx.fillStyle = '#475569'; ctx.fillRect(x + w - 41, y + 21, 5, 5);
+        ctx.fillStyle = '#e2e8f0'; ctx.fillRect(x + w - 29, y + 16, 12, 15);
       }
-      // Living Area (SW): cushioned sofa + coffee table
+      // Living Area (SW): plush sofa + throw pillows + coffee table + TV console
       if (h > 105) {
-        ctx.fillStyle = '#7c2d12'; ctx.fillRect(x + 18, y + h - 56, 38, 14);
-        ctx.fillStyle = '#9a3412'; ctx.fillRect(x + 21, y + h - 52, 14, 8); ctx.fillRect(x + 38, y + h - 52, 14, 8);
-        ctx.fillStyle = '#451a03'; ctx.fillRect(x + 24, y + h - 38, 24, 10);
+        ctx.fillStyle = '#7c2d12'; ctx.fillRect(x + 18, y + h - 58, 42, 14);
+        ctx.fillStyle = '#ea580c'; ctx.fillRect(x + 21, y + h - 54, 15, 8); ctx.fillRect(x + 41, y + h - 54, 15, 8);
+        ctx.fillStyle = '#451a03'; ctx.fillRect(x + 24, y + h - 40, 26, 9);
+        ctx.fillStyle = '#f8fafc'; ctx.fillRect(x + 33, y + h - 38, 8, 5);
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(x + 22, y + h - 26, 30, 5);
+        ctx.fillStyle = '#38bdf8'; ctx.fillRect(x + 24, y + h - 25, 26, 2);
       }
-      // Dining Table & Chairs (SE)
+      // Dining Table, Plates & Chairs (SE)
       if (w > 120 && h > 110) {
-        ctx.fillStyle = '#78350f'; ctx.fillRect(x + w - 58, y + h - 56, 30, 18);
-        ctx.strokeStyle = '#92400e'; ctx.lineWidth = 1; ctx.strokeRect(x + w - 58, y + h - 56, 30, 18);
+        ctx.fillStyle = '#78350f'; ctx.fillRect(x + w - 60, y + h - 56, 32, 20);
+        ctx.strokeStyle = '#92400e'; ctx.lineWidth = 1; ctx.strokeRect(x + w - 60, y + h - 56, 32, 20);
+        ctx.fillStyle = '#f8fafc';
+        ctx.beginPath(); ctx.arc(x + w - 50, y + h - 46, 3, 0, 7); ctx.arc(x + w - 38, y + h - 46, 3, 0, 7); ctx.fill();
         ctx.fillStyle = '#a16207';
-        ctx.fillRect(x + w - 52, y + h - 61, 7, 4); ctx.fillRect(x + w - 40, y + h - 61, 7, 4);
-        ctx.fillRect(x + w - 52, y + h - 37, 7, 4); ctx.fillRect(x + w - 40, y + h - 37, 7, 4);
+        ctx.fillRect(x + w - 54, y + h - 61, 7, 4); ctx.fillRect(x + w - 41, y + h - 61, 7, 4);
+        ctx.fillRect(x + w - 54, y + h - 35, 7, 4); ctx.fillRect(x + w - 41, y + h - 35, 7, 4);
+      }
+      if (isLarge) {
+        ctx.fillStyle = 'rgba(180, 83, 9, 0.38)';
+        ctx.fillRect(cx - 34, cy - 22, 68, 44);
+        ctx.strokeStyle = 'rgba(251, 191, 36, 0.5)'; ctx.lineWidth = 1.5;
+        ctx.strokeRect(cx - 30, cy - 18, 60, 36);
+        ctx.fillStyle = '#451a03'; ctx.fillRect(cx - 18, cy - 9, 36, 18);
+        ctx.fillStyle = '#fde68a'; ctx.fillRect(cx - 6, cy - 4, 12, 8);
+        // Corner Potted Fern
+        ctx.fillStyle = '#15803d'; ctx.beginPath(); ctx.arc(x + 24, cy, 6, 0, 7); ctx.fill();
+        ctx.fillStyle = '#4ade80'; ctx.beginPath(); ctx.arc(x + 24, cy, 3, 0, 7); ctx.fill();
       }
       break;
     }
     case 'hospital': {
-      // Patient ICU beds + privacy curtain dividers + IV poles
       drawInteriorBed(x + 18, y + 18, 34, 18, '#bae6fd', '#ffffff', true);
       ctx.fillStyle = '#94a3b8'; ctx.beginPath(); ctx.arc(x + 56, y + 22, 3, 0, 7); ctx.fill();
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(x + 53, y + 28, 12, 9);
+      ctx.fillStyle = '#22c55e'; ctx.fillRect(x + 55, y + 31, 8, 2);
       if (w > 130) {
-        drawInteriorBed(x + w - 52, y + 18, 34, 18, '#bae6fd', '#ffffff', true);
-        ctx.strokeStyle = 'rgba(14,165,233,0.45)'; ctx.setLineDash([4, 3]);
-        ctx.beginPath(); ctx.moveTo(x + w - 60, y + 16); ctx.lineTo(x + w - 60, y + 46); ctx.stroke();
+        drawInteriorBed(x + w - 54, y + 18, 34, 18, '#bae6fd', '#ffffff', true);
+        ctx.strokeStyle = 'rgba(14,165,233,0.5)'; ctx.setLineDash([4, 3]);
+        ctx.beginPath(); ctx.moveTo(x + w - 62, y + 16); ctx.lineTo(x + w - 62, y + 48); ctx.stroke();
         ctx.setLineDash([]);
       }
       if (h > 120) drawInteriorBed(x + 18, y + h - 56, 34, 18, '#d1fae5', '#ffffff', true);
-      // Triage Reception & Med Cabinet
-      drawInteriorPropDesk(x + w - 62, y + h - 46, 42, 14, '#10b981');
-      ctx.fillStyle = '#f8fafc'; ctx.fillRect(x + 18, y + 44, 18, 8);
-      ctx.fillStyle = '#ef4444'; ctx.fillRect(x + 25, y + 45, 4, 6);
+      drawInteriorPropDesk(x + w - 64, y + h - 48, 44, 14, '#10b981');
+      ctx.fillStyle = '#f8fafc'; ctx.fillRect(x + 18, y + 44, 22, 9);
+      ctx.fillStyle = '#ef4444'; ctx.fillRect(x + 27, y + 45, 4, 7);
       ctx.fillStyle = '#10b981';
       ctx.fillRect(cx - 4, y + 20, 8, 20); ctx.fillRect(cx - 10, y + 26, 20, 8);
+      if (isLarge) {
+        ctx.fillStyle = '#f1f5f9'; ctx.fillRect(cx - 30, cy - 18, 60, 36);
+        ctx.strokeStyle = '#0ea5e9'; ctx.lineWidth = 1.5; ctx.strokeRect(cx - 30, cy - 18, 60, 36);
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(cx - 22, cy - 12, 16, 8); ctx.fillRect(cx + 6, cy - 12, 16, 8);
+        ctx.fillStyle = '#22c55e'; ctx.fillRect(cx - 20, cy - 10, 12, 4); ctx.fillRect(cx + 8, cy - 10, 12, 4);
+        if (w > 220) {
+          drawInteriorBed(cx - 76, cy - 12, 34, 18, '#bae6fd', '#ffffff', true);
+          drawInteriorBed(cx + 42, cy - 12, 34, 18, '#bae6fd', '#ffffff', true);
+        }
+      }
       break;
     }
     case 'police': {
-      // Dispatch Console (NW)
-      drawInteriorPropDesk(x + 18, y + 18, 44, 14, '#38bdf8');
-      // Holding Cell with Iron Bars & Bunk (NE)
+      drawInteriorPropDesk(x + 18, y + 18, 46, 14, '#38bdf8');
       if (w > 120) {
-        ctx.fillStyle = '#0f172a'; ctx.fillRect(x + w - 62, y + 16, 44, 34);
-        ctx.fillStyle = '#475569'; ctx.fillRect(x + w - 58, y + 20, 22, 10);
-        ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2; ctx.strokeRect(x + w - 62, y + 16, 44, 34);
-        for (let bx = x + w - 54; bx < x + w - 20; bx += 8) {
-          ctx.beginPath(); ctx.moveTo(bx, y + 16); ctx.lineTo(bx, y + 50); ctx.stroke();
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(x + w - 64, y + 16, 46, 36);
+        ctx.fillStyle = '#475569'; ctx.fillRect(x + w - 60, y + 20, 22, 10);
+        ctx.fillStyle = '#e2e8f0'; ctx.beginPath(); ctx.arc(x + w - 26, y + 26, 3.5, 0, 7); ctx.fill();
+        ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2; ctx.strokeRect(x + w - 64, y + 16, 46, 36);
+        for (let bx = x + w - 56; bx < x + w - 20; bx += 8) {
+          ctx.beginPath(); ctx.moveTo(bx, y + 16); ctx.lineTo(bx, y + 52); ctx.stroke();
         }
       }
-      // Evidence Table & Armory Locker (SW / SE)
       if (h > 110) {
-        ctx.fillStyle = '#475569'; ctx.fillRect(x + 20, y + h - 48, 32, 14);
-        ctx.fillStyle = '#fde047'; ctx.fillRect(x + 24, y + h - 45, 8, 6);
+        ctx.fillStyle = '#475569'; ctx.fillRect(x + 20, y + h - 48, 34, 15);
+        ctx.fillStyle = '#fde047'; ctx.fillRect(x + 24, y + h - 45, 9, 6);
+        ctx.fillStyle = '#38bdf8'; ctx.fillRect(x + 37, y + h - 45, 11, 6);
       }
-      ctx.fillStyle = '#334155'; ctx.fillRect(x + w - 54, y + h - 48, 36, 16);
-      ctx.strokeStyle = '#60a5fa'; ctx.lineWidth = 1; ctx.strokeRect(x + w - 54, y + h - 48, 36, 16);
+      ctx.fillStyle = '#334155'; ctx.fillRect(x + w - 56, y + h - 48, 38, 16);
+      ctx.strokeStyle = '#60a5fa'; ctx.lineWidth = 1; ctx.strokeRect(x + w - 56, y + h - 48, 38, 16);
+      ctx.fillStyle = '#94a3b8';
+      for (let rx = x + w - 51; rx < x + w - 22; rx += 7) ctx.fillRect(rx, y + h - 45, 3, 10);
+      if (isLarge) {
+        drawInteriorPropDesk(cx - 28, cy - 12, 56, 24, '#38bdf8');
+        ctx.fillStyle = '#1e3a8a';
+        ctx.beginPath(); ctx.arc(cx - 34, cy, 4.5, 0, 7); ctx.arc(cx + 34, cy, 4.5, 0, 7); ctx.fill();
+      }
       break;
     }
     case 'fire': {
-      // Turnout gear lockers + Hose racks + Brass pole + Workbench
-      ctx.fillStyle = '#991b1b'; ctx.fillRect(x + 18, y + 18, 48, 12);
+      ctx.fillStyle = '#991b1b'; ctx.fillRect(x + 18, y + 18, 50, 12);
       ctx.fillStyle = '#fbbf24'; ctx.fillRect(x + 22, y + 21, 8, 6); ctx.fillRect(x + 36, y + 21, 8, 6); ctx.fillRect(x + 50, y + 21, 8, 6);
-      ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(x + w - 34, y + 32, 7, 0, 7); ctx.fill();
+      // Fireman brass pole with yellow safety collar
+      ctx.fillStyle = '#fbbf24'; ctx.beginPath(); ctx.arc(x + w - 34, y + 32, 7.5, 0, 7); ctx.fill();
       ctx.strokeStyle = '#78350f'; ctx.lineWidth = 2; ctx.stroke();
-      ctx.fillStyle = '#334155'; ctx.fillRect(x + 18, y + h - 48, 34, 12);
-      ctx.fillStyle = '#ef4444'; ctx.fillRect(x + 22, y + h - 45, 10, 6);
+      // Coiled hose drum + workbench
+      ctx.fillStyle = '#334155'; ctx.fillRect(x + 18, y + h - 48, 36, 12);
+      ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(x + w - 34, y + h - 40, 8, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#fca5a5'; ctx.lineWidth = 1.5; ctx.stroke();
+      if (isLarge) {
+        ctx.fillStyle = '#b91c1c'; ctx.fillRect(cx - 30, cy - 16, 60, 32);
+        ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 1.5; ctx.strokeRect(cx - 30, cy - 16, 60, 32);
+        ctx.fillStyle = '#e2e8f0'; ctx.fillRect(cx - 22, cy - 10, 16, 20);
+        ctx.fillStyle = '#38bdf8'; ctx.fillRect(cx + 4, cy - 8, 18, 14);
+      }
       break;
     }
     case 'bank': {
-      // Circular Steel Vault Door + Gold Bullion Pallets + Teller Counters
-      ctx.fillStyle = '#334155'; ctx.beginPath(); ctx.arc(cx, y + 32, 18, 0, 7); ctx.fill();
+      // Steel spoked circular vault door
+      ctx.fillStyle = '#334155'; ctx.beginPath(); ctx.arc(cx, y + 32, 19, 0, 7); ctx.fill();
       ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2.5; ctx.stroke();
-      ctx.fillStyle = '#fbbf24'; ctx.fillRect(x + 22, y + 20, 18, 10); ctx.fillRect(x + w - 40, y + 20, 18, 10);
-      ctx.fillStyle = '#f59e0b'; ctx.fillRect(x + 24, y + 22, 6, 6); ctx.fillRect(x + w - 38, y + 22, 6, 6);
+      ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(cx - 10, y + 32); ctx.lineTo(cx + 10, y + 32); ctx.moveTo(cx, y + 22); ctx.lineTo(cx, y + 42); ctx.stroke();
+      // Gold bullion bars
+      ctx.fillStyle = '#f59e0b'; ctx.fillRect(x + 20, y + 20, 22, 12); ctx.fillRect(x + w - 42, y + 20, 22, 12);
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(x + 22, y + 22, 8, 8); ctx.fillRect(x + 32, y + 22, 8, 8);
+      ctx.fillRect(x + w - 40, y + 22, 8, 8); ctx.fillRect(x + w - 30, y + 22, 8, 8);
       drawInteriorPropDesk(x + 20, y + h - 52, Math.min(54, w * 0.25), 12, '#fbbf24');
       drawInteriorPropDesk(x + w - 74, y + h - 52, Math.min(54, w * 0.25), 12, '#fbbf24');
-      // Bulletproof teller glass barrier line
-      ctx.fillStyle = 'rgba(125,211,252,0.55)';
-      ctx.fillRect(x + 20, y + h - 55, Math.min(54, w * 0.25), 2);
-      ctx.fillRect(x + w - 74, y + h - 55, Math.min(54, w * 0.25), 2);
+      ctx.fillStyle = 'rgba(125,211,252,0.6)';
+      ctx.fillRect(x + 20, y + h - 55, Math.min(54, w * 0.25), 2.5);
+      ctx.fillRect(x + w - 74, y + h - 55, Math.min(54, w * 0.25), 2.5);
+      if (isLarge) {
+        for (const px of [cx - 48, cx + 48]) {
+          ctx.fillStyle = '#e2e8f0'; ctx.beginPath(); ctx.arc(px, cy, 8, 0, 7); ctx.fill();
+          ctx.strokeStyle = '#b45309'; ctx.lineWidth = 1.5; ctx.stroke();
+        }
+        ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(cx - 32, cy + 20); ctx.lineTo(cx + 32, cy + 20); ctx.stroke();
+      }
       break;
     }
     case 'commercial': {
       if (s === 'club') {
-        ctx.fillStyle = '#451a03'; ctx.fillRect(x + 20, y + 20, 56, 14);
-        ctx.fillStyle = '#a855f7'; ctx.beginPath(); ctx.arc(x + w - 36, y + 36, 16, 0, 7); ctx.fill();
-        ctx.fillStyle = '#38bdf8'; ctx.fillRect(x + 28, y + 23, 12, 8);
-        ctx.fillStyle = '#15803d'; ctx.fillRect(x + 24, y + h - 56, 36, 20);
-      } else {
-        for (let sx = x + 20; sx < x + w - 32; sx += 36) {
-          ctx.fillStyle = '#334155'; ctx.fillRect(sx, y + 22, 22, 34);
-          ctx.fillStyle = '#f59e0b'; ctx.fillRect(sx + 3, y + 26, 7, 8);
-          ctx.fillStyle = '#38bdf8'; ctx.fillRect(sx + 12, y + 26, 7, 8);
-          ctx.fillStyle = '#ef4444'; ctx.fillRect(sx + 3, y + 40, 16, 8);
+        // Bottle-lined Bar + Stools + Pool Table + DJ Deck + Disco Dance Floor
+        ctx.fillStyle = '#451a03'; ctx.fillRect(x + 20, y + 20, 62, 14);
+        ctx.fillStyle = '#38bdf8'; ctx.fillRect(x + 26, y + 23, 14, 7);
+        ctx.fillStyle = '#f472b6'; ctx.fillRect(x + 44, y + 23, 12, 7);
+        ctx.fillStyle = '#a16207';
+        for (let sx2 = x + 26; sx2 < x + 76; sx2 += 14) { ctx.beginPath(); ctx.arc(sx2, y + 39, 3.5, 0, 7); ctx.fill(); }
+        ctx.fillStyle = '#7e22ce'; ctx.beginPath(); ctx.arc(x + w - 36, y + 36, 17, 0, 7); ctx.fill();
+        ctx.fillStyle = '#0f172a'; ctx.beginPath(); ctx.arc(x + w - 41, y + 36, 4.5, 0, 7); ctx.arc(x + w - 31, y + 36, 4.5, 0, 7); ctx.fill();
+        // Green felt pool table
+        ctx.fillStyle = '#15803d'; ctx.fillRect(x + 22, y + h - 56, 40, 22);
+        ctx.strokeStyle = '#78350f'; ctx.lineWidth = 2.5; ctx.strokeRect(x + 22, y + h - 56, 40, 22);
+        ctx.fillStyle = '#f8fafc'; ctx.beginPath(); ctx.arc(x + 34, y + h - 45, 2, 0, 7); ctx.fill();
+        ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(x + 48, y + h - 45, 2, 0, 7); ctx.fill();
+        if (isLarge) {
+          ctx.fillStyle = `rgba(168,85,247,${0.25 + 0.16 * Math.sin(now / 180)})`;
+          ctx.fillRect(cx - 38, cy - 26, 76, 52);
+          ctx.strokeStyle = '#ec4899'; ctx.lineWidth = 2; ctx.strokeRect(cx - 38, cy - 26, 76, 52);
+          ctx.fillStyle = `rgba(56,189,248,${0.25 + 0.16 * Math.cos(now / 160)})`;
+          ctx.fillRect(cx - 24, cy - 16, 20, 16); ctx.fillRect(cx + 4, cy, 20, 16);
         }
-        drawInteriorPropDesk(x + 18, y + h - 44, 38, 12, '#4ade80');
-        if (w > 130) drawInteriorPropDesk(x + w - 58, y + h - 44, 38, 12, '#4ade80');
+      } else if (s === 'gasstation') {
+        // Fuel-Mart Counter, Glowing Beverage Coolers, Motor Oil & Snack Displays
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(x + 18, y + 18, w - 36, 18);
+        ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 1.5; ctx.strokeRect(x + 18, y + 18, w - 36, 18);
+        for (let cx2 = x + 24; cx2 < x + w - 28; cx2 += 20) {
+          ctx.fillStyle = cx2 % 40 === 0 ? '#38bdf8' : '#4ade80'; ctx.fillRect(cx2, y + 21, 14, 12);
+        }
+        drawInteriorPropDesk(x + 18, y + h - 46, Math.min(54, w * 0.35), 14, '#fbbf24');
+        ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(x + w - 28, y + h - 38, 6.5, 0, 7); ctx.fill();
+        ctx.fillStyle = '#f59e0b'; ctx.beginPath(); ctx.arc(x + w - 43, y + h - 38, 6.5, 0, 7); ctx.fill();
+        if (isLarge) {
+          ctx.fillStyle = '#334155'; ctx.fillRect(cx - 28, cy - 12, 56, 24);
+          ctx.fillStyle = '#facc15'; ctx.fillRect(cx - 22, cy - 7, 18, 14);
+          ctx.fillStyle = '#ef4444'; ctx.fillRect(cx + 4, cy - 7, 18, 14);
+        }
+      } else if (s === 'stall') {
+        // Colorful Bazaar Spice Bowls, Woven Rugs & Lantern Stalls
+        const spCols = ['#dc2626', '#f59e0b', '#22c55e', '#c084fc'];
+        for (let i = 0, sx = x + 20; sx < x + w - 28; sx += 26, i++) {
+          ctx.fillStyle = '#78350f'; ctx.fillRect(sx, y + 20, 20, 32);
+          ctx.fillStyle = spCols[i % spCols.length];
+          ctx.beginPath(); ctx.arc(sx + 10, y + 30, 5.5, 0, 7); ctx.fill();
+          ctx.fillStyle = spCols[(i + 2) % spCols.length];
+          ctx.beginPath(); ctx.arc(sx + 10, y + 43, 5.5, 0, 7); ctx.fill();
+        }
+        ctx.fillStyle = '#991b1b'; ctx.fillRect(cx - 22, cy - 12, 44, 24);
+        ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 1.4; ctx.strokeRect(cx - 22, cy - 12, 44, 24);
+      } else if (s === 'hall') {
+        // Exhibition & Convention Hall Stage, Podium & Seating Rows
+        ctx.fillStyle = '#78350f'; ctx.fillRect(cx - Math.min(48, w * 0.28), y + 18, Math.min(96, w * 0.56), 20);
+        ctx.fillStyle = '#fbbf24'; ctx.fillRect(cx - 7, y + 23, 14, 10);
+        for (let py = y + 56; py < y + h - 42; py += 18) {
+          ctx.fillStyle = '#1e3a8a';
+          ctx.fillRect(x + 22, py, Math.max(20, w * 0.25), 7);
+          ctx.fillRect(x + w - 22 - Math.max(20, w * 0.25), py, Math.max(20, w * 0.25), 7);
+        }
+      } else {
+        // Supermarket/Shop color-coded shelving + Checkout Conveyor Belts
+        for (let sx = x + 20; sx < x + w - 32; sx += 34) {
+          ctx.fillStyle = '#334155'; ctx.fillRect(sx, y + 20, 22, 36);
+          ctx.fillStyle = '#f59e0b'; ctx.fillRect(sx + 3, y + 24, 7, 9);
+          ctx.fillStyle = '#38bdf8'; ctx.fillRect(sx + 12, y + 24, 7, 9);
+          ctx.fillStyle = '#ef4444'; ctx.fillRect(sx + 3, y + 36, 7, 9);
+          ctx.fillStyle = '#4ade80'; ctx.fillRect(sx + 12, y + 36, 7, 9);
+        }
+        drawInteriorPropDesk(x + 18, y + h - 44, 42, 13, '#4ade80');
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(x + 22, y + h - 41, 18, 6);
+        if (w > 130) {
+          drawInteriorPropDesk(x + w - 60, y + h - 44, 42, 13, '#4ade80');
+          ctx.fillStyle = '#0f172a'; ctx.fillRect(x + w - 56, y + h - 41, 18, 6);
+        }
+        if (isLarge) {
+          for (let rx = cx - 48; rx <= cx + 28; rx += 38) {
+            ctx.fillStyle = '#334155'; ctx.fillRect(rx, cy - 18, 22, 40);
+            ctx.fillStyle = '#fbbf24'; ctx.fillRect(rx + 3, cy - 14, 16, 10);
+            ctx.fillStyle = '#38bdf8'; ctx.fillRect(rx + 3, cy + 4, 16, 10);
+          }
+        }
       }
       break;
     }
     case 'science_museum': {
       if (s === 'aquarium') {
-        ctx.fillStyle = '#0284c7'; ctx.fillRect(x + 20, y + 20, w - 40, 32);
-        ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2; ctx.strokeRect(x + 20, y + 20, w - 40, 32);
-        for (let f = 0; f < 4; f++) {
-          const fx = x + 30 + ((now * 0.04 + f * 40) % Math.max(20, w - 65));
+        ctx.fillStyle = '#0284c7'; ctx.fillRect(x + 20, y + 20, w - 40, 34);
+        ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2; ctx.strokeRect(x + 20, y + 20, w - 40, 34);
+        ctx.fillStyle = '#f43f5e'; ctx.beginPath(); ctx.arc(x + 34, y + 48, 5, 0, 7); ctx.fill();
+        ctx.fillStyle = '#10b981'; ctx.fillRect(x + w - 42, y + 32, 4, 20); ctx.fillRect(x + w - 34, y + 36, 4, 16);
+        for (let f = 0; f < 5; f++) {
+          const fx = x + 30 + ((now * 0.04 + f * 35) % Math.max(20, w - 65));
           ctx.fillStyle = f % 2 === 0 ? '#fde047' : '#f472b6';
-          ctx.beginPath(); ctx.ellipse(fx, y + 30 + (f % 2) * 10, 5, 2.5, 0, 0, 7); ctx.fill();
+          ctx.beginPath(); ctx.ellipse(fx, y + 28 + (f % 3) * 8, 5, 2.5, 0, 0, 7); ctx.fill();
         }
+        if (isLarge) {
+          ctx.fillStyle = '#0369a1'; ctx.beginPath(); ctx.arc(cx, cy, 24, 0, 7); ctx.fill();
+          ctx.strokeStyle = '#7dd3fc'; ctx.lineWidth = 2; ctx.stroke();
+        }
+      } else if (s === 'glass') {
+        // Botanical Conservatory: Raised Orchid & Fern Planter Beds + Koi Pond
+        for (const [bx, by] of [[x + 20, y + 20], [x + w - 60, y + 20], [x + 20, y + h - 54]]) {
+          ctx.fillStyle = '#78350f'; ctx.fillRect(bx, by, 40, 22);
+          ctx.fillStyle = '#15803d'; ctx.beginPath(); ctx.arc(bx + 12, by + 11, 7, 0, 7); ctx.arc(bx + 28, by + 11, 7, 0, 7); ctx.fill();
+          ctx.fillStyle = '#f472b6'; ctx.beginPath(); ctx.arc(bx + 12, by + 11, 2.5, 0, 7); ctx.fill();
+          ctx.fillStyle = '#fde047'; ctx.beginPath(); ctx.arc(bx + 28, by + 11, 2.5, 0, 7); ctx.fill();
+        }
+        ctx.fillStyle = '#0284c7'; ctx.beginPath(); ctx.ellipse(cx, cy, 24, 15, 0, 0, 7); ctx.fill();
+        ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = '#fb923c'; ctx.beginPath(); ctx.arc(cx - 6, cy, 3, 0, 7); ctx.fill();
+      } else if (s === 'archive') {
+        // National Archive: Mahogany Bookstacks + Green Bankers Lamp Reading Tables
+        const bCols = ['#dc2626', '#2563eb', '#16a34a', '#d97706'];
+        for (let sx = x + 22, bi = 0; sx < x + w - 34; sx += 30, bi++) {
+          ctx.fillStyle = '#5c2d0c'; ctx.fillRect(sx, y + 20, 14, 38);
+          ctx.fillStyle = bCols[bi % bCols.length]; ctx.fillRect(sx + 2, y + 23, 10, 14);
+          ctx.fillStyle = bCols[(bi + 1) % bCols.length]; ctx.fillRect(sx + 2, y + 40, 10, 14);
+        }
+        drawInteriorPropDesk(cx - 24, cy - 8, 48, 16, '#22c55e');
+      } else if (s === 'museum') {
+        // Fine Art Gallery: Gilded Paintings + Fossil/Sculpture Plinth
+        ctx.fillStyle = '#854d0e'; ctx.fillRect(x + 22, y + 20, 26, 10); ctx.fillRect(x + w - 48, y + 20, 26, 10);
+        ctx.fillStyle = '#38bdf8'; ctx.fillRect(x + 25, y + 22, 20, 6);
+        ctx.fillStyle = '#f472b6'; ctx.fillRect(x + w - 45, y + 22, 20, 6);
+        ctx.fillStyle = '#e7e5e4'; ctx.fillRect(cx - 22, cy - 14, 44, 28);
+        ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 1.5; ctx.strokeRect(cx - 26, cy - 18, 52, 36);
+        ctx.fillStyle = '#78716c'; ctx.fillRect(cx - 12, cy - 4, 24, 8);
       } else {
-        ctx.fillStyle = '#0f172a'; ctx.fillRect(x + 22, y + 22, 26, 26);
-        ctx.strokeStyle = s === 'science' ? '#22d3ee' : '#fbbf24'; ctx.lineWidth = 1.5; ctx.strokeRect(x + 22, y + 22, 26, 26);
-        ctx.fillStyle = s === 'science' ? '#22d3ee' : '#fbbf24';
-        ctx.beginPath(); ctx.arc(x + 35, y + 35, 7, 0, 7); ctx.fill();
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(x + 22, y + 22, 28, 28);
+        ctx.strokeStyle = '#22d3ee'; ctx.lineWidth = 1.5; ctx.strokeRect(x + 22, y + 22, 28, 28);
+        ctx.fillStyle = '#22d3ee'; ctx.beginPath(); ctx.arc(x + 36, y + 36, 7.5, 0, 7); ctx.fill();
         if (w > 120) {
-          ctx.fillStyle = '#0f172a'; ctx.fillRect(x + w - 48, y + 22, 26, 26);
-          ctx.strokeStyle = s === 'science' ? '#4ade80' : '#f472b6'; ctx.strokeRect(x + w - 48, y + 22, 26, 26);
-          ctx.fillStyle = s === 'science' ? '#4ade80' : '#f472b6';
-          ctx.beginPath(); ctx.arc(x + w - 35, y + 35, 7, 0, 7); ctx.fill();
+          ctx.fillStyle = '#0f172a'; ctx.fillRect(x + w - 50, y + 22, 28, 28);
+          ctx.strokeStyle = '#4ade80'; ctx.strokeRect(x + w - 50, y + 22, 28, 28);
+          ctx.fillStyle = '#4ade80'; ctx.beginPath(); ctx.arc(x + w - 36, y + 36, 7.5, 0, 7); ctx.fill();
+        }
+        if (isLarge) {
+          ctx.fillStyle = '#0f172a'; ctx.beginPath(); ctx.arc(cx, cy, 22, 0, 7); ctx.fill();
+          ctx.strokeStyle = '#22d3ee'; ctx.lineWidth = 2; ctx.stroke();
+          ctx.fillStyle = '#38bdf8'; ctx.beginPath(); ctx.arc(cx, cy, 9 + Math.sin(now / 300) * 2.5, 0, 7); ctx.fill();
         }
       }
       break;
     }
-    case 'civic_sacred': {
+    case 'transit': {
+      if (s === 'hangar') {
+        // Aircraft Hangar: Tool chests, fuel drums & parked plane silhouette
+        ctx.fillStyle = '#dc2626'; ctx.fillRect(x + 20, y + 20, 28, 12);
+        ctx.fillStyle = '#f59e0b'; ctx.beginPath(); ctx.arc(x + w - 30, y + 28, 7, 0, 7); ctx.arc(x + w - 48, y + 28, 7, 0, 7); ctx.fill();
+        ctx.fillStyle = '#475569';
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - 22); ctx.lineTo(cx + 34, cy + 8); ctx.lineTo(cx + 34, cy + 16);
+        ctx.lineTo(cx + 6, cy + 8); ctx.lineTo(cx + 6, cy + 22); ctx.lineTo(cx - 6, cy + 22);
+        ctx.lineTo(cx - 6, cy + 8); ctx.lineTo(cx - 34, cy + 16); ctx.lineTo(cx - 34, cy + 8);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#38bdf8'; ctx.beginPath(); ctx.arc(cx, cy - 10, 4, 0, 7); ctx.fill();
+      } else {
+        drawInteriorPropDesk(x + 20, y + 20, Math.min(64, w * 0.3), 14, '#38bdf8');
+        if (w > 140) {
+          ctx.strokeStyle = '#475569'; ctx.lineWidth = 8; ctx.strokeRect(x + w - 76, y + 24, 52, 24);
+          ctx.fillStyle = '#fbbf24'; ctx.fillRect(x + w - 72, y + 22, 10, 6);
+          ctx.fillStyle = '#0284c7'; ctx.fillRect(x + w - 42, y + 42, 10, 6);
+        }
+        for (let gy = y + 66; gy < y + h - 46; gy += 22) {
+          ctx.fillStyle = '#1e3a8a';
+          ctx.fillRect(x + 22, gy, Math.min(48, w * 0.24), 9);
+          ctx.fillRect(x + w - 22 - Math.min(48, w * 0.24), gy, Math.min(48, w * 0.24), 9);
+        }
+        if (isLarge) {
+          ctx.fillStyle = '#020617'; ctx.fillRect(cx - 34, y + 18, 68, 15);
+          ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 1.5; ctx.strokeRect(cx - 34, y + 18, 68, 15);
+          ctx.fillStyle = '#22c55e'; ctx.fillRect(cx - 28, y + 23, 18, 4);
+          ctx.fillStyle = '#fbbf24'; ctx.fillRect(cx - 4, y + 23, 28, 4);
+        }
+      }
+      break;
+    }
+    case 'church': {
       ctx.fillStyle = '#78350f';
-      for (let py = y + 54; py < y + h - 42; py += 20) {
+      for (let py = y + 54; py < y + h - 42; py += 19) {
         ctx.fillRect(x + 20, py, Math.max(18, w * 0.24), 7);
         ctx.fillRect(x + w - 20 - Math.max(18, w * 0.24), py, Math.max(18, w * 0.24), 7);
       }
       ctx.fillStyle = '#f59e0b'; ctx.fillRect(cx - 18, y + 18, 36, 14);
       ctx.strokeStyle = '#fef08a'; ctx.lineWidth = 1.5; ctx.strokeRect(cx - 18, y + 18, 36, 14);
+      ctx.fillStyle = '#fde047';
+      ctx.beginPath(); ctx.arc(cx - 12, y + 25, 2.5, 0, 7); ctx.arc(cx + 12, y + 25, 2.5, 0, 7); ctx.fill();
+      if (isLarge) {
+        for (const [px, py] of [[cx - 42, cy - 20], [cx + 42, cy - 20], [cx - 42, cy + 28], [cx + 42, cy + 28]]) {
+          ctx.fillStyle = '#e7e5e4'; ctx.beginPath(); ctx.arc(px, py, 6.5, 0, 7); ctx.fill();
+          ctx.strokeStyle = '#b45309'; ctx.lineWidth = 1; ctx.stroke();
+        }
+      }
+      break;
+    }
+    case 'ancient_sacred': {
+      // Sandstone Pillars, Glowing Braziers & Golden Sarcophagus / Relic Altar
+      ctx.fillStyle = '#f59e0b'; ctx.fillRect(cx - 20, cy - 10, 40, 20);
+      ctx.strokeStyle = '#fef08a'; ctx.lineWidth = 1.6; ctx.strokeRect(cx - 20, cy - 10, 40, 20);
+      for (const [bx, by] of [[x + 26, y + 26], [x + w - 26, y + 26], [x + 26, y + h - 40], [x + w - 26, y + h - 40]]) {
+        ctx.fillStyle = '#78350f'; ctx.beginPath(); ctx.arc(bx, by, 7, 0, 7); ctx.fill();
+        ctx.fillStyle = '#fb923c'; ctx.beginPath(); ctx.arc(bx, by, 4 + Math.sin(now / 120 + bx), 0, 7); ctx.fill();
+      }
+      break;
+    }
+    case 'mosque': {
+      // Mihrab Niche (North), Geometric Carpet Border & Ablution Fountain
+      ctx.fillStyle = '#fbbf24'; ctx.fillRect(cx - 16, y + 18, 32, 10);
+      ctx.fillStyle = '#0284c7'; ctx.beginPath(); ctx.arc(cx, cy, 16, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 2; ctx.stroke();
+      for (const [px, py] of [[x + 28, y + 28], [x + w - 28, y + 28], [x + 28, y + h - 42], [x + w - 28, y + h - 42]]) {
+        ctx.fillStyle = '#f8fafc'; ctx.beginPath(); ctx.arc(px, py, 6, 0, 7); ctx.fill();
+      }
+      break;
+    }
+    case 'palace': {
+      // Sovereign Throne Dais, Banquet Table & Gilded Columns
+      ctx.fillStyle = '#f59e0b'; ctx.fillRect(cx - 22, y + 18, 44, 16);
+      ctx.fillStyle = '#991b1b'; ctx.fillRect(cx - 10, y + 20, 20, 12);
+      ctx.fillStyle = '#5c2d0c'; ctx.fillRect(cx - 28, cy - 10, 56, 20);
+      ctx.fillStyle = '#fde68a';
+      ctx.beginPath(); ctx.arc(cx - 14, cy, 3, 0, 7); ctx.arc(cx, cy, 3, 0, 7); ctx.arc(cx + 14, cy, 3, 0, 7); ctx.fill();
+      break;
+    }
+    case 'government': {
+      // Legislative Rostrum + Curved Assembly Desks + Flags
+      ctx.fillStyle = '#5c2d0c'; ctx.fillRect(cx - 26, y + 18, 52, 14);
+      ctx.fillStyle = '#dc2626'; ctx.beginPath(); ctx.arc(x + 24, y + 24, 5, 0, 7); ctx.fill();
+      ctx.fillStyle = '#2563eb'; ctx.beginPath(); ctx.arc(x + w - 24, y + 24, 5, 0, 7); ctx.fill();
+      for (let gy = y + 54; gy < y + h - 40; gy += 22) {
+        ctx.fillStyle = '#78350f';
+        ctx.fillRect(x + 20, gy, Math.max(18, w * 0.25), 9);
+        ctx.fillRect(x + w - 20 - Math.max(18, w * 0.25), gy, Math.max(18, w * 0.25), 9);
+      }
+      break;
+    }
+    case 'courtroom': {
+      // Elevated Judge Bench + Witness Stand + Jury & Counsel Tables
+      ctx.fillStyle = '#5c2d0c'; ctx.fillRect(cx - 32, y + 18, 64, 16);
+      ctx.fillStyle = '#fbbf24'; ctx.fillRect(cx - 6, y + 24, 12, 5);
+      ctx.fillStyle = '#451a03'; ctx.fillRect(x + 20, y + 48, 30, 14);
+      ctx.fillRect(x + w - 50, y + 48, 30, 14);
+      ctx.fillStyle = '#78350f';
+      ctx.fillRect(x + 18, y + 22, 14, 22);
+      break;
+    }
+    case 'campus': {
+      // Green Chalkboard, Professor Podium & Student Desks
+      ctx.fillStyle = '#064e3b'; ctx.fillRect(cx - Math.min(40, w * 0.28), y + 16, Math.min(80, w * 0.56), 9);
+      ctx.strokeStyle = '#a16207'; ctx.lineWidth = 1.5; ctx.strokeRect(cx - Math.min(40, w * 0.28), y + 16, Math.min(80, w * 0.56), 9);
+      ctx.fillStyle = '#78350f'; ctx.fillRect(cx - 12, y + 29, 24, 10);
+      for (let sy = y + 52; sy < y + h - 40; sy += 22) {
+        for (let sx = x + 22; sx < x + w - 38; sx += 30) {
+          ctx.fillStyle = '#5c2d0c'; ctx.fillRect(sx, sy, 20, 11);
+          ctx.fillStyle = '#f8fafc'; ctx.fillRect(sx + 5, sy + 3, 8, 5);
+        }
+      }
+      break;
+    }
+    case 'post': {
+      // P.O. Box Wall, Parcel Conveyor Belt & Sorting Bins
+      ctx.fillStyle = '#94a3b8'; ctx.fillRect(x + 20, y + 18, w - 40, 12);
+      ctx.fillStyle = '#fbbf24';
+      for (let px = x + 24; px < x + w - 26; px += 10) ctx.fillRect(px, y + 21, 6, 6);
+      drawInteriorPropDesk(x + 20, y + h - 46, Math.min(54, w * 0.34), 13, '#fbbf24');
+      ctx.fillStyle = '#2563eb'; ctx.fillRect(x + w - 46, y + 46, 26, 20);
+      ctx.fillStyle = '#d97706'; ctx.fillRect(cx - 18, cy - 8, 36, 16);
       break;
     }
     case 'fort_rural': {
-      ctx.fillStyle = s === 'barn' ? '#ca8a04' : '#365314';
-      ctx.fillRect(x + 18, y + 18, 28, 18); ctx.fillRect(x + w - 46, y + 18, 28, 18);
-      ctx.strokeStyle = s === 'barn' ? '#a16207' : '#84cc16'; ctx.lineWidth = 1.2;
-      ctx.strokeRect(x + 18, y + 18, 28, 18); ctx.strokeRect(x + w - 46, y + 18, 28, 18);
+      ctx.fillStyle = (s === 'barn' || s === 'windmill' || s === 'watermill' || s === 'silo') ? '#ca8a04' : '#365314';
+      ctx.fillRect(x + 18, y + 18, 30, 18); ctx.fillRect(x + w - 48, y + 18, 30, 18);
+      ctx.strokeStyle = (s === 'barn' || s === 'windmill' || s === 'watermill' || s === 'silo') ? '#a16207' : '#84cc16'; ctx.lineWidth = 1.2;
+      ctx.strokeRect(x + 18, y + 18, 30, 18); ctx.strokeRect(x + w - 48, y + 18, 30, 18);
       if (h > 105) {
-        ctx.fillStyle = '#1e293b'; ctx.fillRect(x + 18, y + h - 48, 36, 14);
+        ctx.fillStyle = '#1e293b'; ctx.fillRect(x + 18, y + h - 48, 38, 14);
+        ctx.fillStyle = '#fb923c'; ctx.fillRect(x + 22, y + h - 45, 10, 6);
+      }
+      if (isLarge) {
+        ctx.fillStyle = (s === 'barn' || s === 'windmill' || s === 'watermill' || s === 'silo') ? '#eab308' : '#334155';
+        ctx.fillRect(cx - 24, cy - 14, 48, 28);
+        ctx.strokeStyle = (s === 'barn' || s === 'windmill' || s === 'watermill' || s === 'silo') ? '#854d0e' : '#38bdf8'; ctx.lineWidth = 1.5; ctx.strokeRect(cx - 24, cy - 14, 48, 28);
       }
       break;
     }
     default: {
-      drawInteriorPropDesk(x + 18, y + 18, 36, 12, '#38bdf8');
-      if (w > 120) drawInteriorPropDesk(x + w - 54, y + 18, 36, 12, '#38bdf8');
-      ctx.fillStyle = '#78350f'; ctx.fillRect(x + w - 46, y + h - 46, 26, 20);
+      drawInteriorPropDesk(x + 18, y + 18, 38, 12, '#38bdf8');
+      if (w > 120) drawInteriorPropDesk(x + w - 56, y + 18, 38, 12, '#38bdf8');
+      ctx.fillStyle = '#f8fafc'; ctx.fillRect(x + w - 44, y + h - 46, 22, 16);
+      ctx.fillStyle = '#38bdf8'; ctx.beginPath(); ctx.arc(x + 28, y + 48, 5, 0, 7); ctx.fill();
+      if (isLarge) {
+        ctx.fillStyle = '#334155'; ctx.fillRect(cx - 34, cy - 14, 68, 28);
+        ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1.2; ctx.strokeRect(cx - 34, cy - 14, 68, 28);
+        ctx.fillStyle = '#0f172a';
+        for (let cx2 = cx - 24; cx2 <= cx + 20; cx2 += 20) {
+          ctx.fillRect(cx2, cy - 20, 8, 5); ctx.fillRect(cx2, cy + 15, 8, 5);
+          ctx.fillStyle = '#38bdf8'; ctx.fillRect(cx2 + 1, cy - 9, 6, 4);
+          ctx.fillStyle = '#0f172a';
+        }
+      }
       break;
     }
   }
@@ -3335,7 +3742,7 @@ function drawStyledBuildingInterior(r, s, st, now) {
     ctx.fillRect(x, y + h - th, leftW, th);
     ctx.fillRect(doorX1, y + h - th, leftW, th);
   }
-  ctx.strokeStyle = 'rgba(255,255,255,0.16)'; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1.5;
   ctx.strokeRect(x + th, y + th, w - th * 2, h - th * 2);
   ctx.fillStyle = '#7dd3fc';
   if (w > 96) {
@@ -3670,8 +4077,46 @@ function drawShelterPlots(now, inView, selfX, selfY) {
       }
     }
 
+    // Hardlight Kinetic Shield Dome (exterior aura)
+    if (upg.hardlight_dome) {
+      const shR = S * 0.56 + 18;
+      ctx.fillStyle = `rgba(56, 189, 248, ${0.06 + 0.03 * Math.sin(now / 260)})`;
+      ctx.beginPath(); ctx.arc(plot.x, plot.y, shR, 0, 7); ctx.fill();
+      ctx.strokeStyle = `rgba(125, 211, 252, ${0.5 + 0.25 * Math.sin(now / 220)})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(plot.x, plot.y, shR, 0, 7); ctx.stroke();
+    }
+
+    // Autonomous Proximity Minefield Perimeter Pips
+    if (upg.minefield) {
+      const nMines = Math.min(24, 6 + upg.minefield * 4);
+      for (let m = 0; m < nMines; m++) {
+        const ma = (m / nMines) * Math.PI * 2;
+        const mx2 = plot.x + Math.cos(ma) * (S * 0.54 + 6);
+        const my2 = plot.y + Math.sin(ma) * (S * 0.54 + 6);
+        ctx.fillStyle = ((now + m * 140) % 900 < 220) ? '#ef4444' : '#475569';
+        ctx.beginPath(); ctx.arc(mx2, my2, 3.2, 0, 7); ctx.fill();
+      }
+    }
+
     for (let i = 0; i < 4; i++) {
       const [cx, cy] = corners[i];
+      // Elevated Armored Watchtower Grid deck & spotlight sweep
+      if (upg.watchtower_grid) {
+        ctx.fillStyle = '#0f172a';
+        traceChamferRect(ctx, cx - 34, cy - 34, 68, 68, 10); ctx.fill();
+        ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2; ctx.stroke();
+        if (upg.watchtower_grid >= 2) {
+          const swAng = now / 950 + i * 1.57;
+          ctx.fillStyle = 'rgba(253, 224, 71, 0.1)';
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(cx + Math.cos(swAng - 0.2) * 185, cy + Math.sin(swAng - 0.2) * 185);
+          ctx.lineTo(cx + Math.cos(swAng + 0.2) * 185, cy + Math.sin(swAng + 0.2) * 185);
+          ctx.closePath(); ctx.fill();
+        }
+      }
+
       // Octagonal turret plinth
       ctx.fillStyle = '#111827';
       ctx.beginPath();
@@ -3692,7 +4137,7 @@ function drawShelterPlots(now, inView, selfX, selfY) {
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate(aimAngle);
-      ctx.strokeStyle = upg.turret_laser ? 'rgba(56, 189, 248, 0.65)' : 'rgba(239, 68, 68, 0.45)';
+      ctx.strokeStyle = upg.turret_laser ? 'rgba(56, 189, 248, 0.65)' : upg.turret_cryo ? 'rgba(186, 230, 253, 0.55)' : upg.turret_flame ? 'rgba(251, 146, 60, 0.55)' : 'rgba(239, 68, 68, 0.45)';
       ctx.lineWidth = 1.2;
       ctx.beginPath(); ctx.moveTo(24, 0); ctx.lineTo(180, 0); ctx.stroke();
 
@@ -3707,6 +4152,18 @@ function drawShelterPlots(now, inView, selfX, selfY) {
       } else if (upg.turret_laser) {
         ctx.fillStyle = '#0284c7'; ctx.fillRect(-4, -7, 28, 14);
         ctx.fillStyle = '#38bdf8'; ctx.beginPath(); ctx.arc(24, 0, 5, 0, 7); ctx.fill();
+      } else if (upg.turret_cryo) {
+        ctx.fillStyle = '#0369a1'; ctx.fillRect(-8, -10, 16, 20);
+        ctx.fillStyle = '#bae6fd'; ctx.fillRect(6, -5, 18, 10);
+        ctx.fillStyle = '#38bdf8'; ctx.beginPath(); ctx.arc(24, 0, 4, 0, 7); ctx.fill();
+      } else if (upg.turret_flame) {
+        ctx.fillStyle = '#991b1b'; ctx.fillRect(-10, -9, 14, 18);
+        ctx.fillStyle = '#d97706'; ctx.fillRect(4, -4, 20, 8);
+        ctx.fillStyle = '#fb923c'; ctx.beginPath(); ctx.arc(24, 0, 3.5, 0, 7); ctx.fill();
+      } else if (upg.turret_sniper) {
+        ctx.fillStyle = '#1e293b'; ctx.fillRect(-6, -6, 18, 12);
+        ctx.fillStyle = '#64748b'; ctx.fillRect(10, -2, 26, 4);
+        ctx.fillStyle = '#ef4444'; ctx.fillRect(4, -8, 8, 3);
       } else if (upg.turret_mg) {
         ctx.fillStyle = '#0f172a'; ctx.fillRect(0, -6, 28, 5); ctx.fillRect(0, 1, 28, 5);
         ctx.fillStyle = '#fbbf24'; ctx.fillRect(-8, -10, 6, 20);
@@ -3740,13 +4197,129 @@ function drawShelterPlots(now, inView, selfX, selfY) {
     ctx.fillStyle = '#11161f'; ctx.fillRect(vehPadX, vehPadY, 74, 58);
     ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 1.8; ctx.setLineDash([7, 5]);
     ctx.strokeRect(vehPadX, vehPadY, 74, 58); ctx.setLineDash([]);
-    // Twin hydraulic lift posts + red mechanic toolbox
     ctx.fillStyle = '#fbbf24';
     ctx.fillRect(vehPadX + 10, vehPadY + 18, 6, 22); ctx.fillRect(vehPadX + 58, vehPadY + 18, 6, 22);
     ctx.fillStyle = '#475569'; ctx.fillRect(vehPadX + 16, vehPadY + 26, 42, 6);
     ctx.fillStyle = '#dc2626'; ctx.fillRect(vehPadX + 6, vehPadY + 4, 18, 9);
     ctx.fillStyle = '#ffd166'; ctx.font = 'bold 8.5px system-ui'; ctx.textAlign = 'center';
     ctx.fillText('REPAIR LIFT', vehPadX + 37, vehPadY + 50);
+
+    // ───────── 6.2 VISUAL TYCOON UPGRADE INSTALLATIONS ─────────
+    // Photovoltaic Solar Array (East-Mid)
+    if (upg.solar_array) {
+      const sx = x0 + S - 102, sy = plot.y - 26;
+      const rows = Math.min(3, Math.ceil(upg.solar_array / 2));
+      for (let r = 0; r < rows; r++) {
+        const py = sy + r * 20;
+        ctx.fillStyle = '#0f172a'; ctx.fillRect(sx, py, 64, 15);
+        ctx.fillStyle = '#1d4ed8'; ctx.fillRect(sx + 2, py + 2, 60, 11);
+        ctx.strokeStyle = '#93c5fd'; ctx.lineWidth = 1;
+        ctx.strokeRect(sx + 2, py + 2, 60, 11);
+        for (let gx = sx + 14; gx < sx + 60; gx += 12) {
+          ctx.beginPath(); ctx.moveTo(gx, py + 2); ctx.lineTo(gx, py + 13); ctx.stroke();
+        }
+      }
+    }
+
+    // Twin Aero-Wind Generator Turbines (West-Mid & North-West)
+    if (upg.wind_turbines) {
+      const turbPts = upg.wind_turbines >= 3
+        ? [[x0 + 48, plot.y - 12], [x0 + 48, plot.y + 38], [plot.x - 86, y0 + 54]]
+        : upg.wind_turbines >= 2
+          ? [[x0 + 48, plot.y - 10], [x0 + 48, plot.y + 34]]
+          : [[x0 + 48, plot.y + 8]];
+      for (let t = 0; t < turbPts.length; t++) {
+        const [wx, wy] = turbPts[t];
+        ctx.fillStyle = '#e2e8f0'; ctx.beginPath(); ctx.arc(wx, wy, 7, 0, 7); ctx.fill();
+        ctx.strokeStyle = '#475569'; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.save(); ctx.translate(wx, wy); ctx.rotate(now / 280 + t * 1.1);
+        ctx.strokeStyle = '#f8fafc'; ctx.lineWidth = 3;
+        for (let b = 0; b < 3; b++) {
+          ctx.rotate((Math.PI * 2) / 3);
+          ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(24, 0); ctx.stroke();
+        }
+        ctx.fillStyle = '#38bdf8'; ctx.beginPath(); ctx.arc(0, 0, 3.5, 0, 7); ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    // Pressurized Hydroponic Greenhouse (South-East)
+    if (upg.hydroponic_greenhouse) {
+      const gx = x0 + S - 108, gy = y0 + S - 116;
+      ctx.fillStyle = '#064e3b'; ctx.fillRect(gx, gy, 72, 46);
+      ctx.fillStyle = '#22c55e';
+      for (let ry = gy + 8; ry <= gy + 34; ry += 12) ctx.fillRect(gx + 8, ry, 56, 6);
+      ctx.fillStyle = 'rgba(186, 230, 253, 0.25)'; ctx.fillRect(gx + 2, gy + 2, 68, 42);
+      ctx.strokeStyle = '#6ee7b7'; ctx.lineWidth = 2; ctx.strokeRect(gx, gy, 72, 46);
+      ctx.fillStyle = '#bbf7d0'; ctx.font = 'bold 7.5px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText('HYDRO LAB', gx + 36, gy + 41);
+    }
+
+    // Atmospheric Water Vaporator & Nuclear RTG (mid-corridor wings)
+    if (upg.water_vaporator) {
+      const vx = plot.x - 95, vy = plot.y + 42;
+      ctx.fillStyle = '#0c4a6e'; ctx.beginPath(); ctx.arc(vx - 11, vy, 10, 0, 7); ctx.arc(vx + 11, vy, 10, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(vx - 11, vy, 10, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.arc(vx + 11, vy, 10, 0, 7); ctx.stroke();
+      ctx.fillStyle = '#bae6fd'; ctx.beginPath(); ctx.arc(vx - 11, vy, 4, 0, 7); ctx.arc(vx + 11, vy, 4, 0, 7); ctx.fill();
+    }
+    if (upg.nuclear_rtg) {
+      const rx = plot.x - 96, ry = plot.y - 42;
+      ctx.drawImage(GLOW_SPR.green, rx - 28, ry - 28, 56, 56);
+      ctx.fillStyle = '#1e293b'; ctx.beginPath(); ctx.arc(rx, ry, 14, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#4ade80'; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.fillStyle = '#4ade80'; ctx.beginPath(); ctx.arc(rx, ry, 5 + Math.sin(now / 220) * 1.5, 0, 7); ctx.fill();
+    }
+
+    // Reinforced Helipad & Windsock (South-East outer wing or East apron)
+    if (upg.helipad) {
+      const hx = x0 + S - 82, hy = plot.y + 58;
+      ctx.fillStyle = '#0f172a'; ctx.beginPath(); ctx.arc(hx, hy, 40, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2.5; ctx.setLineDash([8, 6]);
+      ctx.beginPath(); ctx.arc(hx, hy, 36, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      ctx.strokeStyle = '#facc15'; ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(hx - 10, hy - 14); ctx.lineTo(hx - 10, hy + 14);
+      ctx.moveTo(hx + 10, hy - 14); ctx.lineTo(hx + 10, hy + 14);
+      ctx.moveTo(hx - 10, hy); ctx.lineTo(hx + 10, hy);
+      ctx.stroke();
+      // Perimeter approach lights
+      for (let p2 = 0; p2 < 8; p2++) {
+        const pa = p2 * Math.PI / 4;
+        ctx.fillStyle = ((now + p2 * 100) % 800 < 350) ? '#38bdf8' : '#0284c7';
+        ctx.beginPath(); ctx.arc(hx + Math.cos(pa) * 39, hy + Math.sin(pa) * 39, 2.5, 0, 7); ctx.fill();
+      }
+      // Animated windsock cone
+      const wsx = hx + 36, wsy = hy - 32;
+      ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(wsx, wsy); ctx.lineTo(wsx + 14 + Math.sin(now / 220) * 3, wsy - 4); ctx.stroke();
+      ctx.fillStyle = '#f97316'; ctx.beginPath(); ctx.arc(wsx + 12, wsy - 3, 3.5, 0, 7); ctx.fill();
+    }
+
+    // Early-Warning Phased-Array Radar Spire
+    if (upg.radar_spire) {
+      const rdx = plot.x + 88, rdy = y0 + 58;
+      ctx.fillStyle = '#1e293b'; ctx.beginPath(); ctx.arc(rdx, rdy, 14, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.save(); ctx.translate(rdx, rdy); ctx.rotate(now / 380);
+      ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, 0, 12, -1.1, 1.1); ctx.stroke();
+      ctx.strokeStyle = 'rgba(56,189,248,0.55)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(28, 0); ctx.stroke();
+      ctx.restore();
+    }
+
+    // Quantum Teleport Matrix Pad
+    if (upg.teleport_pad) {
+      const tpx = plot.x + 88, tpy = plot.y - 54;
+      ctx.drawImage(GLOW_SPR.purple, tpx - 28, tpy - 28, 56, 56);
+      ctx.fillStyle = '#1e1b4b'; ctx.beginPath(); ctx.arc(tpx, tpy, 18, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#c084fc'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(tpx, tpy, 14, now / 260, now / 260 + 4.5); ctx.stroke();
+      ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(tpx, tpy, 8, -now / 220, -now / 220 + 4.2); ctx.stroke();
+    }
 
     // ───────── 6.5 NORTH COURTYARD ARMORED BUNKER LIFT VESTIBULE ─────────
     const liftX = plot.x, liftY = plot.y - S * 0.28;
@@ -3759,7 +4332,6 @@ function drawShelterPlots(now, inView, selfX, selfY) {
     ctx.lineWidth = 2.5; ctx.stroke();
     ctx.fillStyle = canEnterBunker ? `rgba(56,189,248,${0.18 + liftPulse * 0.16})` : 'rgba(100,116,139,0.12)';
     ctx.fillRect(liftX - 32, liftY - 22, 64, 44);
-    // Hydraulic blast doors & hazard border
     ctx.strokeStyle = '#334155'; ctx.lineWidth = 2.5;
     ctx.beginPath(); ctx.moveTo(liftX, liftY - 22); ctx.lineTo(liftX, liftY + 22); ctx.stroke();
     ctx.fillStyle = '#fbbf24';
@@ -3785,8 +4357,28 @@ function drawShelterPlots(now, inView, selfX, selfY) {
     ctx.strokeStyle = 'rgba(56,189,248,0.5)'; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.arc(plot.x, plot.y, 26, now / 500, now / 500 + 4.4); ctx.stroke();
 
+    if (upg.tesla_spire) {
+      ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(plot.x, plot.y, 33, -now / 260, -now / 260 + 3.8); ctx.stroke();
+      if (Math.random() < 0.25) {
+        const ta = Math.random() * 6.28;
+        ctx.strokeStyle = '#e0f2fe'; ctx.lineWidth = 1.8;
+        ctx.beginPath(); ctx.moveTo(plot.x, plot.y); ctx.lineTo(plot.x + Math.cos(ta) * 44, plot.y + Math.sin(ta) * 44); ctx.stroke();
+      }
+    }
     if (upg.antimatter_reactor) {
       ctx.drawImage(GLOW_SPR.purple, plot.x - 32, plot.y - 32, 64, 64);
+    }
+    if (upg.evac_beacon) {
+      const eb = upg.evac_beacon;
+      const ebPulse = 0.5 + 0.5 * Math.sin(now / 220);
+      ctx.strokeStyle = eb >= 5 ? `rgba(239,68,68,${0.5 + ebPulse * 0.45})` : `rgba(250,204,21,${0.45 + ebPulse * 0.4})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(plot.x, plot.y, 44 + eb * 3, 0, 7); ctx.stroke();
+      if (eb >= 5) {
+        ctx.fillStyle = `rgba(239,68,68,${0.14 + ebPulse * 0.14})`;
+        ctx.fillRect(plot.x - 16, plot.y - 1600, 32, 1600);
+      }
     }
 
     ctx.fillStyle = teamColor; ctx.font = 'bold 15px system-ui';
@@ -3801,7 +4393,8 @@ function drawShelterPlots(now, inView, selfX, selfY) {
     ctx.fillStyle = '#ffd166';
     ctx.fillText(`🏰 ${plot.name}`, plot.x, y0 - 24);
 
-    const sub = plot.ownerName ? `[Owner: ${plot.ownerName} · Lv.${lv}]` : `[UNCLAIMED PLOT · +${plot.income || lv} Scrap/s]`;
+    const evacTag = upg.evac_beacon >= 5 ? (me && me.plotId === plot.id && me.evacTimer > 0 ? ` · 🚨 EXODUS ${me.evacTimer}s` : ' · 🚨 EXODUS ACTIVE') : (upg.evac_beacon ? ` · 📡 Beacon ${upg.evac_beacon}/5` : '');
+    const sub = plot.ownerName ? `[Owner: ${plot.ownerName} · Lv.${lv}${evacTag}]` : `[UNCLAIMED PLOT · +${plot.income || lv} Scrap/s]`;
     ctx.font = 'bold 12px system-ui';
     ctx.strokeText(sub, plot.x, y0 - 8);
     ctx.fillStyle = plot.ownerName ? teamColor : '#4dff88';
@@ -3921,10 +4514,23 @@ const ENT_META = {
   hospital: { icon: '🏥', label: 'HOSPITAL', accent: '#10b981', glow: 'rgba(16,185,129,0.34)', verb: 'Enter' },
   mall: { icon: '🛍️', label: 'SHOPPING MALL', accent: '#2dd4bf', glow: 'rgba(45,212,191,0.34)', verb: 'Enter' },
   military: { icon: '🪖', label: 'MILITARY BASE', accent: '#ef4444', glow: 'rgba(239,68,68,0.34)', verb: 'Breach' },
-  historic: { icon: '🏛️', label: 'HISTORIC SITE', accent: '#eab308', glow: 'rgba(234,179,8,0.34)', verb: 'Enter' },
-  museum: { icon: '🖼️', label: 'CULTURAL HALL', accent: '#f472b6', glow: 'rgba(244,114,182,0.34)', verb: 'Enter' },
-  transit: { icon: '🏟️', label: 'TRANSIT HUB', accent: '#38bdf8', glow: 'rgba(56,189,248,0.34)', verb: 'Enter' },
-  industrial: { icon: '🏭', label: 'POWER WORKS', accent: '#fb923c', glow: 'rgba(251,146,60,0.34)', verb: 'Breach' }
+  historic: { icon: '⛪', label: 'CATHEDRAL', accent: '#eab308', glow: 'rgba(234,179,8,0.34)', verb: 'Enter' },
+  museum: { icon: '🖼️', label: 'ART MUSEUM', accent: '#f472b6', glow: 'rgba(244,114,182,0.34)', verb: 'Enter' },
+  transit: { icon: '🚌', label: 'TRANSIT HUB', accent: '#38bdf8', glow: 'rgba(56,189,248,0.34)', verb: 'Enter' },
+  industrial: { icon: '🏭', label: 'POWER WORKS', accent: '#fb923c', glow: 'rgba(251,146,60,0.34)', verb: 'Breach' },
+  police: { icon: '🚓', label: 'POLICE HQ', accent: '#3b82f6', glow: 'rgba(59,130,246,0.36)', verb: 'Enter' },
+  fire: { icon: '🚒', label: 'FIRE STATION', accent: '#ef4444', glow: 'rgba(239,68,68,0.36)', verb: 'Enter' },
+  bank: { icon: '🏦', label: 'CENTRAL BANK', accent: '#eab308', glow: 'rgba(234,179,8,0.38)', verb: 'Heist' },
+  stadium: { icon: '🏟️', label: 'STADIUM', accent: '#22c55e', glow: 'rgba(34,197,94,0.34)', verb: 'Enter' },
+  aquarium: { icon: '🐠', label: 'AQUARIUM', accent: '#22d3ee', glow: 'rgba(34,211,238,0.36)', verb: 'Enter' },
+  science: { icon: '🔭', label: 'SCIENCE CENTRE', accent: '#a78bfa', glow: 'rgba(167,139,250,0.36)', verb: 'Enter' },
+  bazaar: { icon: '🕌', label: 'GRAND BAZAAR', accent: '#f59e0b', glow: 'rgba(245,158,11,0.36)', verb: 'Enter' },
+  pyramid: { icon: '🔺', label: 'ANCIENT TOMB', accent: '#fbbf24', glow: 'rgba(251,191,36,0.38)', verb: 'Explore' },
+  mosque: { icon: '🕌', label: 'GRAND MOSQUE', accent: '#34d399', glow: 'rgba(52,211,153,0.36)', verb: 'Enter' },
+  capitol: { icon: '⚖️', label: 'CAPITOL & COURT', accent: '#60a5fa', glow: 'rgba(96,165,250,0.36)', verb: 'Enter' },
+  palace: { icon: '👑', label: 'ROYAL PALACE', accent: '#fbbf24', glow: 'rgba(251,191,36,0.38)', verb: 'Enter' },
+  greenhouse: { icon: '🌿', label: 'CONSERVATORY', accent: '#4ade80', glow: 'rgba(74,222,128,0.36)', verb: 'Enter' },
+  mill: { icon: '🌾', label: 'GRANARY & MILL', accent: '#d97706', glow: 'rgba(217,119,6,0.36)', verb: 'Enter' }
 };
 
 function drawBuildingEntrances(now, inView, selfX, selfY, vx0, vy0, vx1, vy1) {
@@ -4001,7 +4607,20 @@ function buildBunkerStaticCanvas(idef, mode) {
     historic: '#3b3227',
     museum: '#e4ddd0',
     transit: '#1a2433',
-    industrial: '#1a1e24'
+    industrial: '#1a1e24',
+    police: '#131d2d',
+    fire: '#241b1b',
+    bank: '#ded6c3',
+    stadium: '#182420',
+    aquarium: '#091f31',
+    science: '#111a2c',
+    bazaar: '#37291c',
+    pyramid: '#4d3b20',
+    mosque: '#142d26',
+    capitol: '#e2dacc',
+    palace: '#38191e',
+    greenhouse: '#152e22',
+    mill: '#322316'
   };
   g.fillStyle = '#0b1017';
   g.fillRect(0, 0, W, H);
@@ -4023,10 +4642,28 @@ function buildBunkerStaticCanvas(idef, mode) {
       g.strokeStyle = rm.id === 'concourse' ? 'rgba(45,212,191,0.14)' : 'rgba(148,163,184,0.12)';
     } else if (mode === 'military') {
       g.strokeStyle = rm.id === 'vault' ? 'rgba(239,68,68,0.14)' : 'rgba(132,204,22,0.11)';
-    } else if (mode === 'historic') {
-      g.strokeStyle = rm.id === 'sanctum' ? 'rgba(251,191,36,0.18)' : 'rgba(214,195,165,0.12)';
-    } else if (mode === 'museum') {
-      g.strokeStyle = rm.id === 'rotunda' ? 'rgba(14,165,233,0.14)' : 'rgba(15,23,42,0.1)';
+    } else if (mode === 'historic' || mode === 'pyramid') {
+      g.strokeStyle = rm.id === 'sanctum' || rm.id === 'burial' ? 'rgba(251,191,36,0.18)' : 'rgba(214,195,165,0.14)';
+    } else if (mode === 'museum' || mode === 'bank' || mode === 'capitol') {
+      g.strokeStyle = 'rgba(15,23,42,0.11)';
+    } else if (mode === 'aquarium') {
+      g.strokeStyle = 'rgba(56,189,248,0.16)';
+    } else if (mode === 'science') {
+      g.strokeStyle = 'rgba(167,139,250,0.15)';
+    } else if (mode === 'greenhouse') {
+      g.strokeStyle = 'rgba(74,222,128,0.14)';
+    } else if (mode === 'mosque') {
+      g.strokeStyle = 'rgba(251,191,36,0.14)';
+    } else if (mode === 'palace') {
+      g.strokeStyle = 'rgba(251,191,36,0.15)';
+    } else if (mode === 'police') {
+      g.strokeStyle = 'rgba(59,130,246,0.14)';
+    } else if (mode === 'fire') {
+      g.strokeStyle = 'rgba(239,68,68,0.14)';
+    } else if (mode === 'stadium') {
+      g.strokeStyle = 'rgba(34,197,94,0.14)';
+    } else if (mode === 'bazaar' || mode === 'mill') {
+      g.strokeStyle = 'rgba(245,158,11,0.14)';
     } else if (mode === 'transit') {
       g.strokeStyle = rm.id === 'ops' ? 'rgba(56,189,248,0.16)' : 'rgba(148,163,184,0.11)';
     } else if (mode === 'industrial') {
@@ -4035,7 +4672,7 @@ function buildBunkerStaticCanvas(idef, mode) {
       g.strokeStyle = rm.id === 'medbay' ? 'rgba(16,185,129,0.09)' : rm.id === 'vault' ? 'rgba(239,68,68,0.09)' : 'rgba(148,163,184,0.065)';
     }
     g.lineWidth = 1;
-    const step = (mode === 'hospital' || rm.id === 'medbay' || mode === 'museum') ? 32 : 40;
+    const step = (mode === 'hospital' || rm.id === 'medbay' || mode === 'museum' || mode === 'bank' || mode === 'capitol') ? 32 : 40;
     g.beginPath();
     for (let gx = rm.x + step; gx < rm.x + rm.w; gx += step) { g.moveTo(gx, rm.y); g.lineTo(gx, rm.y + rm.h); }
     for (let gy = rm.y + step; gy < rm.y + rm.h; gy += step) { g.moveTo(rm.x, gy); g.lineTo(rm.x + rm.w, gy); }
@@ -4051,8 +4688,9 @@ function buildBunkerStaticCanvas(idef, mode) {
     traceChamferRect(g, rm.x + 8, rm.y + 8, rm.w - 16, rm.h - 16, 16);
     g.stroke();
 
-    g.fillStyle = (mode === 'hospital' || mode === 'museum') ? '#0f172a' : (rm.accent || '#94a3b8');
-    g.globalAlpha = (mode === 'hospital' || mode === 'museum') ? 0.62 : 0.45;
+    const lightFloor = mode === 'hospital' || mode === 'museum' || mode === 'bank' || mode === 'capitol';
+    g.fillStyle = lightFloor ? '#0f172a' : (rm.accent || '#94a3b8');
+    g.globalAlpha = lightFloor ? 0.65 : 0.48;
     g.font = 'bold 17px system-ui';
     g.textAlign = 'center'; g.textBaseline = 'middle';
     g.fillText(rm.name, rm.x + rm.w / 2, rm.y + 34);
@@ -4134,131 +4772,379 @@ function buildBunkerStaticCanvas(idef, mode) {
     g.fillText('← ARMORY', 555, 300); g.fillText('BIO-MED →', 1245, 300);
     g.fillText('REACTOR ↓', 900, 575); g.fillText('VAULT ↓', 1500, 575);
   } else if (mode === 'university') {
-    g.fillStyle = '#451a03'; g.fillRect(855, 660, 90, 480);
-    g.strokeStyle = '#d97706'; g.lineWidth = 2; g.strokeRect(855, 660, 90, 480);
-    g.fillStyle = 'rgba(180,83,9,0.28)'; g.fillRect(60, 430, 320, 120);
+    // Oak Library Shelves with colored book spines, Persian Reading Rug & Lamps (NW)
+    g.fillStyle = 'rgba(153,27,27,0.34)'; g.fillRect(58, 430, 320, 125);
+    g.strokeStyle = 'rgba(251,191,36,0.4)'; g.lineWidth = 2; g.strokeRect(64, 436, 308, 113);
+    g.fillStyle = '#5c2d0c'; g.fillRect(92, 462, 120, 38); g.fillRect(236, 462, 120, 38);
+    g.fillStyle = '#22c55e'; g.fillRect(114, 472, 18, 16); g.fillRect(258, 472, 18, 16);
+    g.fillStyle = '#fde047'; g.beginPath(); g.arc(123, 480, 3, 0, 7); g.arc(267, 480, 3, 0, 7); g.fill();
+    const bookCols = ['#dc2626', '#2563eb', '#16a34a', '#d97706', '#9333ea'];
     for (const bx of [130, 270, 410]) {
-      g.fillStyle = '#78350f'; g.fillRect(bx - 3, 148, 28, 234);
-      g.fillStyle = '#fbbf24'; for (let sy = 160; sy < 370; sy += 22) g.fillRect(bx + 2, sy, 18, 6);
+      g.fillStyle = '#78350f'; g.fillRect(bx - 4, 148, 30, 236);
+      for (let sy = 158, bi = 0; sy < 372; sy += 16, bi++) {
+        g.fillStyle = bookCols[bi % bookCols.length]; g.fillRect(bx + 1, sy, 20, 11);
+      }
     }
-    g.fillStyle = '#064e3b'; g.fillRect(790, 54, 220, 16);
-    g.strokeStyle = '#a16207'; g.lineWidth = 2; g.strokeRect(790, 54, 220, 16);
-    g.fillStyle = '#0f172a'; g.fillRect(1260, 90, 440, 38);
-    g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(1260, 90, 440, 38);
-    g.strokeStyle = 'rgba(245,158,11,0.35)'; g.lineWidth = 2;
+    // Grand Lecture Hall Chalkboard with diagrams, Tiered Benches & Podium (N-Center)
+    g.fillStyle = '#064e3b'; g.fillRect(720, 44, 360, 22);
+    g.strokeStyle = '#a16207'; g.lineWidth = 2.5; g.strokeRect(720, 44, 360, 22);
+    g.fillStyle = 'rgba(255,255,255,0.4)';
+    g.fillRect(745, 52, 85, 3); g.fillRect(860, 50, 62, 3); g.fillRect(960, 55, 95, 3);
+    g.fillStyle = '#78350f'; g.fillRect(820, 155, 160, 44);
+    for (const [tx, ty] of [[690, 310], [960, 310], [690, 420], [960, 420]]) {
+      g.fillStyle = '#451a03'; g.fillRect(tx, ty, 150, 28);
+      g.strokeStyle = '#d97706'; g.lineWidth = 1.2; g.strokeRect(tx, ty, 150, 28);
+      for (let sx = tx + 14; sx < tx + 140; sx += 26) { g.fillStyle = '#f8fafc'; g.fillRect(sx, ty + 8, 12, 8); }
+    }
+    // Bio-Chem & Robotics Lab Fume Hood, Microscopes & Flasks (NE)
+    g.fillStyle = '#0f172a'; g.fillRect(1260, 86, 440, 42);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(1260, 86, 440, 42);
+    for (const bx of [1320, 1540]) {
+      g.fillStyle = '#1e293b'; g.fillRect(bx, 190, 150, 42);
+      g.strokeStyle = '#2dd4bf'; g.lineWidth = 1.5; g.strokeRect(bx, 190, 150, 42);
+      g.fillStyle = '#e2e8f0'; g.fillRect(bx + 20, 200, 16, 18); g.fillRect(bx + 108, 200, 18, 18);
+      g.fillStyle = '#4ade80'; g.beginPath(); g.arc(bx + 68, 211, 8, 0, 7); g.fill();
+      g.fillStyle = '#38bdf8'; g.beginPath(); g.arc(bx + 90, 211, 6, 0, 7); g.fill();
+    }
+    // Student Union Cafeteria Tables, Trays & Chairs (SW)
+    for (let fy = 620; fy < 1160; fy += 40) for (let fx = 40; fx < 570; fx += 40) {
+      if (((fx + fy) / 40) % 2 === 0) { g.fillStyle = 'rgba(251,146,60,0.06)'; g.fillRect(fx, fy, 40, 40); }
+    }
+    for (const [cx2, cy2] of [[130, 770], [340, 770], [130, 970]]) {
+      g.fillStyle = '#9a3412'; g.fillRect(cx2, cy2, 110, 42);
+      g.fillStyle = '#f8fafc'; g.fillRect(cx2 + 16, cy2 + 10, 26, 18); g.fillRect(cx2 + 66, cy2 + 12, 24, 16);
+      g.fillStyle = '#fbbf24'; g.fillRect(cx2 + 22, cy2 + 14, 10, 8);
+    }
+    // Campus Foyer Carpet & Seal + East Infirmary Gym Court (S-Center & SE)
+    g.fillStyle = '#451a03'; g.fillRect(855, 680, 90, 460);
+    g.strokeStyle = '#d97706'; g.lineWidth = 2; g.strokeRect(855, 680, 90, 460);
+    g.fillStyle = 'rgba(217,119,6,0.12)'; g.fillRect(1260, 660, 460, 460);
+    g.strokeStyle = 'rgba(245,158,11,0.4)'; g.lineWidth = 2.5;
     g.strokeRect(1260, 660, 460, 460);
-    g.beginPath(); g.arc(1490, 890, 55, 0, 7); g.stroke();
-    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(254,243,199,0.45)'; g.textAlign = 'center';
+    g.beginPath(); g.arc(1490, 890, 58, 0, 7); g.stroke();
+    g.beginPath(); g.moveTo(1260, 890); g.lineTo(1720, 890); g.stroke();
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(254,243,199,0.5)'; g.textAlign = 'center';
     g.fillText('← LIBRARY', 540, 300); g.fillText('BIO-LAB →', 1250, 300);
     g.fillText('← CAFETERIA', 540, 900); g.fillText('LECTURE HALL ↑', 900, 645);
   } else if (mode === 'hospital') {
+    // Emergency Triage Red Corridor Cross & Waiting Seating
     g.fillStyle = 'rgba(13,148,136,0.18)'; g.fillRect(855, 680, 90, 460);
-    g.fillStyle = 'rgba(239,68,68,0.25)'; g.fillRect(894, 680, 12, 460);
-    g.fillStyle = 'rgba(239,68,68,0.28)';
+    g.fillStyle = 'rgba(239,68,68,0.28)'; g.fillRect(894, 680, 12, 460);
     g.fillRect(884, 955, 32, 92); g.fillRect(854, 985, 92, 32);
-    g.strokeStyle = '#0d9488'; g.lineWidth = 3;
-    g.beginPath(); g.arc(280, 287, 92, 0, 7); g.stroke();
+    for (const wy of [790, 850]) {
+      g.fillStyle = '#0284c7'; g.fillRect(1020, wy, 140, 18); g.fillRect(600, wy, 140, 18);
+    }
+    // Operating Theatre: MRI Scanner Magnet Ring + Sterile Blue Surgical Drape + Instrument Tray (NW)
+    g.fillStyle = '#cbd5e1'; g.beginPath(); g.arc(280, 155, 58, 0, 7); g.fill();
+    g.fillStyle = '#334155'; g.beginPath(); g.arc(280, 155, 30, 0, 7); g.fill();
+    g.strokeStyle = '#0d9488'; g.lineWidth = 3; g.beginPath(); g.arc(280, 287, 94, 0, 7); g.stroke();
+    g.fillStyle = '#0284c7'; g.fillRect(224, 264, 112, 46);
+    g.fillStyle = '#bae6fd'; g.fillRect(250, 272, 60, 30);
+    g.fillStyle = '#e2e8f0'; g.beginPath(); g.arc(280, 287, 18, 0, 7); g.fill();
+    // 4 ICU Beds with Pillows, Privacy Curtain Tracks & Monitor Stands (N-Center)
     for (const [bx, by] of [[660, 220], [1045, 220], [660, 410], [1045, 410]]) {
       g.fillStyle = '#0f766e'; g.fillRect(bx + 4, by + 4, 87, 36);
       g.fillStyle = '#f8fafc'; g.fillRect(bx + 6, by + 8, 20, 28);
-      g.fillStyle = '#020617'; g.fillRect(bx + 98, by + 10, 22, 16);
+      g.fillStyle = '#38bdf8'; g.fillRect(bx + 30, by + 7, 56, 30);
+      g.fillStyle = '#020617'; g.fillRect(bx + 98, by + 10, 24, 18);
+      g.strokeStyle = 'rgba(14,165,233,0.45)'; g.setLineDash([5, 4]);
+      g.beginPath(); g.moveTo(bx - 12, by - 14); g.lineTo(bx + 125, by - 14); g.stroke();
+      g.setLineDash([]);
     }
-    g.fillStyle = '#64748b'; g.fillRect(54, 680, 38, 280);
+    // Central Pharmacy Medicine Racks & Stainless Morgue Drawers (SW)
+    g.fillStyle = '#64748b'; g.fillRect(54, 680, 40, 280);
     g.strokeStyle = '#0f172a'; g.lineWidth = 1.5;
-    for (let my = 695; my < 950; my += 36) g.strokeRect(58, my, 30, 28);
-    g.strokeStyle = 'rgba(239,68,68,0.4)'; g.lineWidth = 3;
+    for (let my = 695; my < 950; my += 36) {
+      g.strokeRect(58, my, 32, 28);
+      g.fillStyle = '#cbd5e1'; g.fillRect(72, my + 12, 10, 4);
+    }
+    for (const py of [760, 960]) {
+      g.fillStyle = '#334155'; g.fillRect(120, py, 145, 36);
+      for (let px = 128; px < 256; px += 18) {
+        g.fillStyle = px % 36 === 0 ? '#38bdf8' : '#4ade80'; g.fillRect(px, py + 8, 10, 20);
+      }
+    }
+    // Quarantine Bio-Lab Hazard Striping, Cryo-Racks & Bio-Safety Hoods (NE)
+    g.strokeStyle = 'rgba(239,68,68,0.45)'; g.lineWidth = 3;
     g.strokeRect(1290, 80, 450, 470);
-    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(15,23,42,0.55)'; g.textAlign = 'center';
+    g.fillStyle = 'rgba(250,204,21,0.12)'; g.fillRect(1310, 100, 140, 70);
+    g.fillStyle = '#0f172a'; g.fillRect(1440, 270, 130, 40);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(1440, 270, 130, 40);
+    g.fillStyle = '#22d3ee'; g.fillRect(1455, 282, 26, 14); g.fillRect(1505, 282, 26, 14);
+    // Cafeteria & Staff Lounge Booths (SE)
+    for (const [lx, ly] of [[1360, 800], [1540, 950]]) {
+      g.fillStyle = '#f59e0b'; g.fillRect(lx, ly, 105, 42);
+      g.fillStyle = '#f8fafc'; g.fillRect(lx + 18, ly + 10, 24, 18); g.fillRect(lx + 62, ly + 12, 24, 16);
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(15,23,42,0.58)'; g.textAlign = 'center';
     g.fillText('← SURGERY', 500, 300); g.fillText('QUARANTINE →', 1290, 300);
     g.fillText('← PHARMACY', 500, 900); g.fillText('ICU WARD ↑', 900, 665);
   } else if (mode === 'mall') {
-    g.strokeStyle = 'rgba(45,212,191,0.22)'; g.lineWidth = 2;
-    for (let cy = 440; cy <= 1060; cy += 140) {
-      g.beginPath();
-      g.moveTo(960, cy - 42); g.lineTo(1002, cy); g.lineTo(960, cy + 42); g.lineTo(918, cy);
-      g.closePath(); g.stroke();
+    // 1. GRAND SKY-LIT ATRIUM & FOUNTAIN PLAZA (x: 620..1780, y: 450..1472)
+    // Terrazzo Promenade Brass Diamond & Compass Medallions along x=1200
+    g.fillStyle = 'rgba(255,255,255,0.03)';
+    for (let py = 460; py < 1450; py += 60) for (let px = 640; px < 1760; px += 60) {
+      if (((px + py) / 60) % 2 === 0) g.fillRect(px, py, 60, 60);
     }
-    g.fillStyle = '#0f766e'; g.fillRect(862, 682, 196, 126);
-    g.fillStyle = '#0ea5e9'; g.fillRect(878, 698, 164, 94);
-    for (let fy = 660; fy < 1200; fy += 40) for (let fx = 40; fx < 480; fx += 40) {
-      if (((fx + fy) / 40) % 2 === 0) { g.fillStyle = 'rgba(251,146,60,0.08)'; g.fillRect(fx, fy, 40, 40); }
+    g.strokeStyle = 'rgba(45,212,191,0.26)'; g.lineWidth = 2;
+    for (const cy of [560, 1140, 1300]) {
+      g.beginPath(); g.moveTo(1200, cy - 48); g.lineTo(1248, cy); g.lineTo(1200, cy + 48); g.lineTo(1152, cy); g.closePath(); g.stroke();
     }
-    for (let cy = 120; cy <= 500; cy += 90) {
-      g.fillStyle = '#be185d'; g.fillRect(1460, cy, 55, 16);
-      g.fillStyle = '#f472b6'; g.fillRect(1464, cy + 4, 47, 8);
+    // Skylight Diagonal Sunbeams across Atrium
+    g.fillStyle = 'rgba(254,249,195,0.045)';
+    g.beginPath(); g.moveTo(860, 480); g.lineTo(1540, 480); g.lineTo(1420, 1280); g.lineTo(980, 1280); g.closePath(); g.fill();
+    // Octagonal Tiered Marble Water Fountain (1090, 770, 220, 140)
+    g.fillStyle = '#0f766e'; g.fillRect(1084, 764, 232, 152);
+    g.fillStyle = '#14b8a6'; g.fillRect(1096, 776, 208, 128);
+    g.fillStyle = '#0284c7'; g.fillRect(1108, 788, 184, 104);
+    g.fillStyle = '#38bdf8'; g.beginPath(); g.ellipse(1200, 840, 64, 38, 0, 0, 7); g.fill();
+    g.fillStyle = '#cbd5e1'; g.beginPath(); g.arc(1200, 840, 18, 0, 7); g.fill();
+    g.fillStyle = '#fbbf24'; // Lucky coins in fountain basin
+    for (const [cx2, cy2] of [[1135, 810], [1265, 825], [1160, 875], [1245, 868]]) { g.beginPath(); g.arc(cx2, cy2, 2.5, 0, 7); g.fill(); }
+    // Twin Escalator Bays (790, 480, 64, 100 & 1546, 480, 64, 100)
+    for (const ex of [790, 1546]) {
+      g.fillStyle = '#1e293b'; g.fillRect(ex, 480, 64, 100);
+      g.fillStyle = '#facc15'; g.fillRect(ex + 6, 482, 52, 6); g.fillRect(ex + 6, 572, 52, 6);
+      g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.strokeRect(ex, 480, 64, 100);
     }
-    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(226,232,240,0.36)'; g.textAlign = 'center';
-    g.fillText('← SPORTING GOODS', 455, 305); g.fillText('DEPT STORE →', 1455, 305);
-    g.fillText('← FOOD COURT', 455, 925); g.fillText('SECURITY VAULT →', 1465, 925);
-    g.fillText('TECH EMPORIUM ↑', 960, 335);
+    // Atrium Kiosks: Espresso Cafe (760,620) & Sunglasses/Tech (1530,620)
+    g.fillStyle = '#78350f'; g.fillRect(760, 620, 110, 56);
+    g.fillStyle = '#ef4444'; g.fillRect(760, 620, 110, 12);
+    g.fillStyle = '#f8fafc'; g.fillRect(774, 640, 32, 16); g.fillStyle = '#92400e'; g.fillRect(820, 642, 18, 12);
+    g.fillStyle = '#0f172a'; g.fillRect(1530, 620, 110, 56);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.strokeRect(1530, 620, 110, 56);
+    g.fillStyle = '#38bdf8'; g.fillRect(1545, 636, 28, 22); g.fillStyle = '#fbbf24'; g.fillRect(1588, 636, 36, 22);
+    // Terracotta Palm Planters & Oak Benches (760,1020 & 1540,1020)
+    for (const px of [760, 1540]) {
+      g.fillStyle = '#7c2d12'; g.fillRect(px, 1020, 100, 44);
+      g.fillStyle = '#b45309'; g.fillRect(px + 28, 1030, 44, 24);
+      for (const lx2 of [px + 14, px + 86]) {
+        g.fillStyle = '#15803d'; g.beginPath(); g.arc(lx2, 1042, 15, 0, 7); g.fill();
+        g.fillStyle = '#4ade80'; g.beginPath(); g.arc(lx2 - 3, 1039, 8, 0, 7); g.fill();
+      }
+    }
+
+    // 2. TECH EMPORIUM, OLED PLAZA & RETRO ARCADE (x: 620..1780, y: 28..430)
+    g.strokeStyle = 'rgba(56,189,248,0.32)'; g.lineWidth = 3; g.strokeRect(634, 42, 1132, 374);
+    // Giant OLED Demo Walls along North Wall
+    g.fillStyle = '#020617'; g.fillRect(670, 42, 340, 22); g.fillRect(1390, 42, 340, 22);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(670, 42, 340, 22); g.strokeRect(1390, 42, 340, 22);
+    // 2 Sleek Oak Demo Tables with Laptops, Tablets & Phones (740,185 & 1500,185)
+    for (const tx of [740, 1500]) {
+      g.fillStyle = '#92400e'; g.fillRect(tx, 185, 160, 44);
+      g.strokeStyle = '#fbbf24'; g.lineWidth = 1.5; g.strokeRect(tx, 185, 160, 44);
+      for (let lx = tx + 16; lx < tx + 146; lx += 34) {
+        g.fillStyle = '#e2e8f0'; g.fillRect(lx, 195, 22, 15);
+        g.fillStyle = '#38bdf8'; g.fillRect(lx + 3, 198, 16, 9);
+      }
+    }
+    // Row of 5 Retro Arcade Cabinets (1080, 240, 240, 46)
+    g.fillStyle = '#0f172a'; g.fillRect(1080, 240, 240, 46);
+    const arcCols = ['#ef4444', '#f59e0b', '#22c55e', '#38bdf8', '#c084fc'];
+    for (let ai = 0; ai < 5; ai++) {
+      const ax = 1090 + ai * 46;
+      g.fillStyle = arcCols[ai]; g.fillRect(ax, 244, 36, 38);
+      g.fillStyle = '#020617'; g.fillRect(ax + 5, 249, 26, 16);
+      g.fillStyle = '#f8fafc'; g.beginPath(); g.arc(ax + 12, 274, 3, 0, 7); g.fill();
+      g.fillStyle = '#fbbf24'; g.beginPath(); g.arc(ax + 24, 274, 2.5, 0, 7); g.fill();
+    }
+
+    // 3. TACTICAL SPORTING GOODS & OUTDOOR GEAR (x: 28..600, y: 28..700)
+    // Hardwood Basketball Demo Court Floor (top right)
+    g.fillStyle = 'rgba(180,83,9,0.22)'; g.fillRect(320, 56, 252, 210);
+    g.strokeStyle = 'rgba(253,224,71,0.45)'; g.lineWidth = 2;
+    g.strokeRect(320, 56, 252, 210);
+    g.beginPath(); g.arc(446, 161, 34, 0, 7); g.stroke();
+    // Pitched Orange Dome Camping Tent & Blue Kayak Display (120, 180, 160, 58)
+    g.fillStyle = '#334155'; g.fillRect(120, 180, 160, 58);
+    g.fillStyle = '#ea580c'; g.beginPath(); g.moveTo(132, 232); g.lineTo(175, 184); g.lineTo(218, 232); g.closePath(); g.fill();
+    g.fillStyle = '#0284c7'; g.beginPath(); g.ellipse(246, 209, 26, 10, 0.25, 0, 7); g.fill();
+    // Tactical Armor & Rifle Display Cases (120, 430, 160, 46)
+    g.fillStyle = '#1e293b'; g.fillRect(120, 430, 160, 46);
+    g.strokeStyle = '#f59e0b'; g.lineWidth = 1.8; g.strokeRect(120, 430, 160, 46);
+    g.fillStyle = '#94a3b8';
+    g.fillRect(134, 444, 42, 6); g.fillRect(190, 444, 46, 6);
+    g.fillStyle = '#166534'; g.fillRect(248, 438, 22, 28);
+    // Circular Outdoor Apparel & Dumbbell Rack (380, 310, 110, 46)
+    g.fillStyle = '#334155'; g.fillRect(380, 310, 110, 46);
+    for (let rx = 392; rx < 482; rx += 22) {
+      g.fillStyle = rx % 44 === 0 ? '#ef4444' : '#38bdf8'; g.beginPath(); g.arc(rx, 333, 8, 0, 7); g.fill();
+    }
+
+    // 4. LUXURY DEPARTMENT STORE & 24/7 PHARMACY (x: 1800..2372, y: 28..700)
+    // Marble boutique walkways
+    g.fillStyle = 'rgba(244,114,182,0.06)';
+    for (let dy = 60; dy < 680; dy += 50) for (let dx = 1820; dx < 2350; dx += 50) {
+      if (((dx + dy) / 50) % 2 === 0) g.fillRect(dx, dy, 50, 50);
+    }
+    // Mirrored Cosmetics & Perfume Island (1960, 200, 160, 54)
+    g.fillStyle = '#831843'; g.fillRect(1960, 200, 160, 54);
+    g.strokeStyle = '#f472b6'; g.lineWidth = 2; g.strokeRect(1960, 200, 160, 54);
+    for (let px = 1978; px < 2108; px += 26) {
+      g.fillStyle = px % 52 === 0 ? '#fde047' : '#e879f9';
+      g.beginPath(); g.arc(px, 227, 6, 0, 7); g.fill();
+    }
+    // Boutique Fashion Racks (1960, 430, 160, 44) & Shoe Wall
+    g.fillStyle = '#4c0519'; g.fillRect(1960, 430, 160, 44);
+    for (let fx = 1975; fx < 2110; fx += 24) {
+      g.fillStyle = fx % 48 === 0 ? '#fb7185' : '#38bdf8'; g.fillRect(fx, 438, 12, 28);
+    }
+    // 24/7 Pharmacy Green Cross & Shelves (NE corner)
+    g.fillStyle = '#10b981';
+    g.fillRect(2316, 95, 14, 38); g.fillRect(2304, 107, 38, 14);
+
+    // 5. MEGA FOOD COURT & GOURMET PAVILION (x: 28..600, y: 720..1472)
+    for (let fy = 740; fy < 1450; fy += 40) for (let fx = 40; fx < 580; fx += 40) {
+      if (((fx + fy) / 40) % 2 === 0) { g.fillStyle = 'rgba(251,146,60,0.09)'; g.fillRect(fx, fy, 40, 40); }
+    }
+    // 4 Colorful Gourmet Kitchen Stalls along West Strip (48, 820, 72, 460)
+    const stallThemes = [
+      ['BURGER', '#dc2626', '#fbbf24'],
+      ['SUSHI', '#0284c7', '#f8fafc'],
+      ['TACO', '#d97706', '#4ade80'],
+      ['BOBA', '#db2777', '#fde047']
+    ];
+    for (let si = 0; si < 4; si++) {
+      const sy = 824 + si * 114;
+      g.fillStyle = '#1e293b'; g.fillRect(48, sy, 72, 108);
+      g.fillStyle = stallThemes[si][1]; g.fillRect(50, sy + 2, 18, 104);
+      g.fillStyle = stallThemes[si][2]; g.fillRect(74, sy + 14, 34, 24);
+      g.fillStyle = '#f8fafc'; g.fillRect(96, sy + 52, 22, 40);
+      g.font = 'bold 9px system-ui'; g.fillStyle = '#ffffff'; g.textAlign = 'center';
+      g.fillText(stallThemes[si][0], 84, sy + 98);
+    }
+    // 4 Diner Table Islands with Chairs, Trays & Soda Cups (240/420, 860/1080)
+    for (const [tx, ty] of [[240, 860], [420, 860], [240, 1080], [420, 1080]]) {
+      g.fillStyle = '#78350f'; g.fillRect(tx, ty, 90, 48);
+      g.strokeStyle = '#fb923c'; g.lineWidth = 1.5; g.strokeRect(tx, ty, 90, 48);
+      g.fillStyle = '#f8fafc'; g.fillRect(tx + 14, ty + 12, 24, 18); g.fillRect(tx + 52, ty + 16, 24, 18);
+      g.fillStyle = '#ef4444'; g.beginPath(); g.arc(tx + 26, ty + 21, 4, 0, 7); g.fill();
+      g.fillStyle = '#fbbf24'; g.beginPath(); g.arc(tx + 64, ty + 25, 4, 0, 7); g.fill();
+      g.fillStyle = '#ea580c';
+      g.fillRect(tx + 18, ty - 10, 18, 8); g.fillRect(tx + 54, ty - 10, 18, 8);
+      g.fillRect(tx + 18, ty + 50, 18, 8); g.fillRect(tx + 54, ty + 50, 18, 8);
+    }
+
+    // 6. ARMORED JEWELRY SALON & SECURITY VAULT (x: 1800..2372, y: 720..1472)
+    // Crimson VIP Carpet & CCTV Desk (1920, 830, 150, 44)
+    g.fillStyle = '#7f1d1d'; g.fillRect(2165, 760, 120, 620);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 2; g.strokeRect(2165, 760, 120, 620);
+    g.fillStyle = '#0f172a'; g.fillRect(1920, 830, 150, 44);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(1920, 830, 150, 44);
+    for (let mx = 1934; mx < 2056; mx += 32) {
+      g.fillStyle = '#22c55e'; g.fillRect(mx, 838, 22, 14);
+    }
+    // Diamond Display Vitrines (1940, 1080, 140, 54) + Stacked Gold Bullion
+    g.fillStyle = '#1e293b'; g.fillRect(1940, 1080, 140, 54);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.strokeRect(1940, 1080, 140, 54);
+    for (const dx of [1970, 2010, 2050]) {
+      g.fillStyle = '#7dd3fc';
+      g.beginPath(); g.moveTo(dx, 1096); g.lineTo(dx + 10, 1107); g.lineTo(dx, 1118); g.lineTo(dx - 10, 1107); g.closePath(); g.fill();
+    }
+    // Gold Bullion Pallets near Vault
+    for (const bx of [2240, 2295]) {
+      g.fillStyle = '#f59e0b'; g.fillRect(bx, 1160, 38, 26);
+      g.fillStyle = '#fde047'; g.fillRect(bx + 4, 1164, 12, 18); g.fillRect(bx + 20, 1164, 12, 18);
+    }
+
+    g.font = 'bold 11px system-ui'; g.fillStyle = 'rgba(226,232,240,0.45)'; g.textAlign = 'center';
+    g.fillText('← SPORTING GOODS', 530, 340); g.fillText('DEPT STORE →', 1850, 340);
+    g.fillText('← FOOD COURT', 530, 1070); g.fillText('JEWELRY VAULT →', 1850, 1070);
+    g.fillText('TECH EMPORIUM & ARCADE ↑', 1200, 412);
   } else if (mode === 'military') {
-    g.strokeStyle = 'rgba(245,158,11,0.32)'; g.lineWidth = 3;
+    // Motorpool Bay with Armored APC Under Overhead Crane Gantry (SW)
+    g.strokeStyle = 'rgba(245,158,11,0.38)'; g.lineWidth = 3;
     g.strokeRect(54, 670, 470, 260);
-    g.font = 'bold 18px system-ui'; g.fillStyle = 'rgba(245,158,11,0.22)'; g.textAlign = 'center';
-    g.fillText('MOTORPOOL BAY 01', 288, 700);
-    g.fillStyle = '#291f14'; g.fillRect(52, 180, 34, 240);
-    g.strokeStyle = '#f59e0b'; g.lineWidth = 1.6; g.strokeRect(52, 180, 34, 240);
+    g.fillStyle = '#365314'; g.fillRect(210, 745, 160, 84);
+    g.strokeStyle = '#84cc16'; g.lineWidth = 2; g.strokeRect(210, 745, 160, 84);
+    g.fillStyle = '#1e293b'; g.beginPath(); g.arc(290, 787, 24, 0, 7); g.fill();
+    g.fillStyle = '#4d7c0f'; g.fillRect(290, 782, 92, 10);
+    g.fillStyle = '#dc2626'; g.fillRect(74, 710, 32, 68);
+    g.fillStyle = '#f59e0b'; g.beginPath(); g.arc(88, 860, 14, 0, 7); g.arc(124, 860, 14, 0, 7); g.fill();
+    g.font = 'bold 16px system-ui'; g.fillStyle = 'rgba(245,158,11,0.28)'; g.textAlign = 'center';
+    g.fillText('MOTORPOOL BAY 01 — APC OVERHAUL', 288, 700);
+    // Armory Rifle & Heavy Launcher Racks (NW)
+    g.fillStyle = '#291f14'; g.fillRect(52, 180, 36, 240);
+    g.strokeStyle = '#f59e0b'; g.lineWidth = 1.6; g.strokeRect(52, 180, 36, 240);
     for (let wy = 198; wy < 408; wy += 24) {
-      g.fillStyle = '#94a3b8'; g.fillRect(58, wy, 22, 5);
+      g.fillStyle = '#94a3b8'; g.fillRect(58, wy, 24, 5);
+      g.fillStyle = '#fbbf24'; g.fillRect(74, wy + 1, 6, 3);
     }
-    for (let by = 90; by <= 490; by += 80) {
-      g.fillStyle = '#1e293b'; g.fillRect(1390, by, 72, 34);
-      g.fillStyle = '#365314'; g.fillRect(1408, by + 4, 48, 26);
+    g.fillStyle = '#365314'; g.fillRect(180, 180, 160, 44);
+    g.strokeStyle = '#a3e635'; g.lineWidth = 1.5; g.strokeRect(180, 180, 160, 44);
+    // Barracks Double-Bunks & Footlockers (NE)
+    for (const by of [90, 175, 290, 375, 480]) {
+      g.fillStyle = '#1e293b'; g.fillRect(1390, by, 76, 36);
+      g.fillStyle = '#f8fafc'; g.fillRect(1394, by + 6, 16, 24);
+      g.fillStyle = '#365314'; g.fillRect(1412, by + 4, 48, 28);
+      g.fillStyle = '#78350f'; g.fillRect(1472, by + 8, 18, 20);
     }
-    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(226,232,240,0.34)'; g.textAlign = 'center';
+    // Sandbag Bunkers & Guardhouse Hazard Stripes (S-Center)
+    for (const gx of [690, 1090]) {
+      g.fillStyle = '#854d0e'; g.fillRect(gx, 940, 140, 36);
+      g.strokeStyle = '#ca8a04'; g.lineWidth = 1.5; g.strokeRect(gx, 940, 140, 36);
+    }
+    // Heavy Missile & Ordnance Pallets in Vault (SE)
+    for (const oy of [850, 910]) {
+      g.fillStyle = '#365314'; g.fillRect(1690, oy, 110, 32);
+      g.fillStyle = '#ef4444'; g.fillRect(1780, oy + 6, 18, 20);
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(226,232,240,0.38)'; g.textAlign = 'center';
     g.fillText('← ARMORY', 520, 305); g.fillText('BARRACKS →', 1390, 305);
     g.fillText('← MOTORPOOL', 520, 925); g.fillText('ORDNANCE VAULT →', 1410, 925);
     g.fillText('WAR ROOM ↑', 960, 720);
   } else if (mode === 'historic') {
-    // Crimson/Gold sacred nave carpet runner + stained glass light projections
     g.fillStyle = '#7f1d1d'; g.fillRect(855, 220, 90, 840);
     g.strokeStyle = '#fbbf24'; g.lineWidth = 2.5; g.strokeRect(855, 220, 90, 840);
-    // Ornamental rose mosaic ring under the sanctum
-    g.strokeStyle = 'rgba(251,191,36,0.32)'; g.lineWidth = 3;
-    g.beginPath(); g.arc(900, 340, 118, 0, 7); g.stroke();
+    g.strokeStyle = 'rgba(251,191,36,0.36)'; g.lineWidth = 3;
+    g.beginPath(); g.arc(900, 340, 122, 0, 7); g.stroke();
     g.beginPath(); g.arc(900, 340, 84, 0, 7); g.stroke();
-    // Stained-glass colored light rays cast along side aisles
-    const glassCols = ['rgba(56,189,248,0.12)', 'rgba(244,114,182,0.12)', 'rgba(251,191,36,0.14)'];
+    const glassCols = ['rgba(56,189,248,0.14)', 'rgba(244,114,182,0.14)', 'rgba(251,191,36,0.16)'];
     for (let i = 0; i < 3; i++) {
       g.fillStyle = glassCols[i];
       g.fillRect(600, 160 + i * 160, 120, 64);
       g.fillRect(1080, 160 + i * 160, 120, 64);
     }
-    // High Altar Golden Candle Candelabra & Choir Pews
     g.fillStyle = '#5c3317';
     for (let py = 490; py <= 610; py += 38) {
       g.fillRect(720, py, 100, 16); g.fillRect(980, py, 100, 16);
+      g.fillStyle = '#991b1b'; g.fillRect(724, py + 3, 92, 6); g.fillRect(984, py + 3, 92, 6);
+      g.fillStyle = '#5c3317';
     }
-    // Sarcophagi brass plaques in Catacombs
     g.fillStyle = '#ca8a04'; g.fillRect(185, 780, 40, 26); g.fillRect(365, 780, 40, 26);
-    // Scriptorium illuminated vellum scrolls
     g.fillStyle = '#fef3c7';
     g.fillRect(1430, 250, 22, 16); g.fillRect(1480, 250, 22, 16); g.fillRect(1430, 410, 24, 16);
-    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(253,230,138,0.45)'; g.textAlign = 'center';
+    g.fillStyle = '#f59e0b'; g.fillRect(1490, 1020, 60, 38);
+    g.fillStyle = '#fde047'; g.beginPath(); g.arc(1520, 1039, 9, 0, 7); g.fill();
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(253,230,138,0.48)'; g.textAlign = 'center';
     g.fillText('← RELIQUARY', 515, 300); g.fillText('SCRIPTORIUM →', 1275, 300);
     g.fillText('← CATACOMBS', 515, 900); g.fillText('TREASURY →', 1275, 900);
     g.fillText('SANCTUM ↑', 900, 685);
   } else if (mode === 'museum') {
-    // Checkered imperial marble tiles in Grand Rotunda & Foyer
     for (let ry = 40; ry < 1180; ry += 50) for (let rx = 570; rx < 1290; rx += 50) {
       if (((rx + ry) / 50) % 2 === 0) { g.fillStyle = 'rgba(15,23,42,0.06)'; g.fillRect(rx, ry, 50, 50); }
     }
-    // Red velvet VIP carpet in Rotunda
     g.fillStyle = '#881337'; g.fillRect(880, 420, 100, 640);
     g.strokeStyle = '#fbbf24'; g.lineWidth = 2; g.strokeRect(880, 420, 100, 640);
-    // Velvet rope stanchions around display cases
-    g.strokeStyle = '#dc2626'; g.lineWidth = 2.5;
-    g.strokeRect(840, 295, 180, 130);
+    // Fossil Dinosaur Skeleton mounted on Central Rotunda Pedestal (870,320,120,80)
+    g.strokeStyle = '#fef3c7'; g.lineWidth = 3;
+    g.beginPath(); g.moveTo(892, 360); g.lineTo(968, 360); g.stroke();
+    for (let rx2 = 906; rx2 <= 952; rx2 += 11) {
+      g.beginPath(); g.moveTo(rx2, 344); g.lineTo(rx2, 376); g.stroke();
+    }
+    g.fillStyle = '#fef3c7'; g.fillRect(962, 350, 18, 20);
+    g.strokeStyle = '#dc2626'; g.lineWidth = 2.5; g.strokeRect(840, 295, 180, 130);
     g.fillStyle = '#eab308';
     for (const [vx, vy] of [[840, 295], [1020, 295], [840, 425], [1020, 425]]) {
       g.beginPath(); g.arc(vx, vy, 5, 0, 7); g.fill();
     }
-    // Framed masterpieces along Art Gallery wall
     for (let gy = 140; gy <= 460; gy += 80) {
       g.fillStyle = '#854d0e'; g.fillRect(42, gy, 14, 52);
       g.fillStyle = gy % 160 === 140 ? '#38bdf8' : '#f472b6'; g.fillRect(46, gy + 6, 7, 40);
     }
-    // Gold bullion pallets in Treasury Vault
+    // Banquet platters in State Council Hall
+    g.fillStyle = '#e2e8f0';
+    for (let px = 1500; px <= 1620; px += 40) { g.beginPath(); g.arc(px, 282, 8, 0, 7); g.fill(); }
     for (let bx = 1620; bx <= 1720; bx += 48) {
       g.fillStyle = '#f59e0b'; g.fillRect(bx, 850, 34, 24);
       g.fillStyle = '#fde047'; g.fillRect(bx + 4, 854, 10, 16); g.fillRect(bx + 18, 854, 10, 16);
@@ -4268,80 +5154,92 @@ function buildBunkerStaticCanvas(idef, mode) {
     g.fillText('← ARCHIVES', 495, 915); g.fillText('BULLION VAULT →', 1355, 915);
     g.fillText('ROTUNDA ↑', 930, 695);
   } else if (mode === 'transit') {
-    // Airport / Concourse guideway lanes & boarding gate chevrons
     g.fillStyle = 'rgba(56,189,248,0.14)'; g.fillRect(885, 420, 90, 640);
     g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.setLineDash([12, 8]);
     g.beginPath(); g.moveTo(930, 440); g.lineTo(930, 1050); g.stroke(); g.setLineDash([]);
-    // Baggage conveyor track oval (West-North)
-    g.strokeStyle = '#475569'; g.lineWidth = 14;
-    g.strokeRect(140, 215, 220, 106);
-    g.strokeStyle = '#fbbf24'; g.lineWidth = 1.5;
-    g.strokeRect(140, 215, 220, 106);
-    // Runway departure status screens in Control Tower
+    g.strokeStyle = '#475569'; g.lineWidth = 14; g.strokeRect(140, 215, 220, 106);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 1.5; g.strokeRect(140, 215, 220, 106);
     g.fillStyle = '#020617'; g.fillRect(720, 56, 420, 22);
     g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(720, 56, 420, 22);
     g.fillStyle = '#22c55e'; g.fillRect(736, 63, 46, 8); g.fillStyle = '#fbbf24'; g.fillRect(800, 63, 56, 8); g.fillStyle = '#38bdf8'; g.fillRect(880, 63, 72, 8);
-    // Security Screening X-Ray Belt
     g.fillStyle = '#334155'; g.fillRect(845, 645, 170, 56);
-    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(226,232,240,0.4)'; g.textAlign = 'center';
+    g.fillStyle = '#1e3a8a'; g.fillRect(640, 860, 100, 40); g.fillRect(1120, 860, 100, 40);
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(226,232,240,0.42)'; g.textAlign = 'center';
     g.fillText('← BAGGAGE', 475, 305); g.fillText('VIP LOUNGE →', 1375, 305);
     g.fillText('← BISTRO', 475, 915); g.fillText('CUSTOMS VAULT →', 1380, 915);
     g.fillText('CONTROL TOWER ↑', 930, 395);
   } else if (mode === 'airport') {
-    // Central Departure Spine Guideway & Security Queuing Corridors
     g.fillStyle = 'rgba(56,189,248,0.12)'; g.fillRect(1140, 490, 120, 910);
     g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.setLineDash([16, 10]);
     g.beginPath(); g.moveTo(1200, 510); g.lineTo(1200, 1380); g.stroke(); g.setLineDash([]);
-    // Dual Baggage Carousels (West-North)
-    for (const [bx, by, bw, bh] of [[140, 160, 260, 76], [140, 320, 260, 76]]) {
+    for (const [bx, by, bw, bh] of [[140, 165, 260, 76], [140, 335, 260, 76]]) {
       g.strokeStyle = '#475569'; g.lineWidth = 14; g.strokeRect(bx, by, bw, bh);
       g.strokeStyle = '#fbbf24'; g.lineWidth = 1.6; g.strokeRect(bx, by, bw, bh);
     }
-    // Check-In Ticketing Desks (Center-South) with green/blue computer bays
+    // Check-In Ticketing Desks (780/1380, 1220)
     for (const cx of [780, 1380]) {
-      g.fillStyle = '#0f172a'; g.fillRect(cx, 1140, 240, 44);
-      g.strokeStyle = '#38bdf8'; g.lineWidth = 1.6; g.strokeRect(cx, 1140, 240, 44);
+      g.fillStyle = '#0f172a'; g.fillRect(cx, 1220, 240, 44);
+      g.strokeStyle = '#38bdf8'; g.lineWidth = 1.6; g.strokeRect(cx, 1220, 240, 44);
       for (let kx = cx + 24; kx < cx + 224; kx += 48) {
-        g.fillStyle = '#38bdf8'; g.fillRect(kx, 1148, 22, 10);
+        g.fillStyle = '#38bdf8'; g.fillRect(kx, 1228, 22, 10);
       }
     }
-    // TSA Screening Conveyors & Metal Detector Arches (Center-Mid)
+    // TSA Screening Conveyors & X-Ray Monitor Screens (830/1410, 720)
     for (const sx of [830, 1410]) {
-      g.fillStyle = '#1e293b'; g.fillRect(sx, 680, 160, 46);
-      g.strokeStyle = '#2dd4bf'; g.lineWidth = 1.8; g.strokeRect(sx, 680, 160, 46);
-      g.fillStyle = 'rgba(250,204,21,0.18)'; g.fillRect(sx - 18, 662, 196, 82);
+      g.fillStyle = '#1e293b'; g.fillRect(sx, 720, 160, 46);
+      g.strokeStyle = '#2dd4bf'; g.lineWidth = 1.8; g.strokeRect(sx, 720, 160, 46);
+      g.fillStyle = 'rgba(250,204,21,0.18)'; g.fillRect(sx - 18, 702, 196, 82);
+      g.fillStyle = '#020617'; g.fillRect(sx + 56, 728, 48, 30);
+      g.fillStyle = '#22d3ee'; g.fillRect(sx + 64, 736, 18, 12);
     }
-    // Boarding Gate Panorama Glass Wall & Flight Information Display (North Concourse)
+    // North Concourse Jetway Boarding Bridges & Display Wall
     g.fillStyle = 'rgba(56,189,248,0.22)'; g.fillRect(676, 30, 1048, 20);
+    for (const jx of [810, 1020, 1360, 1570]) {
+      g.fillStyle = '#334155'; g.fillRect(jx, 28, 42, 46);
+      g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(jx, 28, 42, 46);
+    }
     g.fillStyle = '#020617'; g.fillRect(1040, 56, 320, 22);
     g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5; g.strokeRect(1040, 56, 320, 22);
-    // Gate Seating Rows (Gates A1-A3 & B1-B3)
-    for (const [gx, gy] of [[760, 175], [760, 285], [1460, 175], [1460, 285]]) {
+    for (const [gx, gy] of [[760, 175], [760, 295], [1460, 175], [1460, 295]]) {
       g.fillStyle = '#1e3a8a'; g.fillRect(gx, gy, 160, 28);
       g.strokeStyle = '#60a5fa'; g.lineWidth = 1.2; g.strokeRect(gx, gy, 160, 28);
     }
-    // ATC Radar Console Desk & Radar Plot Zone (East-North)
-    g.fillStyle = '#020617'; g.fillRect(1930, 165, 220, 44);
-    g.strokeStyle = '#0ea5e9'; g.lineWidth = 1.6; g.strokeRect(1930, 165, 220, 44);
+    // Duty-Free Shelves & Diner Tables (West-Mid 120, 660 / 880)
+    g.fillStyle = '#7c2d12'; g.fillRect(120, 660, 160, 40);
+    g.fillStyle = '#0f172a'; g.fillRect(120, 880, 160, 40);
+    g.fillStyle = '#f472b6'; g.fillRect(138, 892, 26, 16); g.fillStyle = '#fde047'; g.fillRect(184, 892, 26, 16);
+    // ATC Radar Console & Plot (1890, 165)
+    g.fillStyle = '#020617'; g.fillRect(1890, 165, 220, 44);
+    g.strokeStyle = '#0ea5e9'; g.lineWidth = 1.6; g.strokeRect(1890, 165, 220, 44);
     g.strokeStyle = 'rgba(14,165,233,0.32)'; g.lineWidth = 2;
-    g.beginPath(); g.arc(2040, 110, 44, 0, 7); g.stroke();
-    // Customs Hangar Vault Hazard Perimeter & Gold Bullion Pallets (East-South)
+    g.beginPath(); g.arc(2000, 110, 44, 0, 7); g.stroke();
+    // Customs Hangar Vault Hazard Perimeter & Gold Bullion Pallets
     g.strokeStyle = 'rgba(239,68,68,0.38)'; g.lineWidth = 3;
-    g.strokeRect(1785, 1030, 560, 415);
-    for (let bx = 2040; bx <= 2140; bx += 48) {
-      g.fillStyle = '#f59e0b'; g.fillRect(bx, 1280, 34, 24);
-      g.fillStyle = '#fde047'; g.fillRect(bx + 4, 1284, 10, 16); g.fillRect(bx + 18, 1284, 10, 16);
+    g.strokeRect(1785, 1100, 455, 415);
+    for (let bx = 1980; bx <= 2080; bx += 48) {
+      g.fillStyle = '#f59e0b'; g.fillRect(bx, 1320, 34, 24);
+      g.fillStyle = '#fde047'; g.fillRect(bx + 4, 1324, 10, 16); g.fillRect(bx + 18, 1324, 10, 16);
     }
+    // East Aircraft Maintenance Hangar Bay (x: 2280..2772)
+    g.fillStyle = 'rgba(30,41,59,0.55)'; g.fillRect(2295, 42, 464, 1564);
+    g.strokeStyle = 'rgba(250,204,21,0.55)'; g.lineWidth = 3; g.setLineDash([18, 12]);
+    g.strokeRect(2330, 240, 385, 1170); g.setLineDash([]);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 4;
+    g.beginPath(); g.moveTo(2520, 440); g.lineTo(2520, 1480); g.moveTo(2460, 620); g.lineTo(2580, 620); g.stroke();
+    g.fillStyle = '#dc2626'; g.fillRect(2310, 460, 24, 90); g.fillRect(2310, 960, 24, 90);
+    g.fillStyle = '#334155'; g.fillRect(2685, 140, 65, 200); g.fillRect(2685, 1300, 65, 200);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 1.5;
+    g.strokeRect(2685, 140, 65, 200); g.strokeRect(2685, 1300, 65, 200);
+    g.font = 'bold 12px system-ui'; g.fillStyle = 'rgba(250,204,21,0.65)'; g.textAlign = 'center';
+    g.fillText('HANGAR 01 — STRIKE FIGHTER MAINTENANCE BAY', 2526, 210);
     g.font = 'bold 11px system-ui'; g.fillStyle = 'rgba(226,232,240,0.44)'; g.textAlign = 'center';
     g.fillText('← BAGGAGE CLAIM', 560, 260); g.fillText('ATC TOWER →', 1840, 260);
-    g.fillText('← DUTY-FREE DINER', 560, 755); g.fillText('VIP LOUNGE →', 1840, 755);
-    g.fillText('← CARGO OPS', 560, 1245); g.fillText('CUSTOMS VAULT →', 1840, 1245);
+    g.fillText('← DUTY-FREE DINER', 560, 795); g.fillText('VIP LOUNGE →', 1840, 795);
+    g.fillText('← CARGO OPS', 560, 1345); g.fillText('CUSTOMS VAULT →', 1840, 1345);
     g.fillText('GATES A1-A3 ↑', 940, 460); g.fillText('GATES B1-B3 ↑', 1460, 460);
   } else if (mode === 'industrial') {
-    // Yellow-black hazard perimeter stripes & turbine safety rings
     g.strokeStyle = 'rgba(245,158,11,0.34)'; g.lineWidth = 3;
     g.strokeRect(620, 230, 560, 220);
-    // Heavy steel floor grating & coolant pipelines
     g.strokeStyle = '#0ea5e9'; g.lineWidth = 6;
     g.beginPath();
     g.moveTo(240, 255); g.lineTo(780, 255);
@@ -4349,18 +5247,237 @@ function buildBunkerStaticCanvas(idef, mode) {
     g.moveTo(1020, 325); g.lineTo(1430, 325);
     g.stroke();
     g.strokeStyle = '#bae6fd'; g.lineWidth = 1.5; g.stroke();
-    // Copper transformer coils (East-North)
+    // Glowing Coolant Tank Basins (180, 220/390, 120, 70)
+    for (const cy of [220, 390]) {
+      g.fillStyle = '#0c4a6e'; g.fillRect(184, cy + 4, 112, 62);
+      g.fillStyle = '#0ea5e9'; g.fillRect(194, cy + 12, 92, 46);
+    }
     for (const ty of [220, 400]) {
       g.fillStyle = '#9a3412'; g.fillRect(1440, ty + 6, 110, 48);
       g.fillStyle = '#ea580c'; g.fillRect(1450, ty + 14, 90, 32);
     }
-    // Machine shop crane gantry tracks (West-South)
     g.strokeStyle = '#fb923c'; g.lineWidth = 2.5;
     g.strokeRect(70, 680, 420, 280);
+    // CNC Machine & Tool Racks (180, 820)
+    g.fillStyle = '#334155'; g.fillRect(180, 820, 140, 50);
+    g.fillStyle = '#f59e0b'; g.fillRect(192, 830, 40, 28);
     g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(253,186,116,0.45)'; g.textAlign = 'center';
     g.fillText('← COOLANT PUMP', 515, 300); g.fillText('SUBSTATION →', 1275, 300);
     g.fillText('← MACHINE SHOP', 515, 900); g.fillText('BREAKER VAULT →', 1275, 900);
     g.fillText('TURBINE HALL ↑', 900, 675);
+  } else if (mode === 'police') {
+    g.fillStyle = 'rgba(59,130,246,0.12)'; g.fillRect(855, 720, 90, 420);
+    g.fillStyle = '#0f172a'; g.fillRect(820, 310, 160, 46);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 1.6; g.strokeRect(820, 310, 160, 46);
+    for (let sx = 836; sx < 970; sx += 30) { g.fillStyle = '#38bdf8'; g.fillRect(sx, 320, 20, 12); }
+    for (const ry of [200, 380]) {
+      g.fillStyle = '#1e293b'; g.fillRect(160, ry, 150, 44);
+      g.strokeStyle = '#60a5fa'; g.lineWidth = 1.5; g.strokeRect(160, ry, 150, 44);
+      for (let gx = 172; gx < 298; gx += 20) { g.fillStyle = '#94a3b8'; g.fillRect(gx, ry + 8, 6, 28); }
+    }
+    for (const cy of [160, 340]) {
+      g.fillStyle = '#020617'; g.fillRect(1420, cy - 80, 150, 80);
+      g.strokeStyle = '#94a3b8'; g.lineWidth = 2; g.strokeRect(1420, cy, 150, 20);
+      for (let bx = 1430; bx < 1565; bx += 16) { g.fillStyle = '#cbd5e1'; g.fillRect(bx, cy, 4, 20); }
+    }
+    g.fillStyle = '#78350f'; g.fillRect(46, 700, 20, 140);
+    g.fillStyle = '#f8fafc'; g.fillRect(48, 712, 14, 26); g.fillStyle = '#ef4444'; g.fillRect(48, 750, 14, 24);
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(147,197,253,0.48)'; g.textAlign = 'center';
+    g.fillText('← SWAT ARMORY', 520, 300); g.fillText('CELLS →', 1270, 300);
+    g.fillText('← CRIME LAB', 520, 900); g.fillText('EVIDENCE VAULT →', 1270, 900);
+    g.fillText('DISPATCH ↑', 900, 670);
+  } else if (mode === 'fire') {
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 2.5; g.setLineDash([12, 8]);
+    g.strokeRect(80, 150, 420, 210); g.setLineDash([]);
+    g.fillStyle = '#b91c1c'; g.fillRect(150, 210, 260, 90);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 2; g.strokeRect(150, 210, 260, 90);
+    g.fillStyle = '#e2e8f0'; g.fillRect(166, 224, 52, 62);
+    g.fillStyle = '#38bdf8'; g.fillRect(365, 224, 34, 62);
+    g.fillStyle = '#fbbf24'; g.beginPath(); g.arc(900, 260, 18, 0, 7); g.fill(); g.strokeStyle = '#78350f'; g.lineWidth = 3; g.stroke();
+    g.fillStyle = '#0f172a'; g.fillRect(760, 320, 280, 44);
+    for (const [bx, by] of [[1400, 100], [1560, 100], [1400, 280], [1560, 280]]) {
+      g.fillStyle = '#991b1b'; g.fillRect(bx, by, 76, 36);
+      g.fillStyle = '#f8fafc'; g.fillRect(bx + 6, by + 6, 16, 24);
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(254,202,202,0.5)'; g.textAlign = 'center';
+    g.fillText('← ENGINE BAY', 520, 300); g.fillText('BUNKHOUSE →', 1270, 300);
+    g.fillText('← HAZMAT BAY', 520, 900); g.fillText('RESCUE VAULT →', 1270, 900);
+    g.fillText('ALARM DISPATCH ↑', 900, 670);
+  } else if (mode === 'bank') {
+    g.fillStyle = '#7f1d1d'; g.fillRect(880, 420, 100, 640);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 2; g.strokeRect(880, 420, 100, 640);
+    for (const tx of [720, 980]) {
+      g.fillStyle = '#5c2d0c'; g.fillRect(tx, 290, 160, 42);
+      g.fillStyle = 'rgba(125,211,252,0.55)'; g.fillRect(tx, 285, 160, 5);
+    }
+    for (const dy of [180, 380]) {
+      g.fillStyle = '#334155'; g.fillRect(130, dy, 130, 42);
+      g.strokeStyle = '#fbbf24'; g.lineWidth = 1.5; g.strokeRect(130, dy, 130, 42);
+    }
+    g.fillStyle = '#451a03'; g.fillRect(1460, 250, 200, 66);
+    g.fillStyle = '#334155'; g.beginPath(); g.arc(1570, 640, 28, 0, 7); g.fill();
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 3; g.stroke();
+    for (let bx = 1520; bx <= 1690; bx += 44) {
+      g.fillStyle = '#f59e0b'; g.fillRect(bx, 980, 34, 24);
+      g.fillStyle = '#fde047'; g.fillRect(bx + 4, 984, 10, 16); g.fillRect(bx + 18, 984, 10, 16);
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(15,23,42,0.6)'; g.textAlign = 'center';
+    g.fillText('← SAFE DEPOSIT', 495, 305); g.fillText('BOARDROOM →', 1355, 305);
+    g.fillText('← CURRENCY MINT', 495, 915); g.fillText('BULLION VAULT →', 1355, 915);
+    g.fillText('TELLER HALL ↑', 930, 695);
+  } else if (mode === 'stadium') {
+    g.fillStyle = 'rgba(22,163,74,0.22)'; g.fillRect(620, 60, 680, 640);
+    g.strokeStyle = 'rgba(255,255,255,0.45)'; g.lineWidth = 2.5; g.strokeRect(640, 80, 640, 600);
+    g.beginPath(); g.arc(960, 352, 76, 0, 7); g.stroke();
+    g.fillStyle = '#1e293b'; g.fillRect(810, 320, 300, 64);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 2; g.strokeRect(810, 320, 300, 64);
+    for (const [tx, ty] of [[870, 352], [960, 352], [1050, 352]]) {
+      g.fillStyle = '#f59e0b'; g.beginPath(); g.arc(tx, ty, 12, 0, 7); g.fill();
+    }
+    for (const ly of [210, 390]) {
+      g.fillStyle = '#78350f'; g.fillRect(160, ly, 140, 36);
+      g.fillStyle = '#22c55e'; g.fillRect(172, ly + 8, 20, 20); g.fillStyle = '#38bdf8'; g.fillRect(268, ly + 8, 20, 20);
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(134,239,172,0.5)'; g.textAlign = 'center';
+    g.fillText('← LOCKER ROOM', 520, 305); g.fillText('PRESS BOX →', 1390, 305);
+    g.fillText('← CONCESSIONS', 520, 925); g.fillText('TROPHY VAULT →', 1410, 925);
+    g.fillText('VIP SKYBOX ↑', 960, 720);
+  } else if (mode === 'aquarium') {
+    g.fillStyle = '#0369a1'; g.fillRect(120, 170, 260, 72);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 2.5; g.strokeRect(120, 170, 260, 72);
+    g.fillStyle = '#f43f5e'; g.beginPath(); g.arc(165, 224, 9, 0, 7); g.fill();
+    g.fillStyle = '#10b981'; g.fillRect(320, 184, 8, 46); g.fillRect(340, 192, 8, 38);
+    g.fillStyle = '#075985'; g.fillRect(760, 240, 340, 120);
+    g.strokeStyle = '#7dd3fc'; g.lineWidth = 3; g.strokeRect(760, 240, 340, 120);
+    g.fillStyle = '#bae6fd'; g.fillRect(140, 780, 220, 90);
+    g.fillStyle = '#0284c7'; g.fillRect(165, 796, 170, 58);
+    g.fillStyle = '#0f172a'; g.fillRect(1460, 180, 160, 44); g.fillRect(1460, 360, 160, 44);
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(125,211,252,0.52)'; g.textAlign = 'center';
+    g.fillText('← CORAL TUNNEL', 495, 305); g.fillText('MARINE LAB →', 1355, 305);
+    g.fillText('← PENGUIN COVE', 495, 915); g.fillText('PEARL VAULT →', 1355, 915);
+    g.fillText('SHARK ROTUNDA ↑', 930, 695);
+  } else if (mode === 'science') {
+    g.strokeStyle = 'rgba(167,139,250,0.34)'; g.lineWidth = 2;
+    g.beginPath(); g.arc(930, 350, 140, 0, 7); g.stroke();
+    g.beginPath(); g.arc(930, 350, 95, 0, 7); g.stroke();
+    g.fillStyle = '#0f172a'; g.fillRect(870, 310, 120, 80);
+    g.strokeStyle = '#38bdf8'; g.lineWidth = 2; g.strokeRect(870, 310, 120, 80);
+    for (const ry of [210, 390]) {
+      g.fillStyle = '#1e293b'; g.fillRect(150, ry, 140, 44);
+      g.fillStyle = '#38bdf8'; g.fillRect(165, ry + 10, 36, 20);
+      g.fillStyle = '#f59e0b'; g.beginPath(); g.arc(255, ry + 22, 10, 0, 7); g.fill();
+    }
+    g.fillStyle = '#e2e8f0'; g.fillRect(1510, 110, 80, 26);
+    g.fillStyle = '#ef4444'; g.beginPath(); g.moveTo(1590, 110); g.lineTo(1620, 123); g.lineTo(1590, 136); g.closePath(); g.fill();
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(196,181,253,0.52)'; g.textAlign = 'center';
+    g.fillText('← ROBOTICS LAB', 495, 305); g.fillText('ROCKETRY →', 1355, 305);
+    g.fillText('← ACCELERATOR', 495, 915); g.fillText('PROTOTYPE VAULT →', 1355, 915);
+    g.fillText('PLANETARIUM ↑', 930, 695);
+  } else if (mode === 'bazaar') {
+    g.fillStyle = 'rgba(153,27,27,0.45)'; g.fillRect(720, 180, 420, 320);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 2.5; g.strokeRect(726, 186, 408, 308);
+    g.fillStyle = '#78350f'; g.fillRect(760, 290, 340, 80);
+    g.fillStyle = '#0284c7'; g.beginPath(); g.ellipse(930, 330, 86, 26, 0, 0, 7); g.fill();
+    const bCols = ['#dc2626', '#f59e0b', '#22c55e', '#c084fc'];
+    for (let i = 0; i < 4; i++) {
+      g.fillStyle = bCols[i]; g.beginPath(); g.arc(160 + i * 28, 192, 9, 0, 7); g.fill();
+      g.fillStyle = bCols[(i + 1) % 4]; g.beginPath(); g.arc(360 + i * 28, 192, 9, 0, 7); g.fill();
+    }
+    for (const cy of [190, 380]) {
+      g.fillStyle = '#991b1b'; g.fillRect(1460, cy, 150, 44);
+      g.strokeStyle = '#fbbf24'; g.lineWidth = 1.6; g.strokeRect(1466, cy + 5, 138, 34);
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(253,230,138,0.52)'; g.textAlign = 'center';
+    g.fillText('← SPICE SOUK', 495, 305); g.fillText('CARPETS →', 1355, 305);
+    g.fillText('← CHAI PAVILION', 495, 915); g.fillText('GUILD TREASURY →', 1355, 915);
+    g.fillText('LANTERN COURT ↑', 930, 695);
+  } else if (mode === 'pyramid') {
+    g.fillStyle = 'rgba(251,191,36,0.14)'; g.fillRect(855, 290, 90, 800);
+    g.fillStyle = '#d97706'; g.fillRect(830, 290, 140, 64);
+    g.strokeStyle = '#fef08a'; g.lineWidth = 3; g.strokeRect(830, 290, 140, 64);
+    g.fillStyle = '#fbbf24'; g.beginPath(); g.ellipse(900, 322, 46, 18, 0, 0, 7); g.fill();
+    for (const [ox, oy] of [[680, 190], [1076, 190], [680, 430], [1076, 430]]) {
+      g.fillStyle = '#78350f'; g.fillRect(ox, oy, 44, 44);
+      g.strokeStyle = '#fbbf24'; g.lineWidth = 2; g.strokeRect(ox, oy, 44, 44);
+    }
+    for (const cx of [150, 330]) {
+      g.fillStyle = '#451a03'; g.fillRect(cx, 800, 120, 48);
+      g.fillStyle = '#fbbf24';
+      for (let jx = cx + 20; jx < cx + 108; jx += 26) { g.beginPath(); g.arc(jx, 824, 6, 0, 7); g.fill(); }
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(253,230,138,0.55)'; g.textAlign = 'center';
+    g.fillText('← ANTECHAMBER', 520, 300); g.fillText('STAR SANCTUARY →', 1270, 300);
+    g.fillText('← CANOPIC WING', 520, 900); g.fillText('PHARAOH VAULT →', 1270, 900);
+    g.fillText('SARCOPHAGUS ↑', 900, 675);
+  } else if (mode === 'mosque') {
+    g.fillStyle = '#065f46'; g.fillRect(610, 80, 580, 580);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 2.5; g.strokeRect(618, 88, 564, 564);
+    g.strokeStyle = 'rgba(251,191,36,0.34)'; g.lineWidth = 2;
+    g.beginPath(); g.arc(900, 350, 118, 0, 7); g.stroke();
+    g.beginPath(); g.arc(900, 350, 76, 0, 7); g.stroke();
+    g.fillStyle = '#fbbf24'; g.fillRect(830, 130, 140, 36);
+    g.fillStyle = '#0284c7'; g.fillRect(220, 260, 110, 110);
+    g.strokeStyle = '#bae6fd'; g.lineWidth = 2.5; g.strokeRect(220, 260, 110, 110);
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(167,243,208,0.55)'; g.textAlign = 'center';
+    g.fillText('← ABLUTIONS', 520, 300); g.fillText('MANUSCRIPTS →', 1270, 300);
+    g.fillText('← TILE CLOISTER', 520, 900); g.fillText('RELIC TREASURY →', 1270, 900);
+    g.fillText('PRAYER HALL ↑', 900, 675);
+  } else if (mode === 'capitol') {
+    g.fillStyle = '#1e3a8a'; g.beginPath(); g.arc(930, 440, 96, 0, 7); g.fill();
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 3; g.stroke();
+    g.fillStyle = '#5c2d0c'; g.fillRect(760, 290, 340, 56);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 2; g.strokeRect(760, 290, 340, 56);
+    g.fillStyle = '#451a03'; g.fillRect(1460, 230, 180, 58);
+    for (const sx of [150, 360]) {
+      g.fillStyle = '#78350f'; g.fillRect(sx, 810, 26, 220);
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(15,23,42,0.62)'; g.textAlign = 'center';
+    g.fillText('← SUPREME COURT', 495, 305); g.fillText('DIPLOMACY →', 1355, 305);
+    g.fillText('← STATUTE ARCHIVE', 495, 915); g.fillText('STATE VAULT →', 1355, 915);
+    g.fillText('CAPITOL ROTUNDA ↑', 930, 695);
+  } else if (mode === 'palace') {
+    g.fillStyle = '#991b1b'; g.fillRect(880, 220, 100, 860);
+    g.strokeStyle = '#fbbf24'; g.lineWidth = 2.5; g.strokeRect(880, 220, 100, 860);
+    g.fillStyle = '#f59e0b'; g.fillRect(830, 155, 200, 56);
+    g.fillStyle = '#7f1d1d'; g.fillRect(896, 164, 68, 38);
+    g.fillStyle = '#5c2d0c'; g.fillRect(1460, 240, 180, 68);
+    g.fillStyle = '#f8fafc';
+    for (let px = 1485; px <= 1615; px += 32) { g.beginPath(); g.arc(px, 274, 7, 0, 7); g.fill(); }
+    g.fillStyle = '#0f172a'; g.fillRect(170, 220, 150, 44);
+    g.fillStyle = '#f8fafc'; g.fillRect(184, 232, 110, 12);
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(253,230,138,0.52)'; g.textAlign = 'center';
+    g.fillText('← BALLROOM', 495, 305); g.fillText('BANQUET HALL →', 1355, 305);
+    g.fillText('← GUARD BARRACKS', 495, 915); g.fillText('CROWN VAULT →', 1355, 915);
+    g.fillText('THRONE HALL ↑', 930, 695);
+  } else if (mode === 'greenhouse') {
+    g.fillStyle = '#0284c7'; g.fillRect(830, 300, 200, 90);
+    g.strokeStyle = '#94a3b8'; g.lineWidth = 3; g.strokeRect(830, 300, 200, 90);
+    g.fillStyle = '#22c55e';
+    for (const [lx, ly] of [[870, 345], [930, 330], [985, 355]]) { g.beginPath(); g.arc(lx, ly, 12, 0, 7); g.fill(); }
+    for (const [bx, by] of [[130, 180], [320, 180], [130, 380]]) {
+      g.fillStyle = '#78350f'; g.fillRect(bx, by, 140, 44);
+      for (let fx = bx + 20; fx < bx + 130; fx += 26) {
+        g.fillStyle = '#15803d'; g.beginPath(); g.arc(fx, by + 22, 11, 0, 7); g.fill();
+        g.fillStyle = fx % 52 === 0 ? '#f472b6' : '#fde047'; g.beginPath(); g.arc(fx, by + 22, 4, 0, 7); g.fill();
+      }
+    }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(134,239,172,0.55)'; g.textAlign = 'center';
+    g.fillText('← ORCHID WING', 520, 300); g.fillText('SEED LAB →', 1270, 300);
+    g.fillText('← CITRUS GROVE', 520, 900); g.fillText('FLORA VAULT →', 1270, 900);
+    g.fillText('PALM DOME ↑', 900, 675);
+  } else if (mode === 'mill') {
+    for (const hy of [210, 390]) {
+      g.fillStyle = '#a16207'; g.fillRect(160, hy, 150, 56);
+      g.fillStyle = '#fde047'; g.fillRect(172, hy + 10, 126, 36);
+    }
+    g.fillStyle = '#475569'; g.fillRect(820, 280, 160, 90);
+    g.fillStyle = '#94a3b8'; g.beginPath(); g.arc(900, 325, 32, 0, 7); g.fill();
+    g.fillStyle = '#334155'; g.fillRect(1440, 210, 160, 54);
+    for (let sx = 1456; sx < 1590; sx += 32) { g.fillStyle = '#fef3c7'; g.fillRect(sx, 224, 22, 26); }
+    g.font = 'bold 10px system-ui'; g.fillStyle = 'rgba(253,230,138,0.52)'; g.textAlign = 'center';
+    g.fillText('← GRAIN HOPPERS', 520, 300); g.fillText('FLOUR BAGGING →', 1270, 300);
+    g.fillText('← TRACTOR BAY', 520, 900); g.fillText('PAYMASTER VAULT →', 1270, 900);
+    g.fillText('MILLSTONES ↑', 900, 675);
   }
 
   // Door Threshold Frames
@@ -4379,7 +5496,20 @@ function buildBunkerStaticCanvas(idef, mode) {
     transit: 'rgba(56,189,248,0.58)',
     industrial: 'rgba(251,146,60,0.6)',
     raid: 'rgba(248,113,113,0.65)',
-    military: 'rgba(248,113,113,0.65)'
+    military: 'rgba(248,113,113,0.65)',
+    police: 'rgba(59,130,246,0.65)',
+    fire: 'rgba(239,68,68,0.65)',
+    bank: 'rgba(234,179,8,0.68)',
+    stadium: 'rgba(34,197,94,0.62)',
+    aquarium: 'rgba(34,211,238,0.65)',
+    science: 'rgba(167,139,250,0.65)',
+    bazaar: 'rgba(245,158,11,0.65)',
+    pyramid: 'rgba(251,191,36,0.68)',
+    mosque: 'rgba(52,211,153,0.65)',
+    capitol: 'rgba(96,165,250,0.65)',
+    palace: 'rgba(251,191,36,0.68)',
+    greenhouse: 'rgba(74,222,128,0.65)',
+    mill: 'rgba(217,119,6,0.65)'
   };
   const doorAccent = accentMap[mode] || 'rgba(56,189,248,0.6)';
   for (const [dx, dy, dw, dh, horiz] of doorThresholds) {
@@ -4396,8 +5526,20 @@ function buildBunkerStaticCanvas(idef, mode) {
   }
 
   // Beveled Walls & Solid Fixtures
-  const wallFillMap = { airport: '#1e293b', university: '#451a03', hospital: '#64748b', mall: '#334155', historic: '#78664e', museum: '#475569', transit: '#243447', industrial: '#292e36' };
-  const wallEdgeMap = { airport: '#38bdf8', university: '#b45309', hospital: '#94a3b8', historic: '#d97706', museum: '#cbd5e1', transit: '#38bdf8', industrial: '#f59e0b' };
+  const wallFillMap = {
+    airport: '#1e293b', university: '#451a03', hospital: '#64748b', mall: '#334155', historic: '#78664e',
+    museum: '#475569', transit: '#243447', industrial: '#292e36',
+    police: '#172554', fire: '#450a0a', bank: '#57534e', stadium: '#14532d',
+    aquarium: '#082f49', science: '#1e1b4b', bazaar: '#7c2d12', pyramid: '#713f12',
+    mosque: '#064e3b', capitol: '#475569', palace: '#4c0519', greenhouse: '#14532d', mill: '#451a03'
+  };
+  const wallEdgeMap = {
+    airport: '#38bdf8', university: '#b45309', hospital: '#94a3b8', historic: '#d97706',
+    museum: '#cbd5e1', transit: '#38bdf8', industrial: '#f59e0b',
+    police: '#3b82f6', fire: '#ef4444', bank: '#eab308', stadium: '#22c55e',
+    aquarium: '#22d3ee', science: '#a78bfa', bazaar: '#f59e0b', pyramid: '#fbbf24',
+    mosque: '#34d399', capitol: '#cbd5e1', palace: '#fbbf24', greenhouse: '#4ade80', mill: '#d97706'
+  };
   const wallFill = wallFillMap[mode] || '#1f2937';
   const wallEdge = wallEdgeMap[mode] || '#64748b';
   for (const w of idef.walls) {
@@ -4477,8 +5619,10 @@ function drawActiveInterior(zone, now, selfX, selfY) {
   } else if (kind === 'university') {
     for (let fx = 1340; fx <= 1660; fx += 80) {
       ctx.fillStyle = `rgba(56,189,248,${0.4 + 0.35 * Math.sin(now / 250 + fx)})`;
-      ctx.beginPath(); ctx.arc(fx, 110, 8, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(fx, 108, 8, 0, 7); ctx.fill();
     }
+    ctx.fillStyle = `rgba(74,222,128,${0.35 + 0.3 * Math.sin(now / 200)})`;
+    ctx.beginPath(); ctx.arc(1388, 211, 5, 0, 7); ctx.arc(1608, 211, 5, 0, 7); ctx.fill();
   } else if (kind === 'hospital') {
     ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 1.6;
     ctx.beginPath();
@@ -4487,16 +5631,52 @@ function drawActiveInterior(zone, now, selfX, selfY) {
       ctx.moveTo(bx + 100, by + 18); ctx.lineTo(bx + 108, ey); ctx.lineTo(bx + 116, by + 18);
     }
     ctx.stroke();
+    // Pulsing MRI magnet indicator + quarantine bio-alert beacons
+    ctx.strokeStyle = `rgba(56,189,248,${0.35 + 0.35 * Math.sin(now / 260)})`; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(280, 155, 36, 0, 7); ctx.stroke();
     const qAlpha = 0.28 + 0.25 * Math.sin(now / 220);
     ctx.fillStyle = `rgba(239,68,68,${qAlpha})`;
     ctx.beginPath(); ctx.arc(1310, 100, 10, 0, 7); ctx.arc(1720, 100, 10, 0, 7); ctx.fill();
   } else if (kind === 'mall') {
-    const rPulse = (now / 45) % 44;
-    ctx.strokeStyle = `rgba(186,230,253,${0.65 - rPulse / 68})`; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.ellipse(960, 745, 14 + rPulse, 8 + rPulse * 0.55, 0, 0, 7); ctx.stroke();
-    ctx.strokeStyle = `rgba(239,68,68,${0.3 + 0.25 * Math.sin(now / 200)})`; ctx.lineWidth = 1.4;
+    // 1. Animated Atrium Water Fountain concentric ripples & central water spout (1200, 840)
+    const rPulse = (now / 42) % 52;
+    ctx.strokeStyle = `rgba(186,230,253,${0.72 - rPulse / 72})`; ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.ellipse(1200, 840, 18 + rPulse, 11 + rPulse * 0.6, 0, 0, 7); ctx.stroke();
+    ctx.fillStyle = 'rgba(224,242,254,0.65)';
+    for (let j = 0; j < 6; j++) {
+      const a = now / 320 + j * Math.PI / 3;
+      ctx.beginPath(); ctx.arc(1200 + Math.cos(a) * 14, 840 + Math.sin(a) * 9, 2.2, 0, 7); ctx.fill();
+    }
+    // 2. Twin Moving Escalator Treads (790..854, 480..580 & 1546..1610, 480..580)
+    const stepOff = (now * 0.03) % 14;
+    ctx.strokeStyle = 'rgba(148,163,184,0.65)'; ctx.lineWidth = 2;
     ctx.beginPath();
-    for (let ly = 870; ly <= 940; ly += 22) { ctx.moveTo(1460, ly); ctx.lineTo(1860, ly); }
+    for (const ex of [790, 1546]) {
+      const dir = ex < 1200 ? stepOff : 14 - stepOff;
+      for (let sy = 490 + dir; sy < 572; sy += 14) {
+        ctx.moveTo(ex + 8, sy); ctx.lineTo(ex + 56, sy);
+      }
+    }
+    ctx.stroke();
+    // 3. Tech Plaza OLED Screensaver & Flickering Retro Arcade CRT Screens
+    const tvHue = Math.floor((now / 35) % 360);
+    ctx.fillStyle = `hsla(${tvHue}, 85%, 60%, 0.72)`;
+    ctx.fillRect(676, 46, 328, 14);
+    ctx.fillStyle = `hsla(${(tvHue + 140) % 360}, 85%, 60%, 0.72)`;
+    ctx.fillRect(1396, 46, 328, 14);
+    for (let ai = 0; ai < 5; ai++) {
+      const ax = 1095 + ai * 46;
+      const blink = 0.4 + 0.5 * Math.sin(now / 150 + ai * 1.4);
+      ctx.fillStyle = `rgba(56,189,248,${blink})`;
+      ctx.fillRect(ax + 4, 253, 18, 9);
+    }
+    // 4. Sparkling Diamonds & Armored Vault Security Lasers (SE Vault)
+    const dSpark = 0.45 + 0.55 * Math.sin(now / 190);
+    ctx.fillStyle = `rgba(224,242,254,${dSpark})`;
+    for (const dx of [1970, 2010, 2050]) { ctx.beginPath(); ctx.arc(dx, 1107, 3.2, 0, 7); ctx.fill(); }
+    ctx.strokeStyle = `rgba(239,68,68,${0.3 + 0.28 * Math.sin(now / 200)})`; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    for (let ly = 930; ly <= 1010; ly += 22) { ctx.moveTo(1820, ly); ctx.lineTo(2340, ly); }
     ctx.stroke();
   } else if (kind === 'military') {
     const holoPulse = 0.5 + 0.5 * Math.sin(now / 300);
@@ -4505,12 +5685,16 @@ function drawActiveInterior(zone, now, selfX, selfY) {
     ctx.save(); ctx.translate(960, 365); ctx.rotate(now / 620);
     ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(58, 0); ctx.stroke();
     ctx.restore();
+    // Motorpool welding arc flash near APC
+    if ((now % 2400) < 180) {
+      ctx.fillStyle = 'rgba(186,230,253,0.75)';
+      ctx.beginPath(); ctx.arc(212, 785, 8, 0, 7); ctx.fill();
+    }
     ctx.strokeStyle = `rgba(239,68,68,${0.35 + 0.3 * Math.sin(now / 210)})`; ctx.lineWidth = 1.6;
     ctx.beginPath();
     for (let ly = 720; ly <= 810; ly += 24) { ctx.moveTo(1400, ly); ctx.lineTo(1860, ly); }
     ctx.stroke();
   } else if (kind === 'historic') {
-    // Flickering golden votive altar candles & warm sanctum brazier glow
     for (const [cx2, cy2] of [[845, 165], [900, 165], [955, 165], [640, 260], [1160, 260]]) {
       const flk = 7 + Math.sin(now / 110 + cx2) * 2.5;
       ctx.fillStyle = 'rgba(251,191,36,0.28)';
@@ -4519,17 +5703,15 @@ function drawActiveInterior(zone, now, selfX, selfY) {
       ctx.beginPath(); ctx.arc(cx2, cy2, flk * 0.55, 0, 7); ctx.fill();
     }
   } else if (kind === 'museum') {
-    // Rotating gallery spotlight sweep & Treasury vault lasers
     const spotA = now / 900;
-    ctx.fillStyle = 'rgba(251,191,36,0.12)';
+    ctx.fillStyle = 'rgba(251,191,36,0.13)';
     ctx.beginPath(); ctx.arc(930 + Math.cos(spotA) * 55, 360 + Math.sin(spotA) * 35, 42, 0, 7); ctx.fill();
     ctx.strokeStyle = `rgba(239,68,68,${0.28 + 0.25 * Math.sin(now / 210)})`; ctx.lineWidth = 1.4;
     ctx.beginPath();
     for (let ly = 760; ly <= 830; ly += 22) { ctx.moveTo(1360, ly); ctx.lineTo(1790, ly); }
     ctx.stroke();
   } else if (kind === 'airport') {
-    // Dual animated baggage claim carousels (4 luggage cases per loop)
-    for (const [cx0, cy0] of [[140, 160], [140, 320]]) {
+    for (const [cx0, cy0] of [[140, 165], [140, 335]]) {
       const cw = 260, ch = 76, perim = (cw + ch) * 2;
       for (let b = 0; b < 4; b++) {
         const ph = ((now / 42 + b * (perim / 4) + (cy0 > 200 ? 90 : 0)) % perim);
@@ -4543,21 +5725,53 @@ function drawActiveInterior(zone, now, selfX, selfY) {
         ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 1.5; ctx.strokeRect(bx - 10, by - 7, 20, 14);
       }
     }
-    // Rotating Air Traffic Control radar scope sweep (ATC Wing)
-    ctx.save(); ctx.translate(2040, 110); ctx.rotate(now / 420);
+    ctx.save(); ctx.translate(2000, 110); ctx.rotate(now / 420);
     ctx.strokeStyle = 'rgba(56,189,248,0.65)'; ctx.lineWidth = 2.5;
     ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(42, 0); ctx.stroke();
     ctx.restore();
-    // Flight departure LED lights & Customs Vault security lasers
     const gateBlink = 0.45 + 0.45 * Math.sin(now / 260);
     ctx.fillStyle = `rgba(34,197,94,${gateBlink})`;
     ctx.beginPath(); ctx.arc(1062, 67, 5, 0, 7); ctx.arc(1338, 67, 5, 0, 7); ctx.fill();
     ctx.strokeStyle = `rgba(239,68,68,${0.3 + 0.25 * Math.sin(now / 210)})`; ctx.lineWidth = 1.5;
     ctx.beginPath();
-    for (let ly = 1045; ly <= 1105; ly += 22) { ctx.moveTo(1790, ly); ctx.lineTo(2340, ly); }
+    for (let ly = 1115; ly <= 1175; ly += 22) { ctx.moveTo(1790, ly); ctx.lineTo(2235, ly); }
     ctx.stroke();
+    if (idef.hangarPlane) {
+      const hp = idef.hangarPlane;
+      ctx.save();
+      ctx.translate(hp.x, hp.y);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.beginPath(); ctx.ellipse(-6, 12, 95, 76, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = '#475569';
+      ctx.beginPath();
+      ctx.moveTo(45, 0); ctx.lineTo(-42, -96); ctx.lineTo(-70, -96); ctx.lineTo(-42, -14);
+      ctx.lineTo(-42, 14); ctx.lineTo(-70, 96); ctx.lineTo(-42, 96); ctx.closePath();
+      ctx.fill(); ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#334155';
+      ctx.beginPath();
+      ctx.moveTo(-58, 0); ctx.lineTo(-98, -42); ctx.lineTo(-110, -42); ctx.lineTo(-92, 0);
+      ctx.lineTo(-110, 42); ctx.lineTo(-98, 42); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#64748b';
+      ctx.beginPath();
+      ctx.moveTo(115, 0); ctx.lineTo(50, -16); ctx.lineTo(-95, -14);
+      ctx.lineTo(-105, 0); ctx.lineTo(-95, 14); ctx.lineTo(50, 16); ctx.closePath();
+      ctx.fill(); ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#0ea5e9';
+      ctx.beginPath(); ctx.ellipse(42, 0, 28, 9, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = 'rgba(186,230,253,0.5)';
+      ctx.beginPath(); ctx.ellipse(48, -2, 14, 4, 0, 0, 7); ctx.fill();
+      if (now % 900 < 450) {
+        ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(-56, -96, 4.5, 0, 7); ctx.fill();
+        ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(-56, 96, 4.5, 0, 7); ctx.fill();
+      }
+      ctx.restore();
+      for (const [cx2, cy2] of [[hp.x - 115, hp.y - 115], [hp.x + 115, hp.y - 115], [hp.x - 115, hp.y + 115], [hp.x + 115, hp.y + 115]]) {
+        ctx.fillStyle = '#f97316'; ctx.beginPath(); ctx.arc(cx2, cy2, 6, 0, 7); ctx.fill();
+        ctx.fillStyle = '#fef08a'; ctx.beginPath(); ctx.arc(cx2, cy2, 2.5, 0, 7); ctx.fill();
+      }
+    }
   } else if (kind === 'transit') {
-    // Animated conveyor suitcases + radar sweep in Control Tower
     for (let b = 0; b < 4; b++) {
       const ph = ((now / 45 + b * 145) % 580);
       let bx = 140, by = 215;
@@ -4574,18 +5788,74 @@ function drawActiveInterior(zone, now, selfX, selfY) {
     ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(44, 0); ctx.stroke();
     ctx.restore();
   } else if (kind === 'industrial') {
-    // Rotating hydro-turbine rotors & electric arcs on transformers
     for (const tx of [845, 955]) {
       ctx.save(); ctx.translate(tx, 325); ctx.rotate((now / 240) * (tx < 900 ? 1 : -1));
       ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 4;
       for (let b = 0; b < 4; b++) { ctx.rotate(Math.PI / 2); ctx.beginPath(); ctx.moveTo(-26, 0); ctx.lineTo(26, 0); ctx.stroke(); }
       ctx.restore();
     }
+    // Coolant tank bubbles
+    for (const cy of [220, 390]) {
+      for (let b = 0; b < 3; b++) {
+        const bx = 206 + ((now * 0.03 + b * 28) % 70);
+        ctx.fillStyle = 'rgba(186,230,253,0.65)';
+        ctx.beginPath(); ctx.arc(bx, cy + 28 + (b % 2) * 14, 3, 0, 7); ctx.fill();
+      }
+    }
     if (Math.random() < 0.35) {
       ctx.strokeStyle = 'rgba(56,189,248,0.8)'; ctx.lineWidth = 2;
       const sx2 = 1445 + Math.random() * 100, sy2 = (Math.random() < 0.5 ? 250 : 430);
       ctx.beginPath(); ctx.moveTo(sx2, sy2); ctx.lineTo(sx2 + (Math.random() - 0.5) * 26, sy2 + (Math.random() - 0.5) * 22); ctx.stroke();
     }
+  } else if (kind === 'police') {
+    const redOn = (now % 600) < 300;
+    ctx.fillStyle = redOn ? 'rgba(239,68,68,0.42)' : 'rgba(59,130,246,0.42)';
+    ctx.beginPath(); ctx.arc(900, 110, 14, 0, 7); ctx.fill();
+    ctx.strokeStyle = `rgba(239,68,68,${0.3 + 0.25 * Math.sin(now / 210)})`; ctx.lineWidth = 1.5;
+    ctx.beginPath(); for (let ly = 720; ly <= 780; ly += 24) { ctx.moveTo(1260, ly); ctx.lineTo(1750, ly); } ctx.stroke();
+  } else if (kind === 'fire') {
+    const fl = 0.3 + 0.35 * Math.sin(now / 150);
+    ctx.fillStyle = `rgba(239,68,68,${fl})`;
+    ctx.beginPath(); ctx.arc(165, 218, 9, 0, 7); ctx.arc(165, 292, 9, 0, 7); ctx.fill();
+  } else if (kind === 'bank' || kind === 'capitol' || kind === 'palace') {
+    ctx.strokeStyle = `rgba(239,68,68,${0.32 + 0.28 * Math.sin(now / 200)})`; ctx.lineWidth = 1.6;
+    ctx.beginPath(); for (let ly = 720; ly <= 790; ly += 24) { ctx.moveTo(1340, ly); ctx.lineTo(1810, ly); } ctx.stroke();
+  } else if (kind === 'aquarium') {
+    for (let f = 0; f < 5; f++) {
+      const fx = 780 + ((now * 0.06 + f * 65) % 290);
+      const fy = 262 + (f % 3) * 28 + Math.sin(now / 300 + f) * 6;
+      ctx.fillStyle = f === 0 ? '#94a3b8' : f % 2 === 0 ? '#fde047' : '#fb7185';
+      ctx.beginPath(); ctx.ellipse(fx, fy, f === 0 ? 16 : 7, f === 0 ? 6 : 3.5, 0, 0, 7); ctx.fill();
+    }
+    for (let f = 0; f < 4; f++) {
+      const rx = 140 + ((now * 0.05 + f * 58) % 220);
+      ctx.fillStyle = f % 2 === 0 ? '#38bdf8' : '#f472b6';
+      ctx.beginPath(); ctx.ellipse(rx, 195 + (f % 2) * 22, 6, 3, 0, 0, 7); ctx.fill();
+    }
+  } else if (kind === 'science') {
+    for (let p = 0; p < 3; p++) {
+      const r = 42 + p * 34;
+      const a = now / (500 + p * 260) * (p % 2 === 0 ? 1 : -1);
+      ctx.fillStyle = ['#38bdf8', '#f59e0b', '#a78bfa'][p];
+      ctx.beginPath(); ctx.arc(930 + Math.cos(a) * r, 350 + Math.sin(a) * r, 7, 0, 7); ctx.fill();
+    }
+  } else if (kind === 'bazaar' || kind === 'pyramid') {
+    const pts = kind === 'bazaar' ? [[780, 300], [1080, 300], [880, 120], [980, 120]] : [[702, 212], [1098, 212], [702, 452], [1098, 452]];
+    for (const [fx, fy] of pts) {
+      const r = 6 + Math.sin(now / 110 + fx) * 2;
+      ctx.fillStyle = 'rgba(251,191,36,0.32)'; ctx.beginPath(); ctx.arc(fx, fy, r * 2.2, 0, 7); ctx.fill();
+      ctx.fillStyle = '#fde047'; ctx.beginPath(); ctx.arc(fx, fy, r * 0.55, 0, 7); ctx.fill();
+    }
+  } else if (kind === 'mosque' || kind === 'greenhouse') {
+    const cx0 = kind === 'mosque' ? 275 : 930, cy0 = kind === 'mosque' ? 315 : 345;
+    const rp = (now / 40) % 36;
+    ctx.strokeStyle = `rgba(186,230,253,${0.7 - rp / 52})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx0, cy0, 10 + rp, 0, 7); ctx.stroke();
+  } else if (kind === 'mill') {
+    ctx.save(); ctx.translate(900, 325); ctx.rotate(now / 420);
+    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 4;
+    for (let k = 0; k < 4; k++) { ctx.rotate(Math.PI / 2); ctx.beginPath(); ctx.moveTo(-26, 0); ctx.lineTo(26, 0); ctx.stroke(); }
+    ctx.restore();
   }
 
   // Interactive Stations
@@ -4652,17 +5922,19 @@ function drawActiveInterior(zone, now, selfX, selfY) {
   ctx.fillStyle = borderCol;
   ctx.font = 'bold 15px system-ui';
   ctx.textAlign = 'center';
-  const titleTxt = kind === 'raid'
-    ? `☢️ MILITARY RAID BUNKER #${zone.slice(5)} · CLEAR GUARDIANS & CRACK VAULT`
-    : kind === 'university'
-      ? `🎓 ${entName} · UNIVERSITY CAMPUS INTERIOR`
-      : kind === 'hospital'
-        ? `🏥 ${entName} · MEDICAL & QUARANTINE COMPLEX`
-        : kind === 'mall'
-          ? `🛍️ ${entName} · SHOPPING MALL CONCOURSE`
-          : kind === 'military'
-            ? `🪖 ${entName} · MILITARY BASE COMMAND`
-            : `🛡️ UNDERGROUND SHELTER BUNKER (PLOT #${zone.slice(7)}) · 6-WING OPERATIONS`;
+  const titleMap = {
+    raid: `☢️ MILITARY RAID BUNKER #${zone.slice(5)} · CLEAR GUARDIANS & CRACK VAULT`,
+    airport: `✈️ ${entName} · INT'L TERMINAL, ATC TOWER & MAINTENANCE HANGAR`,
+    university: `🎓 ${entName} · UNIVERSITY CAMPUS INTERIOR`,
+    hospital: `🏥 ${entName} · MEDICAL & QUARANTINE COMPLEX`,
+    mall: `🛍️ ${entName} · SHOPPING MALL CONCOURSE`,
+    military: `🪖 ${entName} · MILITARY BASE COMMAND`,
+    historic: `🏛️ ${entName} · SACRED SANCTUM & ARCHIVES`,
+    museum: `🖼️ ${entName} · GRAND EXHIBITION HALL & TREASURY`,
+    transit: `🚉 ${entName} · TRANSIT CONCOURSE & CONTROL DECK`,
+    industrial: `⚡ ${entName} · POWER PLANT & TURBINE HALL`
+  };
+  const titleTxt = titleMap[kind] || `🛡️ UNDERGROUND SHELTER BUNKER (PLOT #${zone.slice(7)}) · 6-WING OPERATIONS`;
   ctx.fillText(titleTxt, W / 2, 16);
 
   ctx.restore();
@@ -4791,130 +6063,180 @@ function drawWeapon(w) {
 
   switch (c) {
     case 'pistol':
-      // Tactical Handgun (Glock 17 / Desert Eagle)
-      ctx.fillStyle = '#1e2229';
-      ctx.fillRect(8, -3, 16, 6);
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(8, 0, 10, 6);
-      ctx.fillStyle = '#64748b';
-      ctx.fillRect(23, -2, 2, 4);
-      ctx.fillStyle = '#334155';
-      ctx.fillRect(13, -3, 4, 2);
+      // Slide + polymer frame + underbarrel rail + front tritium sight
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(8, -2, 12, 6);
+      ctx.fillStyle = '#334155'; ctx.fillRect(8, -3.5, 17, 5);
+      ctx.fillStyle = '#94a3b8'; ctx.fillRect(14, -3.5, 5, 2);
+      ctx.fillStyle = '#4ade80'; ctx.fillRect(23, -2, 2, 2);
       break;
     case 'smg':
-      // Tactical Submachine Gun (MP5 / Vector)
-      ctx.fillStyle = '#1e293b';
-      ctx.fillRect(6, -4, 24, 7);
-      ctx.fillStyle = '#0f172a';
-      ctx.beginPath(); ctx.moveTo(14, 3); ctx.quadraticCurveTo(18, 12, 22, 14); ctx.lineWidth = 3; ctx.strokeStyle = '#0f172a'; ctx.stroke();
-      ctx.fillStyle = '#475569';
-      ctx.fillRect(28, -2, 6, 3);
-      ctx.fillStyle = '#334155';
-      ctx.fillRect(12, -6, 8, 2);
+      // Compact receiver + forward shroud + vertical grip + curved stick mag
+      ctx.fillStyle = '#1e293b'; ctx.fillRect(4, -4, 24, 7);
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(2, -3, 6, 5);
+      ctx.fillStyle = '#334155'; ctx.fillRect(10, -5.5, 10, 2);
+      ctx.fillStyle = '#64748b'; ctx.fillRect(28, -2, 7, 3);
+      ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 3.2;
+      ctx.beginPath(); ctx.moveTo(15, 3); ctx.quadraticCurveTo(18, 12, 22, 14); ctx.stroke();
+      ctx.fillStyle = '#475569'; ctx.fillRect(22, 2, 3, 5);
       break;
     case 'ar':
-      // Assault Rifle (AK-47 / M4A1)
-      ctx.fillStyle = '#181d24';
-      ctx.fillRect(6, -4, 26, 7);
-      ctx.fillStyle = '#6d4c41';
-      ctx.fillRect(16, -3, 12, 5);
-      ctx.fillStyle = '#2b2f38';
-      ctx.fillRect(30, -2, 10, 3);
-      ctx.fillStyle = '#d97706';
-      ctx.fillRect(39, -3, 3, 5);
+      // Stock + upper receiver + wood/polymer handguard + banana mag + muzzle brake
+      ctx.fillStyle = '#3f2a1d'; ctx.fillRect(0, -3.5, 8, 6);
+      ctx.fillStyle = '#181d24'; ctx.fillRect(7, -4, 22, 7);
+      ctx.fillStyle = '#7c4d34'; ctx.fillRect(18, -3.5, 12, 6);
+      ctx.fillStyle = '#334155'; ctx.fillRect(30, -2, 11, 3);
+      ctx.fillStyle = '#d97706'; ctx.fillRect(40, -3, 3.5, 5);
+      ctx.fillStyle = '#475569'; ctx.fillRect(12, -6, 9, 2);
       ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 4;
       ctx.beginPath(); ctx.moveTo(16, 3); ctx.quadraticCurveTo(20, 14, 26, 17); ctx.stroke();
       break;
     case 'sniper':
-      // Heavy Sniper Rifle (Barrett .50 / AWM)
-      ctx.fillStyle = '#1e232d';
-      ctx.fillRect(4, -4, 30, 7);
-      ctx.fillStyle = '#334155';
-      ctx.fillRect(32, -2, 24, 4);
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(54, -4, 6, 8);
-      ctx.fillStyle = '#090d14'; ctx.fillRect(12, -8, 18, 4);
-      ctx.fillStyle = '#38bdf8'; ctx.fillRect(28, -8, 2, 4);
-      ctx.fillStyle = '#475569'; ctx.fillRect(10, -9, 3, 6); ctx.fillRect(28, -9, 3, 6);
+      // Long chassis + fluted heavy barrel + muzzle brake + illuminated optic + bipod legs
+      ctx.fillStyle = '#1e293b'; ctx.fillRect(2, -4, 30, 7);
+      ctx.fillStyle = '#334155'; ctx.fillRect(32, -2, 25, 3.8);
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(55, -4, 7, 7.5);
+      ctx.fillStyle = '#090d14'; ctx.fillRect(11, -8, 20, 4);
+      ctx.fillStyle = '#38bdf8'; ctx.fillRect(29, -8, 2.5, 4);
+      ctx.fillStyle = '#475569'; ctx.fillRect(12, -9, 3, 6); ctx.fillRect(26, -9, 3, 6);
+      ctx.strokeStyle = '#64748b'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(36, 2); ctx.lineTo(41, 8); ctx.stroke();
       break;
     case 'shotgun':
-      // Combat Shotgun (SPAS-12 / Remington)
-      ctx.fillStyle = '#242b35';
-      ctx.fillRect(6, -4, 22, 8);
-      ctx.fillStyle = '#452c1e';
-      ctx.fillRect(18, 1, 10, 5);
-      ctx.fillStyle = '#475569';
-      ctx.fillRect(26, -3.5, 16, 6);
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(28, -5, 14, 2);
+      // Hardwood/tactical stock + heavy receiver + ribbed pump + dual under-tube
+      ctx.fillStyle = '#5c3a21'; ctx.fillRect(1, -3, 9, 6);
+      ctx.fillStyle = '#1e293b'; ctx.fillRect(9, -4, 18, 7.5);
+      ctx.fillStyle = '#78350f'; ctx.fillRect(20, 1, 12, 5);
+      ctx.fillStyle = '#475569'; ctx.fillRect(27, -3.8, 17, 4);
+      ctx.fillStyle = '#334155'; ctx.fillRect(27, 0.5, 14, 2.5);
+      ctx.fillStyle = '#dc2626'; ctx.fillRect(13, 2, 4, 2.5);
       break;
     case 'mg':
-      // Heavy Machine Gun (M249 SAW / Minigun)
-      ctx.fillStyle = '#1e2430';
-      ctx.fillRect(6, -5, 30, 10);
-      ctx.fillStyle = '#334155';
-      ctx.fillRect(34, -3, 16, 6);
-      ctx.fillStyle = '#f59e0b';
-      ctx.fillRect(14, 5, 8, 6);
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(12, 10, 12, 8);
+      // Heavy cooling shroud + rotary/LMG receiver + brass ammo belt + box drum
+      ctx.fillStyle = '#1e2430'; ctx.fillRect(4, -5, 32, 10);
+      ctx.fillStyle = '#475569'; ctx.fillRect(34, -3.5, 18, 6.5);
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(50, -4.5, 5, 8.5);
+      ctx.fillStyle = '#f59e0b'; ctx.fillRect(14, 5, 9, 6);
+      ctx.fillStyle = '#fbbf24'; ctx.fillRect(15, 6, 2, 4); ctx.fillRect(19, 6, 2, 4);
+      ctx.fillStyle = '#365314'; ctx.fillRect(11, 10, 15, 9);
       break;
-    case 'launcher': case 'glauncher':
-      // RPG-7 Rocket Launcher
-      ctx.fillStyle = '#364935';
-      ctx.fillRect(-2, -5, 38, 9);
+    case 'launcher':
+      // Olive RPG / AT4 tube + heat shield + flared warhead cone
+      ctx.fillStyle = '#365314'; ctx.fillRect(-4, -5, 40, 10);
+      ctx.fillStyle = '#78350f'; ctx.fillRect(8, -5.5, 14, 11);
       ctx.fillStyle = '#4b5563';
-      ctx.beginPath(); ctx.moveTo(36, -6); ctx.lineTo(48, 0); ctx.lineTo(36, 6); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(36, -6); ctx.lineTo(50, 0); ctx.lineTo(36, 6); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(48, 0, 2.2, 0, 7); ctx.fill();
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(12, 4, 4, 6); ctx.fillRect(26, 4, 4, 6);
+      break;
+    case 'glauncher':
+      // Drum-fed M32 / M79 grenade launcher with revolving 40mm cylinder
+      ctx.fillStyle = '#1e293b'; ctx.fillRect(4, -4, 16, 8);
+      ctx.fillStyle = '#334155'; ctx.fillRect(15, -7, 13, 14);
+      ctx.fillStyle = '#f59e0b'; ctx.fillRect(18, -5, 7, 3); ctx.fillRect(18, 2, 7, 3);
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(28, -3.5, 14, 7);
+      break;
+    case 'artillery':
+      // Portable heavy recoilless / howitzer cannon tube + breech + muzzle brake
+      ctx.fillStyle = '#3f6212'; ctx.fillRect(-2, -6, 24, 12);
+      ctx.fillStyle = '#475569'; ctx.fillRect(22, -4, 34, 8);
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(54, -6, 7, 12);
+      ctx.fillStyle = '#fbbf24'; ctx.fillRect(4, -7, 5, 14);
+      break;
+    case 'mlrs':
+      // Multi-tube shoulder rocket pod rack
+      ctx.fillStyle = '#365314'; ctx.fillRect(2, -8, 36, 16);
+      ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1.5; ctx.strokeRect(2, -8, 36, 16);
       ctx.fillStyle = '#ef4444';
-      ctx.beginPath(); ctx.arc(46, 0, 2, 0, 7); ctx.fill();
-      ctx.fillStyle = '#1f2937';
-      ctx.fillRect(6, 4, 4, 6); ctx.fillRect(22, 4, 4, 6);
+      for (const ry of [-5, 0, 5]) { ctx.beginPath(); ctx.arc(38, ry, 2.2, 0, 7); ctx.fill(); }
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(12, 7, 10, 4);
+      break;
+    case 'naval':
+      // Rotary CIWS / high-rate naval autocannon barrel cluster + dome feed
+      ctx.fillStyle = '#475569'; ctx.fillRect(2, -7, 22, 14);
+      ctx.fillStyle = '#e2e8f0'; ctx.fillRect(6, -5, 10, 10);
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(24, -4.5, 28, 2.5); ctx.fillRect(24, -1, 28, 2.5); ctx.fillRect(24, 2.5, 28, 2.5);
+      ctx.fillStyle = '#f59e0b'; ctx.fillRect(46, -5, 3, 10);
+      break;
+    case 'missile':
+      // Guided tactical missile canister + white/red warhead + stabilizer fins
+      ctx.fillStyle = '#334155'; ctx.fillRect(0, -6, 36, 12);
+      ctx.fillStyle = '#e2e8f0'; ctx.fillRect(30, -4, 14, 8);
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath(); ctx.moveTo(44, -4); ctx.lineTo(54, 0); ctx.lineTo(44, 4); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#0ea5e9'; ctx.fillRect(12, -8, 12, 2);
       break;
     case 'special':
-      // Exotic DragonFire Laser / Plasma Rifle
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(6, -5, 32, 9);
-      ctx.fillStyle = '#38bdf8';
-      ctx.fillRect(14, -3, 14, 5);
-      ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 1.5;
-      ctx.strokeRect(14, -3, 14, 5);
-      ctx.fillStyle = '#00e5ff';
-      ctx.fillRect(36, -4, 4, 7);
+      // Futuristic plasma/laser emitter + glowing core coil + twin focusing prongs
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(4, -5.5, 32, 11);
+      ctx.fillStyle = '#0284c7'; ctx.fillRect(14, -3.5, 15, 7);
+      ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 1.5; ctx.strokeRect(14, -3.5, 15, 7);
+      ctx.fillStyle = '#00e5ff'; ctx.fillRect(36, -4.5, 6, 3); ctx.fillRect(36, 1.5, 6, 3);
+      ctx.fillStyle = '#e0f2fe'; ctx.beginPath(); ctx.arc(38, 0, 2.2, 0, 7); ctx.fill();
       break;
     case 'sword':
-      // Masterwork Katana
+      // Curved fuller steel blade + gold tsuba handguard + wrapped hilt
       ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 3.5;
-      ctx.beginPath(); ctx.moveTo(14, 7); ctx.lineTo(46, 7); ctx.stroke();
-      ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(16, 5.5); ctx.lineTo(44, 5.5); ctx.stroke();
-      ctx.fillStyle = '#ffd700';
-      ctx.fillRect(12, 3, 3, 9);
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(4, 5.5, 8, 3.5);
+      ctx.beginPath(); ctx.moveTo(14, 7); ctx.quadraticCurveTo(32, 6, 48, 5); ctx.stroke();
+      ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 1.3;
+      ctx.beginPath(); ctx.moveTo(16, 5.5); ctx.lineTo(44, 4.5); ctx.stroke();
+      ctx.fillStyle = '#ffd700'; ctx.fillRect(12, 2.5, 3, 9);
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(3, 5.5, 9, 3.5);
       break;
     case 'dagger':
-      // Combat Fighting Knife (Fairbairn-Sykes / Tanto)
+      // Tapered double-edged blade + brass crossguard + pommel
       ctx.fillStyle = '#e2e8f0';
-      ctx.beginPath(); ctx.moveTo(14, 6); ctx.lineTo(30, 7); ctx.lineTo(14, 9); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = '#ffd700';
-      ctx.fillRect(13, 3, 2.5, 8);
-      ctx.fillStyle = '#1e293b';
-      ctx.fillRect(6, 5.5, 7, 3);
+      ctx.beginPath(); ctx.moveTo(14, 5.5); ctx.lineTo(32, 7); ctx.lineTo(14, 9); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#ffd700'; ctx.fillRect(13, 3, 2.5, 8);
+      ctx.fillStyle = '#1e293b'; ctx.fillRect(6, 5.5, 7, 3);
       break;
     case 'polearm':
-      ctx.strokeStyle = '#78350f'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(-10, 7); ctx.lineTo(60, 7); ctx.stroke();
-      ctx.fillStyle = '#cbd5e1'; ctx.beginPath(); ctx.moveTo(60, 2); ctx.lineTo(76, 7); ctx.lineTo(60, 12); ctx.fill();
+      // Long oak shaft + steel halberd spear/axe head
+      ctx.strokeStyle = '#78350f'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(-10, 7); ctx.lineTo(58, 7); ctx.stroke();
+      ctx.fillStyle = '#cbd5e1';
+      ctx.beginPath(); ctx.moveTo(58, 1); ctx.lineTo(76, 7); ctx.lineTo(58, 13); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#94a3b8'; ctx.fillRect(52, 7, 8, 7);
       break;
     case 'blunt':
-      ctx.strokeStyle = '#78350f'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(10, 7); ctx.lineTo(38, 7); ctx.stroke();
-      ctx.fillStyle = '#475569'; ctx.fillRect(38, 2, 12, 10);
+      // Reinforced hardwood handle + heavy iron flanged head
+      ctx.strokeStyle = '#78350f'; ctx.lineWidth = 4.5;
+      ctx.beginPath(); ctx.moveTo(8, 7); ctx.lineTo(38, 7); ctx.stroke();
+      ctx.fillStyle = '#475569'; ctx.fillRect(36, 1, 13, 12);
+      ctx.fillStyle = '#94a3b8'; ctx.fillRect(39, -1, 7, 16);
       break;
     case 'bow':
-      ctx.strokeStyle = '#78350f'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(10, 0, 22, -1.2, 1.2); ctx.stroke();
-      ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(10 + Math.cos(-1.2) * 22, Math.sin(-1.2) * 22); ctx.lineTo(10 + Math.cos(1.2) * 22, Math.sin(1.2) * 22); ctx.stroke();
+      // Recurve limbs + taut bowstring + nocked steel-tipped arrow
+      ctx.strokeStyle = '#78350f'; ctx.lineWidth = 3.2;
+      ctx.beginPath(); ctx.arc(10, 0, 22, -1.25, 1.25); ctx.stroke();
+      ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 1.1;
+      ctx.beginPath(); ctx.moveTo(10 + Math.cos(-1.25) * 22, Math.sin(-1.25) * 22); ctx.lineTo(10 + Math.cos(1.25) * 22, Math.sin(1.25) * 22); ctx.stroke();
+      ctx.strokeStyle = '#ca8a04'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(38, 0); ctx.stroke();
+      ctx.fillStyle = '#cbd5e1';
+      ctx.beginPath(); ctx.moveTo(41, 0); ctx.lineTo(35, -3); ctx.lineTo(35, 3); ctx.closePath(); ctx.fill();
+      break;
+    case 'throwing':
+      // Metallic shuriken / tomahawk in throwing hand
+      ctx.fillStyle = '#cbd5e1';
+      ctx.beginPath();
+      for (let k = 0; k < 4; k++) {
+        const ka = k * Math.PI / 2;
+        ctx.lineTo(18 + Math.cos(ka) * 7, 7 + Math.sin(ka) * 7);
+        ctx.lineTo(18 + Math.cos(ka + 0.78) * 2.5, 7 + Math.sin(ka + 0.78) * 2.5);
+      }
+      ctx.closePath(); ctx.fill();
+      break;
+    case 'siege':
+      // Heavy portable ballista/scorpion frame with bow arms & bolt
+      ctx.strokeStyle = '#78350f'; ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(42, 0); ctx.stroke();
+      ctx.beginPath(); ctx.arc(28, 0, 18, -1.1, 1.1); ctx.stroke();
+      ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(18, 0); ctx.lineTo(48, 0); ctx.stroke();
       break;
     default:
-      ctx.fillStyle = '#1b1b1b'; ctx.fillRect(8, 2, 18, 5);
+      ctx.fillStyle = '#334155'; ctx.fillRect(8, 1, 20, 5);
       break;
   }
   ctx.restore();
@@ -5006,15 +6328,16 @@ function drawZombie(z, x, y, a, now) {
 }
 
 function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh, isNight) {
-  const t = D.VLIST[v[1]], d = D.VEH[t], f = v[7], L = d.len, Wd = d.wid, dead = f & 32, fly = f & 8;
+  const t = D.VLIST[v[1]], d = D.VEH[t], f = v[7], L = d.len, Wd = d.wid, dead = f & 32;
+  const fly = currentInVeh ? currentInVeh.alt > 0.5 : !!(f & 8);
   const steerAng = currentInVeh ? currentInVeh.steerAngle : 0;
   const isBraking = currentInVeh && (keys.Space || (keys.KeyS && currentInVeh.sp > 15));
   const isReversing = currentInVeh && keys.KeyS && currentInVeh.sp <= 15;
   const isBoosting = currentInVeh && (keys.ShiftLeft || keys.ShiftRight);
   ctx.save(); ctx.translate(x, y);
   if (fly) {
-    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.save(); ctx.translate(40, 60); ctx.rotate(a);
-    ctx.beginPath(); ctx.ellipse(0, 0, L / 2, Wd / 2, 0, 0, 7); ctx.fill(); ctx.restore(); ctx.scale(1.15, 1.15);
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.save(); ctx.translate(48, 68); ctx.rotate(a);
+    ctx.beginPath(); ctx.ellipse(0, 0, L * 0.52, Wd * 0.45, 0, 0, 7); ctx.fill(); ctx.restore(); ctx.scale(1.18, 1.18);
   } else {
     ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.save(); ctx.rotate(a); ctx.fillRect(-L / 2 + 5, -Wd / 2 + 6, L, Wd); ctx.restore();
   }
@@ -5022,14 +6345,13 @@ function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh, isNight) {
 
   // Dynamic suspension body roll in turns
   if (currentInVeh && Math.abs(steerAng) > 0.02) {
-    const roll = -steerAng * Math.min(1, currentInVeh.speed / 380) * 0.08;
+    const roll = -steerAng * Math.min(1, currentInVeh.speed / 380) * (d.air ? 0.14 : 0.08);
     ctx.rotate(roll);
   }
 
   const body = dead ? '#2a2725' : d.c;
-  const spdMag = Math.abs(v[8]);
+  const spdMag = currentInVeh ? Math.abs(currentInVeh.sp) : Math.abs(v[8]);
   if (d.kind === 'boat') {
-    // Animated bow wake
     if (!dead && spdMag > 50) {
       ctx.strokeStyle = 'rgba(220,245,255,0.45)'; ctx.lineWidth = 2.5;
       ctx.beginPath(); ctx.moveTo(L / 2, 0); ctx.lineTo(-L * 0.65, -Wd * 0.9);
@@ -5042,33 +6364,152 @@ function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh, isNight) {
     ctx.fillStyle = 'rgba(255,255,255,0.14)'; ctx.fillRect(-L * 0.38, -Wd * 0.36, L * 0.45, Wd * 0.72);
     ctx.fillStyle = '#2b4a6a'; ctx.fillRect(-L * 0.05, -Wd * 0.3, L * 0.2, Wd * 0.6);
     if (!dead && spdMag > 100) { ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.fillRect(-L / 2 - 22, -Wd / 3, 22, Wd * 0.66); }
+  } else if (d.kind === 'plane' || d.kind === 'seaplane') {
+    const isJet = t === 'jet';
+    const isOsprey = t === 'osprey';
+    const isSeaplane = d.kind === 'seaplane';
+    const propRot = dead ? 0.3 : now / ((f & 4) ? 28 : 260);
+    if (isSeaplane && !fly && !dead) {
+      const tp = D.TILES[tileAt(x, y)];
+      if (tp && tp.water && spdMag > 65) {
+        ctx.strokeStyle = 'rgba(220,245,255,0.5)'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(L * 0.35, -14); ctx.lineTo(-L * 0.65, -Wd * 0.38);
+        ctx.moveTo(L * 0.35, 14); ctx.lineTo(-L * 0.65, Wd * 0.38); ctx.stroke();
+      }
+    }
+    if (isJet) {
+      // Swept delta wings + twin tail stabilizers + centerline fuselage + bubble canopy + afterburner
+      ctx.fillStyle = body;
+      ctx.beginPath();
+      ctx.moveTo(L * 0.18, 0); ctx.lineTo(-L * 0.24, -Wd * 0.5); ctx.lineTo(-L * 0.4, -Wd * 0.5);
+      ctx.lineTo(-L * 0.26, -8); ctx.lineTo(-L * 0.26, 8);
+      ctx.lineTo(-L * 0.4, Wd * 0.5); ctx.lineTo(-L * 0.24, Wd * 0.5); ctx.closePath();
+      ctx.fill(); ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.stroke();
+      // Wingtip missiles
+      ctx.fillStyle = '#e2e8f0';
+      ctx.fillRect(-L * 0.44, -Wd * 0.5 - 2, 22, 3);
+      ctx.fillRect(-L * 0.44, Wd * 0.5 - 1, 22, 3);
+      // Tailplanes
+      ctx.fillStyle = '#475569';
+      ctx.beginPath();
+      ctx.moveTo(-L * 0.34, 0); ctx.lineTo(-L * 0.5, -Wd * 0.24); ctx.lineTo(-L * 0.54, -Wd * 0.24);
+      ctx.lineTo(-L * 0.54, Wd * 0.24); ctx.lineTo(-L * 0.5, Wd * 0.24); ctx.closePath();
+      ctx.fill();
+      // Fuselage + canopy
+      ctx.fillStyle = body;
+      ctx.beginPath();
+      ctx.moveTo(L * 0.52, 0); ctx.lineTo(L * 0.2, -9); ctx.lineTo(-L * 0.48, -8);
+      ctx.lineTo(-L * 0.52, 0); ctx.lineTo(-L * 0.48, 8); ctx.lineTo(L * 0.2, 9); ctx.closePath();
+      ctx.fill(); ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#38bdf8'; ctx.beginPath(); ctx.ellipse(L * 0.16, 0, 14, 5, 0, 0, 7); ctx.fill();
+      if (!dead && (fly || isBoosting || spdMag > 140)) {
+        const jLen = (isBoosting ? 28 : 16) + Math.random() * 14;
+        ctx.fillStyle = isBoosting ? '#38bdf8' : '#fb923c';
+        ctx.beginPath(); ctx.moveTo(-L * 0.5, -5); ctx.lineTo(-L * 0.5 - jLen, 0); ctx.lineTo(-L * 0.5, 5); ctx.closePath(); ctx.fill();
+      }
+    } else if (isOsprey) {
+      // V-22 Osprey Tiltrotor: wide boxy fuselage, high straight wing, twin wingtip rotors
+      ctx.fillStyle = body;
+      ctx.fillRect(-L * 0.14, -Wd * 0.5, 22, Wd);
+      ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.strokeRect(-L * 0.14, -Wd * 0.5, 22, Wd);
+      ctx.fillStyle = '#334155'; ctx.fillRect(-L * 0.48, -16, 10, 32);
+      ctx.fillStyle = body; ctx.fillRect(-L * 0.48, -10, L * 0.92, 20); ctx.strokeRect(-L * 0.48, -10, L * 0.92, 20);
+      ctx.fillStyle = '#9ad1ff'; ctx.beginPath(); ctx.ellipse(L * 0.34, 0, 10, 7, 0, 0, 7); ctx.fill();
+      // Twin wingtip proprotors
+      for (const wy of [-Wd * 0.48, Wd * 0.48]) {
+        ctx.fillStyle = '#1e293b'; ctx.fillRect(-L * 0.08, wy - 5, 16, 10);
+        if (!dead && (f & 4)) {
+          ctx.strokeStyle = 'rgba(203,213,225,0.28)'; ctx.lineWidth = 2.5;
+          ctx.beginPath(); ctx.arc(0, wy, 28, 0, 7); ctx.stroke();
+        }
+        ctx.strokeStyle = 'rgba(20,24,32,0.85)'; ctx.lineWidth = 3.5;
+        for (let k = 0; k < 3; k++) {
+          const ra = propRot + k * ((Math.PI * 2) / 3);
+          ctx.beginPath(); ctx.moveTo(0, wy); ctx.lineTo(Math.cos(ra) * 28, wy + Math.sin(ra) * 28); ctx.stroke();
+        }
+      }
+    } else {
+      // Bush Plane / Catalina Seaplane
+      if (isSeaplane) {
+        // Twin underwing pontoons
+        ctx.fillStyle = '#cbd5e1';
+        ctx.fillRect(-L * 0.08, -Wd * 0.25, 34, 6);
+        ctx.fillRect(-L * 0.08, Wd * 0.25 - 6, 34, 6);
+      }
+      // Straight wings + struts + tailplane
+      ctx.fillStyle = body;
+      ctx.fillRect(-L * 0.12, -Wd * 0.5, 22, Wd);
+      ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.strokeRect(-L * 0.12, -Wd * 0.5, 22, Wd);
+      ctx.fillRect(-L * 0.46, -18, 12, 36); ctx.strokeRect(-L * 0.46, -18, 12, 36);
+      // Fuselage
+      ctx.beginPath();
+      ctx.moveTo(L * 0.48, 0); ctx.lineTo(L * 0.22, -9); ctx.lineTo(-L * 0.46, -6);
+      ctx.lineTo(-L * 0.46, 6); ctx.lineTo(L * 0.22, 9); ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#9ad1ff'; ctx.beginPath(); ctx.ellipse(L * 0.14, 0, 12, 6, 0, 0, 7); ctx.fill();
+      if (isSeaplane) {
+        // Twin wing engines & propellers
+        for (const ey of [-22, 22]) {
+          ctx.fillStyle = '#334155'; ctx.fillRect(4, ey - 4, 14, 8);
+          ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2.5;
+          const bladeSpan = Math.sin(propRot) * 14;
+          ctx.beginPath(); ctx.moveTo(19, ey - bladeSpan); ctx.lineTo(19, ey + bladeSpan); ctx.stroke();
+        }
+      } else {
+        // Nose propeller disc
+        ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 3;
+        const bladeSpan = Math.sin(propRot) * 18;
+        ctx.beginPath(); ctx.moveTo(L * 0.5, -bladeSpan); ctx.lineTo(L * 0.5, bladeSpan); ctx.stroke();
+      }
+    }
+    if (!dead && now % 800 < 400) {
+      ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(0, -Wd * 0.5, 3, 0, 7); ctx.fill();
+      ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(0, Wd * 0.5, 3, 0, 7); ctx.fill();
+    }
+    if (dead) burst(x, y, 1, '#333', 40, 1200, 10);
   } else if (d.kind === 'heli') {
-    ctx.fillStyle = body; ctx.beginPath(); ctx.ellipse(L * 0.1, 0, L * 0.3, Wd / 2, 0, 0, 7); ctx.fill();
-    ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.stroke();
-    ctx.fillRect(-L / 2, -4, L * 0.5, 8); ctx.fillRect(-L / 2, -12, 8, 24);
-    ctx.fillStyle = '#9ad1ff'; ctx.beginPath(); ctx.ellipse(L * 0.28, 0, L * 0.12, Wd * 0.35, 0, 0, 7); ctx.fill();
-    // Nav strobe wingtips
+    const isChinook = t === 'transport_heli';
+    const isApache = t === 'attack_heli';
+    if (isChinook) {
+      // Wide tandem-rotor cargo fuselage + rear ramp
+      ctx.fillStyle = body; ctx.fillRect(-L * 0.46, -Wd * 0.34, L * 0.92, Wd * 0.68);
+      ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.strokeRect(-L * 0.46, -Wd * 0.34, L * 0.92, Wd * 0.68);
+      ctx.fillStyle = '#9ad1ff'; ctx.beginPath(); ctx.ellipse(L * 0.38, 0, 10, Wd * 0.25, 0, 0, 7); ctx.fill();
+    } else if (isApache) {
+      // Attack Gunship: stub wings + rocket pods + slim tandem cockpit
+      ctx.fillStyle = '#1e293b'; ctx.fillRect(-8, -Wd * 0.48, 18, Wd * 0.96);
+      ctx.fillStyle = '#991b1b'; ctx.fillRect(-4, -Wd * 0.45, 14, 7); ctx.fillRect(-4, Wd * 0.45 - 7, 14, 7);
+      ctx.fillStyle = body; ctx.beginPath(); ctx.ellipse(L * 0.12, 0, L * 0.34, 11, 0, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillRect(-L / 2, -3.5, L * 0.48, 7); ctx.fillRect(-L / 2, -11, 8, 22);
+      ctx.fillStyle = '#38bdf8'; ctx.beginPath(); ctx.ellipse(L * 0.24, 0, L * 0.14, 7, 0, 0, 7); ctx.fill();
+    } else {
+      ctx.fillStyle = body; ctx.beginPath(); ctx.ellipse(L * 0.1, 0, L * 0.3, Wd / 2, 0, 0, 7); ctx.fill();
+      ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillRect(-L / 2, -4, L * 0.5, 8); ctx.fillRect(-L / 2, -12, 8, 24);
+      ctx.fillStyle = '#9ad1ff'; ctx.beginPath(); ctx.ellipse(L * 0.28, 0, L * 0.12, Wd * 0.35, 0, 0, 7); ctx.fill();
+    }
     if (!dead && now % 800 < 400) {
       ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(-L * 0.1, -Wd / 2 - 2, 3, 0, 7); ctx.fill();
       ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(-L * 0.1, Wd / 2 + 2, 3, 0, 7); ctx.fill();
     }
-    ctx.restore(); ctx.save(); ctx.translate(x, y); if (fly) ctx.scale(1.15, 1.15);
     const rot = dead ? 0.3 : now / (f & 4 ? 40 : 300);
-    // Rotor blur disc when flying
-    if (!dead && (f & 4)) {
-      ctx.strokeStyle = 'rgba(200,220,240,0.2)'; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(0, 0, L * 0.53, 0, 7); ctx.stroke();
+    const hubs = isChinook ? [[-L * 0.3, 0], [L * 0.3, 0]] : [[0, 0]];
+    const bladeR = isChinook ? L * 0.38 : L * 0.55;
+    for (const [hx, hy] of hubs) {
+      if (!dead && (f & 4)) {
+        ctx.strokeStyle = 'rgba(200,220,240,0.22)'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(hx, hy, bladeR, 0, 7); ctx.stroke();
+      }
+      ctx.strokeStyle = 'rgba(30,30,30,.75)'; ctx.lineWidth = 5;
+      for (let k = 0; k < 2; k++) {
+        const ra = rot + k * Math.PI / 2 + (hx < 0 ? 0.6 : 0);
+        ctx.beginPath(); ctx.moveTo(hx + Math.cos(ra) * bladeR, hy + Math.sin(ra) * bladeR);
+        ctx.lineTo(hx - Math.cos(ra) * bladeR, hy - Math.sin(ra) * bladeR); ctx.stroke();
+      }
+      ctx.fillStyle = '#475569'; ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 7); ctx.fill();
     }
-    ctx.strokeStyle = 'rgba(30,30,30,.75)'; ctx.lineWidth = 5;
-    for (let k = 0; k < 2; k++) {
-      const ra = rot + k * Math.PI / 2;
-      ctx.beginPath(); ctx.moveTo(Math.cos(ra) * L * 0.55, Math.sin(ra) * L * 0.55);
-      ctx.lineTo(-Math.cos(ra) * L * 0.55, -Math.sin(ra) * L * 0.55); ctx.stroke();
-    }
-    ctx.fillStyle = '#475569'; ctx.beginPath(); ctx.arc(0, 0, 5, 0, 7); ctx.fill();
-    ctx.restore();
     if (dead) burst(x, y, 1, '#333', 40, 1200, 10);
-    return;
   } else if (d.kind === 'hover') {
     ctx.fillStyle = '#222'; ctx.beginPath(); ctx.ellipse(0, 0, L / 2, Wd / 2, 0, 0, 7); ctx.fill();
     ctx.fillStyle = body; ctx.fillRect(-L / 2 + 8, -Wd / 2 + 6, L - 16, Wd - 12);
@@ -5109,13 +6550,11 @@ function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh, isNight) {
     ctx.fillStyle = vp.mid; ctx.beginPath();
     ctx.roundRect ? ctx.roundRect(-L / 2, -Wd / 2, L, Wd, 6) : ctx.rect(-L / 2, -Wd / 2, L, Wd);
     ctx.fill();
-    // Fast beveled top highlight & bottom shadow (zero per-frame gradient)
     ctx.fillStyle = vp.top; ctx.fillRect(-L / 2 + 4, -Wd / 2 + 2, L - 8, Math.max(3, Wd * 0.22));
     ctx.fillStyle = vp.bot; ctx.fillRect(-L / 2 + 4, Wd / 2 - Math.max(3, Wd * 0.22) - 2, L - 8, Math.max(3, Wd * 0.22));
     ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-L / 2, -Wd / 2, L, Wd, 6) : ctx.rect(-L / 2, -Wd / 2, L, Wd); ctx.stroke();
 
-    // Subtle hood/trunk panel lines, exhaust tip & side mirrors
     ctx.strokeStyle = 'rgba(0,0,0,0.22)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(L * 0.22, -Wd * 0.42); ctx.lineTo(L * 0.22, Wd * 0.42); ctx.stroke();
     if (t !== 'motorcycle' && !tracked) {
@@ -5126,7 +6565,6 @@ function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh, isNight) {
       ctx.fillRect(-L / 2 - 4, Wd * 0.25, 4, 3);
     }
 
-    // Twin halogen headlights
     if (!dead) {
       if (isNight === undefined) isNight = daylight() < 0.65;
       const isDriving = (me && v[0] === me.veh) || isNight || (spdMag > 20);
@@ -5151,7 +6589,6 @@ function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh, isNight) {
         ctx.fillRect(L / 2 - 2, Wd * 0.38 - 6, 4, 6);
       }
 
-      // Taillights with dynamic brake and reverse lighting
       if (isBraking) {
         ctx.fillStyle = '#ff1e1e';
         ctx.fillRect(-L / 2 - 3, -Wd * 0.44, 5, 8);
@@ -5171,7 +6608,6 @@ function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh, isNight) {
         ctx.fillRect(-L / 2 - 1, Wd * 0.4 - 5, 3, 5);
       }
 
-      // Twin nitro exhaust flames
       if (isBoosting && (spdMag > 40 || (currentInVeh && currentInVeh.speed > 40))) {
         const flen = 18 + Math.random() * 14;
         ctx.fillStyle = Math.random() < 0.5 ? '#38bdf8' : '#fb923c';
@@ -5192,7 +6628,6 @@ function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh, isNight) {
       ctx.fillStyle = 'rgba(30,52,78,.9)';
       ctx.fillRect(L * 0.12, -Wd / 2 + 4, L * 0.14, Wd - 8);
       ctx.fillRect(-L * 0.38, -Wd / 2 + 4, L * 0.1, Wd - 8);
-      // Windshield glare stripe
       ctx.fillStyle = 'rgba(186,230,253,0.28)';
       ctx.fillRect(L * 0.15, -Wd / 2 + 6, L * 0.04, Wd - 12);
       ctx.fillStyle = 'rgba(255,255,255,.12)';
@@ -5228,11 +6663,13 @@ function drawVehicle(v, x, y, a, now, selfX, selfY, currentInVeh, isNight) {
   // Floating prompt when survivor is near on foot
   if (selfX !== undefined && selfY !== undefined && !me.veh && !dead) {
     const dist = Math.hypot(x - selfX, y - selfY);
-    if (dist < d.r + 90) {
+    if (dist < d.r + 95) {
       ctx.save();
       ctx.font = 'bold 12px system-ui';
       ctx.textAlign = 'center';
-      const prompt = `🚗 [E] DRIVE ${d.n} · Hull ${v[5]}% · Fuel ${v[6]}% · [Shift] Nitro`;
+      const vEmoji = (d.kind === 'plane' || d.kind === 'seaplane') ? '✈️' : d.kind === 'heli' ? '🚁' : d.kind === 'boat' ? '🚤' : '🚗';
+      const vVerb = d.air ? 'FLY' : d.kind === 'boat' ? 'SAIL' : 'DRIVE';
+      const prompt = `${vEmoji} [E] ${vVerb} ${d.n} · Hull ${v[5]}% · [Shift] Nitro`;
       const pw = txtW('bold 12px system-ui', prompt) + 20;
       ctx.fillStyle = 'rgba(10, 15, 24, 0.9)';
       ctx.fillRect(x - pw / 2, y - d.r - 28, pw, 24);
@@ -5573,7 +7010,9 @@ function drawHUD(now, selfX, selfY, inVeh, b) {
 
     let stageText = me.mission ? `${me.mission.title} (${me.mission.prog}/${me.mission.target})` : 'Stage 1/5 · Scavenge & Claim Shelter [T]';
     if (me.beacon) {
-      stageText = me.evacTimer > 0 ? `EVAC HELI INCOMING: ${me.evacTimer}s!` : 'BOARD EXTRACTION HELI!';
+      stageText = me.beacon >= 5
+        ? (me.evacTimer > 0 ? `OPERATION EXODUS: HOLD THE SHELTER (${me.evacTimer}s)` : 'EXODUS SIGNAL COMPLETE · ASCEND VIA REBORN [Y]!')
+        : `OPERATION EXODUS: Beacon Stage ${me.beacon}/5`;
     }
     ctx.font = 'bold 10px system-ui';
     ctx.textAlign = 'center';
@@ -5760,9 +7199,21 @@ function getWeaponSvg(cat, isBig = false) {
     case 'launcher':
       return `<svg viewBox="0 0 64 24" width="${w}" height="${h}" fill="currentColor"><path d="M2 10h12l4-3h26l4 3h12v4H46l-4 3H18l-4-3H2zM28 17h4v5h-4z"/></svg>`;
     case 'glauncher':
+      return `<svg viewBox="0 0 56 24" width="${w}" height="${h}" fill="currentColor"><path d="M4 10h14v-3h14v3h18v5H32v3l-4 3h-5l1-3h-6v3H8l-4-5z"/></svg>`;
+    case 'artillery':
+      return `<svg viewBox="0 0 68 24" width="${w}" height="${h}" fill="currentColor"><path d="M2 12h18V7h14v4h28l3-2v6l-3-2H34v3H20l-6 4H6z"/></svg>`;
+    case 'mlrs':
+      return `<svg viewBox="0 0 60 24" width="${w}" height="${h}" fill="currentColor"><path d="M6 6h40v4H6zM10 11h38v4H10zM16 16h12v5h-4v-2h-8z"/></svg>`;
+    case 'naval':
+      return `<svg viewBox="0 0 60 24" width="${w}" height="${h}" fill="currentColor"><path d="M4 10h18V6h12v4h22v2H34v2h22v2H34v3H16l-6-4H4z"/></svg>`;
+    case 'missile':
+      return `<svg viewBox="0 0 64 20" width="${w}" height="${h}" fill="currentColor"><path d="M4 7l6 3-6 3h10l4-2h28l12 3-12-7H18l-4-2z"/></svg>`;
+    case 'siege':
+      return `<svg viewBox="0 0 56 24" width="${w}" height="${h}" fill="currentColor"><path d="M6 17h40v3H6zM26 4h4v13h-4zM14 9c10-4 20-4 30 0l-3 3c-8-3-16-3-24 0z"/></svg>`;
     case 'special':
+      return `<svg viewBox="0 0 60 24" width="${w}" height="${h}" fill="currentColor"><path d="M4 10h14l4-3h22l4 3h8v4h-8l-4 3H22l-4-3H4zm20 0h12v4H24z"/></svg>`;
     case 'throwing':
-      return `<svg viewBox="0 0 32 32" width="${w}" height="${h}" fill="currentColor"><path d="M14 4h4v3h-4zM10 9h12a8 8 0 0 1 8 8c0 4.4-3.6 8-8 8H10a8 8 0 0 1-8-8c0-4.4 3.6-8 8-8z"/></svg>`;
+      return `<svg viewBox="0 0 32 32" width="${w}" height="${h}" fill="currentColor"><path d="M16 2l4 10 10 4-10 4-4 10-4-10-10-4 10-4z"/></svg>`;
     default:
       return `<svg viewBox="0 0 32 24" width="${w}" height="${h}" fill="currentColor"><path d="M6 6h16a4 4 0 0 1 4 4v4a4 4 0 0 1-4 4H10l-4-4V6z"/></svg>`;
   }
@@ -6053,7 +7504,12 @@ function renderMinimapDOM(now, inVehRef) {
   const rangeEl = $('mm-range-text');
   if (rangeEl) {
     const itype = interiorTypeOf(me && me.zone);
-    const shortTag = { university: 'UNIV', hospital: 'HOSP', mall: 'MALL', military: 'MIL', historic: 'HIST', museum: 'MUS', transit: 'HUB', industrial: 'IND', raid: 'RAID' };
+    const shortTag = {
+      airport: 'AIR', university: 'UNIV', hospital: 'HOSP', mall: 'MALL', military: 'MIL', historic: 'CATH', museum: 'MUS',
+      transit: 'HUB', industrial: 'IND', raid: 'RAID', police: 'PD', fire: 'FD', bank: 'BANK', stadium: 'STAD',
+      aquarium: 'AQUA', science: 'SCI', bazaar: 'BAZ', pyramid: 'TOMB', mosque: 'MOSQ', capitol: 'CAP',
+      palace: 'PAL', greenhouse: 'PARK', mill: 'MILL'
+    };
     rangeEl.textContent = (itype && shortTag[itype]) || (idef ? 'BNK' : `${Math.round(minimapRange / 36)}M`);
   }
 }
@@ -6128,8 +7584,11 @@ function updateDomHUD(now, inVeh) {
     zPill.className = 'zone-pill' + (itype ? ' ' + itype : '');
     const pillLabels = {
       bunker: '🛡️ BUNKER', raid: '☢️ RAID', airport: '✈️ AIRPORT', university: '🎓 UNIVERSITY', hospital: '🏥 HOSPITAL',
-      mall: '🛍️ MALL', military: '🪖 MILITARY', historic: '🏛️ HISTORIC', museum: '🖼️ GALLERY',
-      transit: '🏟️ TRANSIT', industrial: '🏭 POWER WORKS'
+      mall: '🛍️ MALL', military: '🪖 MILITARY', historic: '⛪ CATHEDRAL', museum: '🖼️ ART MUSEUM',
+      transit: '🚌 TRANSIT', industrial: '🏭 POWER WORKS', police: '🚓 POLICE HQ', fire: '🚒 FIRE STATION',
+      bank: '🏦 CENTRAL BANK', stadium: '🏟️ STADIUM', aquarium: '🐠 AQUARIUM', science: '🔭 SCIENCE LAB',
+      bazaar: '🕌 BAZAAR', pyramid: '🔺 ANCIENT TOMB', mosque: '🕌 MOSQUE', capitol: '⚖️ CAPITOL',
+      palace: '👑 PALACE', greenhouse: '🌿 CONSERVATORY', mill: '🌾 GRANARY'
     };
     zPill.textContent = (itype && pillLabels[itype]) || '🌍 SURFACE';
   }
@@ -6227,8 +7686,20 @@ function updateDomHUD(now, inVeh) {
     }
     const d = D.VEH[D.VLIST[inVeh.v[1]]];
     if (d) {
-      setTextCached('vIcon', $('veh-hud-icon'), d.kind === 'heli' ? '🚁' : d.kind === 'boat' ? '🚤' : '🚗');
+      const vIcon = (d.kind === 'plane' || d.kind === 'seaplane') ? '✈️' : d.kind === 'heli' ? '🚁' : (d.kind === 'boat' || d.kind === 'hover') ? '🚤' : '🚗';
+      setTextCached('vIcon', $('veh-hud-icon'), vIcon);
       setTextCached('vName', $('veh-hud-name'), d.n ? d.n.toUpperCase() : 'VEHICLE');
+      const altEl = $('veh-hud-alt');
+      if (altEl) {
+        if (d.air) {
+          altEl.hidden = false;
+          const isAirborne = (inVeh.alt > 0.5) || !!(inVeh.v[7] & 8);
+          setTextCached('vAlt', altEl, isAirborne ? 'AIRBORNE' : 'TAXI');
+          if (hudCache.vAir !== isAirborne) { hudCache.vAir = isAirborne; altEl.classList.toggle('air', isAirborne); }
+        } else {
+          altEl.hidden = true;
+        }
+      }
       const rawSp = inVeh.sp !== undefined ? inVeh.sp : inVeh.v[8];
       setTextCached('vSpd', $('veh-hud-speed'), `${Math.abs(Math.round(rawSp / 10))}`);
       setTextCached('vGear', $('veh-hud-gear'), keys.Space ? 'P' : rawSp < -15 ? 'R' : rawSp > 15 ? 'D' : 'N');

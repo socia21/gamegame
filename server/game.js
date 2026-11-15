@@ -149,6 +149,19 @@ class Game {
     if (zone.startsWith('mus_')) return INTERIORS.museum;
     if (zone.startsWith('hub_')) return INTERIORS.transit;
     if (zone.startsWith('ind_')) return INTERIORS.industrial;
+    if (zone.startsWith('pol_')) return INTERIORS.police;
+    if (zone.startsWith('fire_')) return INTERIORS.fire;
+    if (zone.startsWith('bank_')) return INTERIORS.bank;
+    if (zone.startsWith('stad_')) return INTERIORS.stadium;
+    if (zone.startsWith('aqua_')) return INTERIORS.aquarium;
+    if (zone.startsWith('sci_')) return INTERIORS.science;
+    if (zone.startsWith('baz_')) return INTERIORS.bazaar;
+    if (zone.startsWith('pyr_')) return INTERIORS.pyramid;
+    if (zone.startsWith('mosq_')) return INTERIORS.mosque;
+    if (zone.startsWith('cap_')) return INTERIORS.capitol;
+    if (zone.startsWith('pal_')) return INTERIORS.palace;
+    if (zone.startsWith('grn_')) return INTERIORS.greenhouse;
+    if (zone.startsWith('mill_')) return INTERIORS.mill;
     return INTERIORS.bunker;
   }
   blockedAt(x, y, r, kind, entity, forceZone) {
@@ -168,7 +181,11 @@ class Game {
     const tx0 = Math.floor((x - r) / TS), tx1 = Math.floor((x + r) / TS), ty0 = Math.floor((y - r) / TS), ty1 = Math.floor((y + r) / TS);
     for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
       const P = PROPS[tl[ty * W + tx]]; let s = P.solid;
-      if (!s) { if (kind === 'car') s = P.vsolid; else if (kind === 'boat') s = !P.water; }
+      if (!s) {
+        if (kind === 'car') s = P.vsolid;
+        else if (kind === 'boat') s = !P.water;
+        else if (kind === 'amphib') s = P.vsolid && !P.water;
+      }
       if (s && circleRect(x, y, r, tx * TS, ty * TS, TS, TS)) return HIT_TILE;
     }
     tmpA.length = 0; this.rgrid.query(x - r, y - r, x + r, y + r, tmpA);
@@ -201,7 +218,7 @@ class Game {
     const dist = Math.hypot(dx, dy); if (dist < 0.01) return {hit: null, nx: 0, ny: 0, impact: 0};
     if (this.blockedAt(v.x, v.y, r, kind, v, 'world')) {
       let rescued = false;
-      for (const rad of [6, 14, 24, 38]) {
+      for (const rad of [6, 14, 24, 38, 56, 78]) {
         for (let k = 0; k < 8 && !rescued; k++) {
           const ang = k * Math.PI * 0.25, px = v.x + Math.cos(ang) * rad, py = v.y + Math.sin(ang) * rad;
           if (!this.blockedAt(px, py, r, kind, v, 'world')) { v.x = px; v.y = py; rescued = true; }
@@ -443,10 +460,22 @@ class Game {
     if (key === 'evac_beacon') {
       this.progressMission(p, 'beacon', 1);
     }
+    if (key === 'helipad') {
+      const acType = pl.upgrades[key] >= 3 ? 'attack_heli' : pl.upgrades[key] >= 2 ? 'osprey' : 'heli';
+      const sx = pl.x + 140, sy = pl.y - 120;
+      let hasAir = false;
+      for (const v of this.vehicles.values()) if (!v.dead && VEH[v.type].air && d2(v.x, v.y, pl.x, pl.y) < 420 * 420) { hasAir = true; break; }
+      if (!hasAir) {
+        const [fx, fy] = this.findFree(sx, sy, VEH[acType].r, 'car', 'world');
+        this.createVehicle(acType, fx, fy, 0, null);
+        this.msg(p, `🚁 ${VEH[acType].n} deployed to your Shelter Helipad!`);
+      }
+    }
     if (key === 'evac_beacon' && pl.upgrades[key] === 5) {
       pl.evacActive = true;
       pl.evacTimer = this.now + 180000;
-      this.broadcast({t: 'msg', m: `🚨 OPERATION EXODUS SIGNAL ACTIVATED at Plot #${pl.id}! Evac carrier arrives in 3 minutes!`});
+      pl.lastWaveBucket = -1;
+      this.broadcast({t: 'msg', m: `🚨 OPERATION EXODUS SIGNAL ACTIVATED at Plot #${pl.id}! Hold out against Extinction Swarm waves for 3 minutes!`});
       this.feed(`🚨 OPERATION EXODUS EXTRACTION SIGNAL ACTIVATED! 3:00 REMAINING`);
     }
     if (p.accountName) accounts.savePlotProgress(p.accountName, pl.id, pl.upgrades, p.scrap);
@@ -878,7 +907,7 @@ class Game {
     const consider = (e, bonus) => { const dx = e.x - pr.x, dy = e.y - pr.y, d = Math.hypot(dx, dy); if (d > 1800) return; const da = Math.abs(angDiff(pr.a, Math.atan2(dy, dx))); if (da > 0.75) return; const sc = d * (1 + da * 2) / bonus; if (sc < bs) { bs = sc; best = e; } };
     if (zone === 'world') for (const v of this.vh.query(pr.x, pr.y, 1800, [])) {
       if (v.dead || v === pr.iv) continue; const occ = v.seats.find(s => s); if (!occ) continue; if (air && !(v.alt > 0.5)) continue;
-      const drv = this.players.get(occ); if (drv && !this.canHurt(pr.o, drv)) continue; consider(v, VEH[v.type].kind === 'heli' ? 3 : 2);
+      const drv = this.players.get(occ); if (drv && !this.canHurt(pr.o, drv)) continue; consider(v, (VEH[v.type].air || VEH[v.type].kind === 'heli') ? 3 : 2);
     }
     if (!air) {
       for (const z of this.zh.query(pr.x, pr.y, 1200, [])) if ((z.zone || 'world') === zone && z.hp > 0) consider(z, ZD[z.type].boss ? 4 : z.type === 'brute' ? 2 : 1);
@@ -1142,6 +1171,45 @@ class Game {
     } else if (zoneKey.startsWith('ind_')) {
       this.ensureBuildingInteriorContents(zoneKey, 'industrial');
       this.msg(p, `🏭 Entered ${ent ? ent.name : 'Power & Industrial Facility'} — Search Turbine Hall, Machine Shop & Breaker Vault!`);
+    } else if (zoneKey.startsWith('pol_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'police');
+      this.msg(p, `🚓 Entered ${ent ? ent.name : 'Police Precinct'} — Search SWAT Armory, Holding Cells & Evidence Vault!`);
+    } else if (zoneKey.startsWith('fire_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'fire');
+      this.msg(p, `🚒 Entered ${ent ? ent.name : 'Fire Station'} — Search Apparatus Bay, Hazmat Locker & Rescue Reserve!`);
+    } else if (zoneKey.startsWith('bank_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'bank');
+      this.msg(p, `🏦 Entered ${ent ? ent.name : 'Central Bank'} — Breach Teller Hall, Deposit Gallery & Gold Bullion Vault!`);
+    } else if (zoneKey.startsWith('stad_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'stadium');
+      this.msg(p, `🏟️ Entered ${ent ? ent.name : 'Grand Stadium'} — Explore Locker Rooms, VIP Skybox & Championship Vault!`);
+    } else if (zoneKey.startsWith('aqua_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'aquarium');
+      this.msg(p, `🐠 Entered ${ent ? ent.name : 'Oceanarium & Aquarium'} — Explore Coral Tunnel, Shark Rotunda & Specimen Vault!`);
+    } else if (zoneKey.startsWith('sci_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'science');
+      this.msg(p, `🔭 Entered ${ent ? ent.name : 'Science & Discovery Centre'} — Search Robotics Lab, Planetarium & Prototype Vault!`);
+    } else if (zoneKey.startsWith('baz_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'bazaar');
+      this.msg(p, `🕌 Entered ${ent ? ent.name : 'Grand Bazaar'} — Explore Spice Souk, Lantern Court & Merchant Treasury!`);
+    } else if (zoneKey.startsWith('pyr_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'pyramid');
+      this.msg(p, `🔺 Entered ${ent ? ent.name : 'Ancient Pyramid & Temple'} — Search Antechamber, Sarcophagus & Golden Treasury!`);
+    } else if (zoneKey.startsWith('mosq_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'mosque');
+      this.msg(p, `🕌 Entered ${ent ? ent.name : 'Grand Historic Mosque'} — Explore Ablutions Court, Prayer Hall & Manuscript Treasury!`);
+    } else if (zoneKey.startsWith('cap_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'capitol');
+      this.msg(p, `⚖️ Entered ${ent ? ent.name : 'Parliament & Capitol'} — Search Hearing Chamber, Archives & State Vault!`);
+    } else if (zoneKey.startsWith('pal_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'palace');
+      this.msg(p, `👑 Entered ${ent ? ent.name : 'Citadel & Royal Palace'} — Explore Throne Hall, Guard Armory & Crown Treasury!`);
+    } else if (zoneKey.startsWith('grn_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'greenhouse');
+      this.msg(p, `🌿 Entered ${ent ? ent.name : 'Botanical Conservatory'} — Explore Palm Dome, Seed Lab & Flora Vault!`);
+    } else if (zoneKey.startsWith('mill_')) {
+      this.ensureBuildingInteriorContents(zoneKey, 'mill');
+      this.msg(p, `🌾 Entered ${ent ? ent.name : 'Granary & Windmill'} — Search Grain Hoppers, Millstones & Paymaster Safe!`);
     } else {
       const plotId = +zoneKey.slice(7);
       const plot = this.plots.get(plotId);
@@ -1231,14 +1299,14 @@ class Game {
 
     const guardSets = {
       airport: [
-        [450, 260, 'runner'], [960, 320, 'shambler'], [1480, 320, 'runner'],
-        [2040, 290, 'soldier'], [380, 740, 'screamer'], [1180, 760, 'riot'],
-        [1980, 780, 'soldier'], [360, 1240, 'hazmat'], [1980, 1250, 'brute'],
-        [2220, 1180, 'riot']
+        [450, 260, 'runner'], [960, 320, 'walker'], [1480, 320, 'runner'],
+        [2040, 290, 'soldier'], [380, 780, 'screamer'], [1180, 800, 'riot'],
+        [1980, 820, 'soldier'], [360, 1340, 'hazmat'], [1980, 1340, 'brute'],
+        [2440, 420, 'soldier'], [2540, 1180, 'riot']
       ],
       university: [
-        [300, 320, 'runner'], [420, 440, 'shambler'], [900, 360, 'runner'],
-        [1480, 320, 'hazmat'], [1620, 440, 'spitter'], [300, 890, 'shambler'],
+        [300, 320, 'runner'], [420, 440, 'walker'], [900, 360, 'runner'],
+        [1480, 320, 'hazmat'], [1620, 440, 'spitter'], [300, 890, 'walker'],
         [1520, 920, 'brute'], [900, 220, 'riot']
       ],
       hospital: [
@@ -1247,9 +1315,9 @@ class Game {
         [1500, 890, 'runner']
       ],
       mall: [
-        [280, 320, 'runner'], [840, 520, 'shambler'], [1080, 520, 'runner'],
-        [960, 240, 'screamer'], [280, 900, 'shambler'], [1640, 320, 'crawler'],
-        [1640, 920, 'riot'], [1720, 980, 'brute']
+        [340, 340, 'runner'], [960, 560, 'walker'], [1440, 560, 'runner'],
+        [1200, 330, 'screamer'], [340, 960, 'walker'], [2100, 340, 'crawler'],
+        [2040, 960, 'riot'], [2160, 1180, 'brute'], [920, 940, 'soldier']
       ],
       military: [
         [280, 320, 'soldier'], [440, 420, 'riot'], [960, 500, 'soldier'],
@@ -1257,17 +1325,17 @@ class Game {
         [1560, 860, 'riot'], [1680, 980, 'brute']
       ],
       historic: [
-        [290, 140, 'shambler'], [420, 400, 'runner'], [820, 320, 'runner'],
+        [290, 140, 'walker'], [420, 400, 'runner'], [820, 320, 'runner'],
         [1020, 360, 'screamer'], [1450, 150, 'crawler'], [300, 900, 'brute'],
         [1500, 740, 'riot'], [1500, 1020, 'soldier']
       ],
       museum: [
-        [320, 290, 'runner'], [760, 280, 'shambler'], [1100, 480, 'runner'],
+        [320, 290, 'runner'], [760, 280, 'walker'], [1100, 480, 'runner'],
         [1580, 140, 'soldier'], [270, 900, 'hazmat'], [1580, 740, 'riot'],
         [1540, 1040, 'brute']
       ],
       transit: [
-        [380, 320, 'runner'], [930, 520, 'shambler'], [1180, 550, 'runner'],
+        [380, 320, 'runner'], [930, 520, 'walker'], [1180, 550, 'runner'],
         [1560, 340, 'soldier'], [340, 880, 'crawler'], [1560, 740, 'riot'],
         [1540, 1020, 'brute']
       ],
@@ -1275,6 +1343,59 @@ class Game {
         [390, 300, 'hazmat'], [720, 480, 'spitter'], [1080, 480, 'soldier'],
         [1500, 320, 'hazmat'], [390, 860, 'brute'], [1500, 740, 'riot'],
         [1500, 1020, 'soldier']
+      ],
+      police: [
+        [280, 310, 'riot'], [440, 480, 'runner'], [900, 460, 'riot'],
+        [1500, 260, 'walker'], [280, 960, 'hazmat'], [1500, 760, 'soldier'],
+        [1500, 1010, 'brute']
+      ],
+      fire: [
+        [320, 380, 'hazmat'], [900, 480, 'runner'], [1500, 280, 'walker'],
+        [320, 960, 'spitter'], [1500, 760, 'riot'], [1500, 1010, 'brute']
+      ],
+      bank: [
+        [340, 300, 'riot'], [930, 480, 'soldier'], [1560, 420, 'runner'],
+        [340, 980, 'walker'], [1560, 760, 'riot'], [1560, 1020, 'brute']
+      ],
+      stadium: [
+        [380, 310, 'runner'], [960, 500, 'screamer'], [1580, 290, 'runner'],
+        [360, 1000, 'walker'], [1580, 780, 'riot'], [1580, 1060, 'brute']
+      ],
+      aquarium: [
+        [380, 330, 'spitter'], [930, 480, 'crawler'], [1560, 280, 'hazmat'],
+        [380, 980, 'runner'], [1560, 760, 'riot'], [1560, 1020, 'brute']
+      ],
+      science: [
+        [360, 310, 'hazmat'], [930, 500, 'spitter'], [1560, 310, 'hazmat'],
+        [360, 980, 'crawler'], [1560, 760, 'soldier'], [1560, 1020, 'brute']
+      ],
+      bazaar: [
+        [320, 300, 'runner'], [930, 490, 'screamer'], [1560, 300, 'walker'],
+        [320, 980, 'runner'], [1560, 760, 'riot'], [1560, 1020, 'brute']
+      ],
+      pyramid: [
+        [300, 340, 'crawler'], [900, 480, 'screamer'], [1500, 320, 'runner'],
+        [300, 980, 'brute'], [1500, 760, 'riot'], [1500, 1020, 'brute']
+      ],
+      mosque: [
+        [380, 240, 'walker'], [900, 480, 'runner'], [1500, 320, 'walker'],
+        [300, 940, 'runner'], [1500, 760, 'riot'], [1500, 1020, 'brute']
+      ],
+      capitol: [
+        [360, 310, 'riot'], [930, 490, 'soldier'], [1560, 380, 'runner'],
+        [280, 960, 'walker'], [1560, 760, 'riot'], [1560, 1020, 'brute']
+      ],
+      palace: [
+        [360, 320, 'runner'], [930, 490, 'soldier'], [1560, 400, 'screamer'],
+        [340, 980, 'riot'], [1560, 760, 'soldier'], [1560, 1020, 'brute']
+      ],
+      greenhouse: [
+        [340, 310, 'spitter'], [900, 490, 'crawler'], [1500, 320, 'hazmat'],
+        [340, 960, 'runner'], [1500, 760, 'spitter'], [1500, 1020, 'brute']
+      ],
+      mill: [
+        [360, 310, 'walker'], [900, 490, 'runner'], [1500, 360, 'crawler'],
+        [360, 960, 'spitter'], [1500, 760, 'riot'], [1500, 1020, 'brute']
       ]
     };
     if (aliveGuards < 3) {
@@ -1297,11 +1418,12 @@ class Game {
         [270, 95, 'crate', 'Unclaimed Cargo Pallet', this.rollMany('airport', 4)],
         [980, 120, 'crate', 'Departure Gate A Locker', [...this.rollMany('airport', 3), ...this.rollMany('mall', 1)]],
         [1420, 120, 'crate', 'Quarantine Triage Case', this.rollMany('hospital', 4)],
-        [2180, 130, 'crate', 'ATC Radar Security Crate', [...this.rollMany('science', 2), ...this.rollMany('police', 2)]],
-        [380, 880, 'crate', 'Duty-Free Luxury Cache', this.rollMany('mall', 4)],
-        [1960, 880, 'crate', 'Air Marshal Armory Crate', this.rollMany('military', 4)],
-        [220, 1360, 'crate', 'Ground Crew Fuel & Gear Box', [...this.rollMany('gas', 3), ...this.rollMany('airport', 2)]],
-        [2040, 1350, 'vault', 'Armored Customs Bullion Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 5)]]
+        [2140, 130, 'crate', 'ATC Radar Security Crate', [...this.rollMany('science', 2), ...this.rollMany('police', 2)]],
+        [380, 920, 'crate', 'Duty-Free Luxury Cache', this.rollMany('mall', 4)],
+        [1960, 920, 'crate', 'Air Marshal Armory Crate', this.rollMany('military', 4)],
+        [220, 1460, 'crate', 'Ground Crew Fuel & Gear Box', [...this.rollMany('gas', 3), ...this.rollMany('airport', 2)]],
+        [2520, 260, 'crate', 'Hangar Aviation Parts Cache', [...this.rollMany('airport', 3), ...this.rollMany('military', 2)]],
+        [2040, 1450, 'vault', 'Armored Customs Bullion Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 5)]]
       ],
       university: [
         [185, 440, 'crate', 'Library Archive Chest', [...this.rollMany('campus', 3), ...this.rollMany('science', 1)]],
@@ -1320,12 +1442,13 @@ class Game {
         [1610, 380, 'vault', 'Quarantine Bio-Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 3)]]
       ],
       mall: [
-        [180, 490, 'crate', 'Sporting Goods Crate', [...this.rollMany('mall', 3), ...this.rollMany('police', 1)]],
-        [720, 250, 'crate', 'Tech Emporium Cache', [...this.rollMany('mall', 2), ...this.rollMany('science', 2)]],
-        [1200, 250, 'crate', 'Electronics Display Safe', this.rollMany('airport', 3)],
-        [240, 1100, 'crate', 'Food Court Pantry', this.rollMany('market', 4)],
-        [1720, 490, 'crate', 'Department Store Crate', [...this.rollMany('mall', 3), ...this.rollMany('hospital', 1)]],
-        [1640, 960, 'vault', 'Armored Mall Jewelry Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+        [200, 320, 'crate', 'Sporting Goods Tactical Crate', [...this.rollMany('mall', 3), ...this.rollMany('police', 1)]],
+        [820, 120, 'crate', 'Tech Emporium Hardware Cache', [...this.rollMany('mall', 2), ...this.rollMany('science', 2)]],
+        [1580, 120, 'crate', 'Retro Arcade Prize Safe', this.rollMany('airport', 3)],
+        [200, 1340, 'crate', 'Food Court Walk-In Pantry', this.rollMany('market', 4)],
+        [2040, 320, 'crate', 'Luxury Boutique Supply Crate', [...this.rollMany('mall', 3), ...this.rollMany('hospital', 1)]],
+        [1200, 1020, 'crate', 'Atrium Espresso Kiosk Safe', this.rollMany('mall', 3)],
+        [2140, 1120, 'vault', 'Armored Mall Diamond & Cash Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
       ],
       military: [
         [180, 290, 'crate', 'Main Armory Weapon Chest', this.rollMany('military', 4)],
@@ -1366,6 +1489,110 @@ class Game {
         [1520, 500, 'crate', 'Substation Capacitor Case', this.rollMany('science', 4)],
         [1520, 720, 'crate', 'Control Room Locker', this.rollMany('military', 3)],
         [1450, 1060, 'vault', 'High-Voltage Breaker Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      police: [
+        [420, 140, 'crate', 'SWAT Ballistics Trunk', [...this.rollMany('police', 3), ...this.rollMany('military', 1)]],
+        [1080, 180, 'crate', 'Dispatch Evidence Safe', this.rollMany('police', 4)],
+        [1640, 140, 'crate', 'Detention Booking Locker', this.rollMany('police', 3)],
+        [150, 700, 'crate', 'Crime Lab Toxicology Box', [...this.rollMany('science', 2), ...this.rollMany('hospital', 2)]],
+        [1400, 730, 'crate', 'Impound Weapon Crate', this.rollMany('military', 3)],
+        [1440, 1060, 'vault', 'Precinct Evidence Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      fire: [
+        [450, 150, 'crate', 'Engine Tool & Axe Chest', [...this.rollMany('gas', 3), ...this.rollMany('police', 1)]],
+        [1080, 180, 'crate', 'Alarm Chief Supply Locker', this.rollMany('police', 3)],
+        [1620, 300, 'crate', 'Firehouse Pantry Crate', this.rollMany('market', 3)],
+        [400, 920, 'crate', 'Hazmat Decontamination Case', [...this.rollMany('hospital', 2), ...this.rollMany('science', 2)]],
+        [1400, 730, 'crate', 'Paramedic Trauma Cache', this.rollMany('hospital', 4)],
+        [1440, 1060, 'vault', 'Emergency Rescue Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      bank: [
+        [400, 380, 'crate', 'Safe Deposit Box #409', [...this.rollMany('mall', 2), ...this.rollMany('gov', 2)]],
+        [700, 480, 'crate', 'Teller Cash Drawer Crate', this.rollMany('gov', 3)],
+        [1680, 140, 'crate', 'Executive Reserve Trunk', this.rollMany('gov', 4)],
+        [160, 700, 'crate', 'Mint Armored Bag Crate', [...this.rollMany('police', 2), ...this.rollMany('gov', 2)]],
+        [1440, 740, 'crate', 'Bullion Guard Locker', this.rollMany('police', 4)],
+        [1480, 1060, 'vault', 'Gold Bullion Reserve Safe', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 5)]]
+      ],
+      stadium: [
+        [160, 120, 'crate', 'Home Team Kit Trunk', [...this.rollMany('mall', 3), ...this.rollMany('hospital', 1)]],
+        [1140, 180, 'crate', 'VIP Skybox Bar Crate', this.rollMany('mall', 3)],
+        [1520, 490, 'crate', 'Broadcast Electronics Box', this.rollMany('science', 3)],
+        [420, 760, 'crate', 'Concessions Freezer Crate', this.rollMany('market', 4)],
+        [1480, 740, 'crate', 'Arena Security Locker', this.rollMany('police', 4)],
+        [1520, 1080, 'vault', 'Championship Receipts Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      aquarium: [
+        [420, 140, 'crate', 'Diver Gear Supply Trunk', [...this.rollMany('airport', 2), ...this.rollMany('mall', 2)]],
+        [1140, 460, 'crate', 'Oceanarium Curator Chest', this.rollMany('museum', 3)],
+        [1460, 120, 'crate', 'Marine Biotoxin Research Box', this.rollMany('science', 4)],
+        [160, 1060, 'crate', 'Arctic Cryo-Cooler Crate', [...this.rollMany('hospital', 2), ...this.rollMany('market', 2)]],
+        [1440, 740, 'crate', 'Specimen Security Locker', this.rollMany('police', 3)],
+        [1480, 1060, 'vault', 'Sunken Treasure Vault', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      science: [
+        [160, 120, 'crate', 'AI & Drone Hardware Crate', this.rollMany('science', 4)],
+        [1120, 480, 'crate', 'Observatory Optics Trunk', [...this.rollMany('science', 2), ...this.rollMany('museum', 2)]],
+        [1680, 120, 'crate', 'Aerospace Fuel & Alloy Case', [...this.rollMany('airport', 2), ...this.rollMany('science', 2)]],
+        [160, 720, 'crate', 'Accelerator Cryo Chest', this.rollMany('science', 4)],
+        [1440, 740, 'crate', 'Cleanroom Security Locker', this.rollMany('military', 3)],
+        [1480, 1060, 'vault', 'Black-Project Prototype Safe', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      bazaar: [
+        [440, 440, 'crate', 'Saffron & Silk Merchant Chest', this.rollMany('market', 4)],
+        [1120, 480, 'crate', 'Lantern Court Trader Box', [...this.rollMany('mall', 2), ...this.rollMany('market', 2)]],
+        [1680, 120, 'crate', 'Nomad Brassware Trunk', [...this.rollMany('historic', 2), ...this.rollMany('mall', 2)]],
+        [150, 700, 'crate', 'Chai & Spice Pantry Crate', this.rollMany('market', 4)],
+        [1440, 740, 'crate', 'Caravan Guard Strongbox', this.rollMany('police', 3)],
+        [1480, 1060, 'vault', 'Silk Road Guild Strongbox', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      pyramid: [
+        [120, 120, 'crate', 'Sandstone Relic Coffer', this.rollMany('historic', 4)],
+        [1080, 130, 'crate', 'High Priest Offering Chest', [...this.rollMany('historic', 3), ...this.rollMany('museum', 1)]],
+        [1640, 320, 'crate', 'Star Sanctuary Tablet Box', [...this.rollMany('science', 2), ...this.rollMany('historic', 2)]],
+        [430, 960, 'crate', 'Canopic Alabaster Chest', this.rollMany('historic', 4)],
+        [1400, 720, 'crate', 'Tomb Guardian Arms Crate', this.rollMany('military', 3)],
+        [1440, 1050, 'vault', "Pharaoh's Golden Treasury", [{k: 'keycard', n: 1}, ...this.rollMany('vault', 5)]]
+      ],
+      mosque: [
+        [120, 120, 'crate', 'Courtyard Pilgrim Chest', this.rollMany('historic', 3)],
+        [1080, 340, 'crate', 'Prayer Hall Lamp Coffer', this.rollMany('historic', 4)],
+        [1640, 320, 'crate', 'House of Wisdom Scroll Box', [...this.rollMany('museum', 2), ...this.rollMany('campus', 2)]],
+        [420, 740, 'crate', 'Artisan Mosaic Supply Box', this.rollMany('market', 3)],
+        [1400, 720, 'crate', 'Warden Armory Chest', this.rollMany('police', 3)],
+        [1440, 1050, 'vault', 'Illuminated Relic Treasury', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      capitol: [
+        [400, 360, 'crate', 'Supreme Court Evidence Chest', this.rollMany('gov', 4)],
+        [1140, 480, 'crate', 'Speaker Rostrum Strongbox', this.rollMany('gov', 3)],
+        [1680, 140, 'crate', 'Diplomatic Pouch Trunk', [...this.rollMany('gov', 3), ...this.rollMany('airport', 1)]],
+        [255, 720, 'crate', 'Federal Archive Lockbox', [...this.rollMany('museum', 2), ...this.rollMany('gov', 2)]],
+        [1440, 740, 'crate', 'Sergeant-at-Arms Locker', this.rollMany('police', 4)],
+        [1480, 1060, 'vault', 'Classified State Safe', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      palace: [
+        [400, 380, 'crate', 'Royal Ballroom Silver Trunk', [...this.rollMany('museum', 2), ...this.rollMany('gov', 2)]],
+        [1140, 480, 'crate', 'Sovereign Steward Coffer', this.rollMany('gov', 4)],
+        [1680, 140, 'crate', 'Banquet Wine & Provision Box', this.rollMany('market', 4)],
+        [420, 740, 'crate', 'Royal Guard Arms Crate', this.rollMany('military', 4)],
+        [1440, 740, 'crate', 'Treasury Sentinel Locker', this.rollMany('police', 4)],
+        [1480, 1060, 'vault', 'Crown Jewels Treasury', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 5)]]
+      ],
+      greenhouse: [
+        [420, 380, 'crate', 'Orchid Nursery Tool Chest', this.rollMany('market', 3)],
+        [1080, 150, 'crate', 'Conservatory Curator Box', [...this.rollMany('campus', 2), ...this.rollMany('hospital', 2)]],
+        [1640, 140, 'crate', 'Cryo-Seed Lab Container', this.rollMany('science', 4)],
+        [160, 700, 'crate', 'Citrus Harvest Supply Crate', this.rollMany('market', 4)],
+        [1400, 720, 'crate', 'Park Ranger Armory Box', this.rollMany('police', 3)],
+        [1440, 1050, 'vault', 'Medicinal Flora Reserve', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
+      ],
+      mill: [
+        [420, 140, 'crate', 'Grain Silo Supply Crate', this.rollMany('market', 4)],
+        [1080, 480, 'crate', 'Miller Tool & Gear Box', this.rollMany('gas', 3)],
+        [1620, 340, 'crate', 'Bagged Flour & Ration Crate', this.rollMany('market', 4)],
+        [420, 740, 'crate', 'Tractor Mechanic Chest', [...this.rollMany('gas', 3), ...this.rollMany('military', 1)]],
+        [1400, 720, 'crate', 'Homestead Watch Locker', this.rollMany('police', 3)],
+        [1440, 1050, 'vault', 'Granary Paymaster Strongbox', [{k: 'keycard', n: 1}, ...this.rollMany('vault', 4)]]
       ]
     };
 
@@ -1750,8 +1977,9 @@ class Game {
     for (const [x, y, a, pool] of this.M.vspawns) {
       const sp = {x, y, a, pool, vid: 0, next: 0}; const type = pool[Math.floor(rnd() * pool.length)], d = VEH[type]; if (!d) continue;
       this.vspawns.push(sp);
-      const colR = Math.max(14, Math.round(d.r * 0.78));
-      if (this.blockedAt(x, y, colR, d.kind === 'heli' ? 'car' : d.kind)) { sp.next = 1e12; continue; }
+      const colR = Math.max(14, Math.round(d.r * 0.72));
+      const spawnCk = d.air ? (d.floatWater ? 'amphib' : 'car') : d.kind;
+      if (this.blockedAt(x, y, colR, spawnCk)) { sp.next = 1e12; continue; }
       sp.vid = this.createVehicle(type, x, y, a, sp).id;
     }
   }
@@ -1765,8 +1993,9 @@ class Game {
     for (const sp of this.vspawns) {
       if (this.vehicles.has(sp.vid) || now < sp.next || this.playerNear(sp.x, sp.y, 900)) continue;
       const type = sp.pool[Math.floor(rnd() * sp.pool.length)], d = VEH[type];
-      const colR = Math.max(14, Math.round(d.r * 0.78));
-      if (this.blockedAt(sp.x, sp.y, colR, d.kind === 'heli' ? 'car' : d.kind)) { sp.next = now + 60000; continue; }
+      const colR = Math.max(14, Math.round(d.r * 0.72));
+      const spawnCk = d.air ? (d.floatWater ? 'amphib' : 'car') : d.kind;
+      if (this.blockedAt(sp.x, sp.y, colR, spawnCk)) { sp.next = now + 60000; continue; }
       sp.vid = this.createVehicle(type, sp.x, sp.y, sp.a, sp).id;
     }
   }
@@ -1784,11 +2013,30 @@ class Game {
   exitVehicle(p, force) {
     const v = p.veh; if (!v) return; const d = VEH[v.type];
     v.seats[p.seat] = 0; let placed = false;
-    for (const s of [v.a + Math.PI / 2, v.a - Math.PI / 2, v.a + Math.PI, v.a]) { const x = v.x + Math.cos(s) * (d.r + p.r + 8), y = v.y + Math.sin(s) * (d.r + p.r + 8); if (!this.blockedAt(x, y, p.r, 'walk')) { p.x = x; p.y = y; placed = true; break; } }
+    const angles = [v.a + Math.PI / 2, v.a - Math.PI / 2, v.a + Math.PI, v.a, v.a + Math.PI / 4, v.a - Math.PI / 4, v.a + 3 * Math.PI / 4, v.a - 3 * Math.PI / 4];
+    const rings = [d.r + p.r + 8, d.r + p.r + 36, d.r + p.r + 68];
+    // Pass 1: Prefer strictly dry walkable land near vehicle
+    for (const dist of rings) {
+      for (const s of angles) {
+        const x = v.x + Math.cos(s) * dist, y = v.y + Math.sin(s) * dist;
+        if (!this.blockedAt(x, y, p.r, 'walk') && !PROPS[this.tileAt(x, y)].water) { p.x = x; p.y = y; placed = true; break; }
+      }
+      if (placed) break;
+    }
+    // Pass 2: Fall back to non-deep water/walkable tile (boats/seaplanes away from shore)
+    if (!placed) {
+      for (const dist of rings) {
+        for (const s of angles) {
+          const x = v.x + Math.cos(s) * dist, y = v.y + Math.sin(s) * dist;
+          if (!this.blockedAt(x, y, p.r, 'walk') && this.tileAt(x, y) !== T.DEEP) { p.x = x; p.y = y; placed = true; break; }
+        }
+        if (placed) break;
+      }
+    }
     if (!placed) { const f = this.findFree(v.x, v.y, p.r, 'walk'); p.x = f[0]; p.y = f[1]; }
     const fast = Math.hypot(v.vx, v.vy);
     p.veh = null; p.seat = -1; this.forcePos(p); p.dirty = true;
-    if (!force && d.kind === 'heli' && v.alt > 0.5 && fast > 120) this.damagePlayer(p, 35, 'fall', null);
+    if (!force && d.air && v.alt > 0.5 && fast > 120) this.damagePlayer(p, 35, 'fall', null);
     else if (!force && fast > 500) this.damagePlayer(p, (fast - 400) * 0.05, 'fall', null);
   }
   switchSeat(p) { const v = p.veh; if (!v) return; for (let k = 1; k <= v.seats.length; k++) { const s = (p.seat + k) % v.seats.length; if (!v.seats[s]) { v.seats[p.seat] = 0; v.seats[s] = p.id; p.seat = s; p.dirty = true; this.msg(p, s === 0 ? 'Driver seat' : 'Seat ' + (s + 1)); return; } } }
@@ -1807,15 +2055,29 @@ class Game {
       let thr = 0, steer = 0, boost = false, braking = false;
       if (drv && !drv.dead) { thr = -drv.input.my; steer = drv.input.mx; boost = drv.input.sprint; braking = !!drv.input.brake; }
       const disabled = v.broken || v.fuel <= 0 || v.emp > now || empAll; if (disabled) { thr = 0; boost = false; }
-      const heli = d.kind === 'heli';
-      if (heli) v.alt = (drv && !disabled) ? Math.min(1, v.alt + dt * 0.8) : Math.max(0, v.alt - dt * 0.4);
+      const isAir = !!d.air;
+      const liftMode = d.liftMode || (d.kind === 'heli' ? 'vtol' : null);
+      const prevFwd = Math.abs(v.sp || 0);
+      if (isAir) {
+        if (liftMode === 'vtol') {
+          v.alt = (drv && !disabled) ? Math.min(1, v.alt + dt * 0.85) : Math.max(0, v.alt - dt * 0.45);
+        } else {
+          const takeoff = d.takeoffSpd || 280, stall = d.stallSpd || 200;
+          if (drv && !disabled && prevFwd >= takeoff) v.alt = Math.min(1, v.alt + dt * 0.9);
+          else if (!drv || disabled || prevFwd < stall) v.alt = Math.max(0, v.alt - dt * 0.45);
+        }
+      }
       const tile = this.tileAt(v.x, v.y), P = PROPS[tile];
       let tm;
-      if (heli) tm = v.alt > 0.6 ? 1 : 0.25;
-      else if (d.kind === 'boat') tm = P.water ? 1 : 0.05;
+      const isRoad = tile === 5 || tile === 20 || tile === 16 || tile === 6;
+      if (isAir) {
+        if (v.alt > 0.5) tm = 1;
+        else if (d.floatWater && P.water) tm = 0.95;
+        else if (isRoad) tm = 1.15;
+        else tm = liftMode === 'vtol' ? 0.3 : 0.65;
+      } else if (d.kind === 'boat') tm = P.water ? 1 : 0.05;
       else if (d.kind === 'hover') tm = P.water ? 1 : Math.max(0.55, P.veh);
       else {
-        const isRoad = tile === 5 || tile === 20 || tile === 16 || tile === 6;
         tm = isRoad ? 1.35 : (d.terrain && d.terrain[tile] !== undefined ? d.terrain[tile] : P.veh);
       }
       const maxS = d.speed * tm * (boost && !disabled ? 1.32 : 1);
@@ -1830,37 +2092,41 @@ class Game {
         fwd += d.accel * thr * dt * (fwd < -10 ? 4.2 : launchBoost);
       } else if (thr < 0) {
         if (fwd > 20) fwd -= Math.min(fwd, d.accel * 4.8 * dt);
-        else fwd += d.accel * thr * dt * 1.65;
+        else fwd += d.accel * thr * dt * (isAir && v.alt > 0.5 ? 0.4 : 1.65);
       } else {
-        const rollingDrag = (P.drag || 1.0) * (heli ? 0.95 : 1.55);
+        const rollingDrag = (P.drag || 1.0) * (isAir ? (v.alt > 0.5 && liftMode !== 'vtol' ? 0.35 : 0.9) : 1.55);
         fwd -= fwd * Math.min(1, rollingDrag * dt);
       }
 
-      if (braking && d.kind === 'car') fwd *= Math.exp(-2.8 * dt);
+      if (braking && !isAir) fwd *= Math.exp(-2.8 * dt);
+      if (braking && isAir && v.alt <= 0.5) fwd *= Math.exp(-3.4 * dt);
       if (fwd > maxS) fwd -= (fwd - maxS) * Math.min(1, 5.2 * dt);
-      if (fwd < -maxS * 0.58) fwd = -maxS * 0.58;
+      if (fwd < -maxS * (isAir ? 0.25 : 0.58)) fwd = -maxS * (isAir ? 0.25 : 0.58);
 
       // Smoothed speed-sensitive progressive steering (nimble at low speed, stable at top speed)
       v.sa = (v.sa || 0) + (steer - (v.sa || 0)) * Math.min(1, 18 * dt);
       const absFwd = Math.abs(fwd);
-      const steerCurve = heli ? 1 : clamp(0.42 + (absFwd / 120) * 0.72 - Math.max(0, (absFwd - 480) / 1400) * 0.28, 0.35, 1.12);
+      const vtol = liftMode === 'vtol';
+      const steerCurve = isAir
+        ? (vtol ? 1 : (v.alt > 0.5 ? 0.85 : clamp(0.45 + absFwd / 260, 0.35, 1.0)))
+        : clamp(0.42 + (absFwd / 120) * 0.72 - Math.max(0, (absFwd - 480) / 1400) * 0.28, 0.35, 1.12);
       const driftTurn = braking && d.kind === 'car' && absFwd > 140 ? 1.24 : 1;
-      if (absFwd > 5 || heli) {
-        v.a += v.sa * d.turn * steerCurve * driftTurn * dt * (fwd < -5 && !heli ? -1 : 1);
+      if (absFwd > 5 || (isAir && vtol)) {
+        v.a += v.sa * d.turn * steerCurve * driftTurn * dt * (fwd < -5 && !vtol ? -1 : 1);
       }
 
       // Exponential lateral tire traction decay (crisp cornering normally, wide controlled slide on handbrake)
       const nCos = Math.cos(v.a), nSin = Math.sin(v.a);
-      const latGrip = (d.kind === 'car' ? (P.grip || 1) : 1) * (d.grip || 1) * (braking ? 2.1 : 10.5);
+      const latGrip = (d.kind === 'car' ? (P.grip || 1) : (isAir ? 1.4 : 1)) * (d.grip || 1) * (braking && !isAir ? 2.1 : 10.5);
       lat *= Math.exp(-latGrip * dt);
 
       v.vx = nCos * fwd - nSin * lat;
       v.vy = nSin * fwd + nCos * lat;
       v.sp = fwd;
 
-      if (!disabled && drv) v.fuel = Math.max(0, v.fuel - d.burn * (Math.abs(thr) + (heli && v.alt > 0 ? 0.35 : 0)) * (boost ? 1.6 : 1) * dt);
-      const ck = heli ? (v.alt > 0.6 ? 'fly' : 'car') : d.kind;
-      const colR = Math.max(14, Math.round(d.r * 0.78));
+      if (!disabled && drv) v.fuel = Math.max(0, v.fuel - d.burn * (Math.abs(thr) + (isAir && v.alt > 0 ? 0.35 : 0)) * (boost ? 1.6 : 1) * dt);
+      const ck = isAir ? (v.alt > 0.5 ? 'fly' : (d.floatWater ? 'amphib' : 'car')) : d.kind;
+      const colR = Math.max(14, Math.round(d.r * 0.72));
       const spd = Math.hypot(v.vx, v.vy);
       if (spd > 0.5) {
         const res = this.moveVehicle(v, v.vx * dt, v.vy * dt, colR, ck);
@@ -1900,8 +2166,8 @@ class Game {
       // Soft vehicle-to-vehicle circle separation with momentum damping
       if (ck !== 'fly') {
         for (const o of this.vh.query(v.x, v.y, d.r + 70, [])) {
-          if (o === v || o.dead || (VEH[o.type].kind === 'heli' && o.alt > 0.5)) continue;
-          const oColR = Math.max(14, Math.round(VEH[o.type].r * 0.78));
+          if (o === v || o.dead || (VEH[o.type].air && o.alt > 0.5)) continue;
+          const oColR = Math.max(14, Math.round(VEH[o.type].r * 0.72));
           const rr = colR + oColR, dx = v.x - o.x, dy = v.y - o.y, dd = dx * dx + dy * dy;
           if (dd > 0.1 && dd < rr * rr) {
             const dl = Math.sqrt(dd), push = (rr - dl) * 0.42;
@@ -1913,7 +2179,7 @@ class Game {
       }
       for (const pid of v.seats) { if (!pid) continue; const p = this.players.get(pid); if (p) { p.x = v.x; p.y = v.y; if (d.heal) { p.hp = Math.min(100, p.hp + d.heal * dt); p.bleed = false; } } }
       if (v.siren && this.tickN % 30 === 0) this.noise(v.x, v.y, 1500);
-      if (d.kind === 'car' && !heli && P.water === 2) this.damageVehicle(v, 60 * dt, null);
+      if (!isAir && !d.floatWater && d.kind === 'car' && P.water === 2) this.damageVehicle(v, 60 * dt, null);
     }
   }
   ram(v, d, drv, spd) {
@@ -2263,6 +2529,7 @@ class Game {
       const up = plot.upgrades || {};
       let scrapPerSec = 1;
       if (up.scrap_compactor) scrapPerSec += [0, 3, 6, 10, 16, 24, 35, 50, 70, 100, 150][up.scrap_compactor] || 0;
+      if (up.wind_turbines) scrapPerSec += [0, 5, 12, 22, 38, 60][up.wind_turbines] || 0;
       if (up.scavenger_drones) scrapPerSec += up.scavenger_drones * 6;
       if (up.nuclear_rtg) scrapPerSec += [0, 18, 36, 60, 100][up.nuclear_rtg] || 0;
       if (up.crypto_terminal) scrapPerSec += [0, 12, 25, 45, 75][up.crypto_terminal] || 0;
@@ -2314,10 +2581,12 @@ class Game {
       }
 
       // Automated Defensive Turrets & Tesla Spire (active baseline for all claimed shelters!)
-      const turretCooldown = up.turret_mg ? 180 : up.turret_laser ? 220 : up.turret_sniper ? 900 : 340;
+      const solarFactor = Math.max(0.5, 1 - (up.solar_array || 0) * 0.1);
+      const turretCooldown = (up.turret_mg ? 180 : up.turret_laser ? 220 : up.turret_sniper ? 900 : 340) * solarFactor;
+      const turretRange = 850 + (up.radar_spire || 0) * 150 + (up.watchtower_grid || 0) * 110;
       if (now - (plot.lastTurretFire || 0) > turretCooldown) {
-        let targetZ = null, minD = (850 + (up.radar_spire || 0) * 150) ** 2;
-        for (const z of this.zh.query(plot.x, plot.y, 900, [])) {
+        let targetZ = null, minD = turretRange * turretRange;
+        for (const z of this.zh.query(plot.x, plot.y, turretRange + 60, [])) {
           if ((z.zone || 'world') !== 'world' || z.hp <= 0) continue;
           const dd = d2(z.x, z.y, plot.x, plot.y);
           if (dd < minD) { minD = dd; targetZ = z; }
@@ -2394,9 +2663,25 @@ class Game {
         }
       }
 
-      // Evacuation and Reborn trigger
+      // Evacuation Swarm Waves and Reborn Victory trigger
       if (plot.evacActive && plot.evacTimer > 0) {
         const rem = Math.max(0, Math.round((plot.evacTimer - now) / 1000));
+        const waveBucket = Math.floor((180 - rem) / 25);
+        if (rem > 0 && waveBucket > (plot.lastWaveBucket ?? -1) && this.zombies.size < MAXZ - 12) {
+          plot.lastWaveBucket = waveBucket;
+          const waveNum = waveBucket + 1;
+          const count = Math.min(10, 5 + waveNum);
+          const pool = waveNum >= 5 ? ['runner', 'soldier', 'brute', 'riot', 'spitter', 'screamer'] : ['runner', 'walker', 'soldier', 'spitter'];
+          for (let i = 0; i < count; i++) {
+            const ang = (i / count) * Math.PI * 2 + rnd() * 0.4, dist = plot.radius + R(260, 440);
+            const sx = plot.x + Math.cos(ang) * dist, sy = plot.y + Math.sin(ang) * dist;
+            const zt = (i === 0 && waveNum >= 6) ? 'behemoth' : pool[Math.floor(rnd() * pool.length)];
+            const [fx, fy] = this.findFree(sx, sy, ZD[zt].r, 'walk', 'world');
+            const z = this.spawnZombie(zt, fx, fy);
+            if (z) { z.gx = plot.x; z.gy = plot.y; z.inv = true; }
+          }
+          this.broadcast({t: 'msg', m: `⚠️ EXODUS SWARM WAVE ${waveNum} APPROACHING PLOT #${plot.id} (${rem}s left)!`});
+        }
         if (rem <= 0) {
           plot.evacTimer = -1;
           plot.evacActive = false;

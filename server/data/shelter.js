@@ -122,6 +122,17 @@ const UPGRADES = [
     costMult: 2.2,
     stat: ['8 Proximity Mines (120 Dmg)', '16 Mines + Shrapnel', '24 High-Explosive Mines (280 Dmg)', 'Smart Micro-Mines with 30s Auto-Regeneration']
   },
+  {
+    key: 'watchtower_grid',
+    name: 'Armored Corner Bastion Watchtowers',
+    cat: 'Defense',
+    icon: '🗼',
+    desc: 'Erects 4 elevated corner watchtowers with automated strobes, armor reinforcement, and +20% turret range.',
+    maxLv: 4,
+    baseCost: 280,
+    costMult: 2.25,
+    stat: ['+15% Turret Range + Corner Towers', '+25% Turret Range + Spotlight Sweep', '+40% Turret Range + +2,000 Wall HP', '+55% Turret Range + Reinforced Citadel Bunkers']
+  },
 
   // ── 2. AUTOMATED TURRETS ──
   {
@@ -257,6 +268,17 @@ const UPGRADES = [
     baseCost: 180,
     costMult: 2.1,
     stat: ['+15% Turret Fire Rate', '+30% Turret Fire Rate', '+45% Turret Fire Rate', '+60% Turret Fire Rate', 'Overcharged Capacitor (+80% Fire Rate)']
+  },
+  {
+    key: 'wind_turbines',
+    name: 'Twin Aero-Wind Generator Turbines',
+    cat: 'Production',
+    icon: '🌬️',
+    desc: 'Spinning high-efficiency wind turbines generating steady Scrap income and boosting generator efficiency.',
+    maxLv: 5,
+    baseCost: 210,
+    costMult: 2.0,
+    stat: ['+5 Scrap / sec + Visible Turbine Tower', '+12 Scrap / sec + Dual Rotors', '+22 Scrap / sec + Grid Capacitors', '+38 Scrap / sec + High-Output Nacelle', '+60 Scrap / sec + Superconducting Farm']
   },
   {
     key: 'nuclear_rtg',
@@ -467,11 +489,11 @@ const UPGRADES = [
     name: 'Reinforced Elevated Helipad & Windsock',
     cat: 'Logistics',
     icon: '🚁',
-    desc: 'Dedicated rooftop landing circle with automated approach lights and fuel lines.',
+    desc: 'Dedicated landing pad with automated approach lights, windsock, and aircraft deployment.',
     maxLv: 3,
     baseCost: 500,
     costMult: 2.4,
-    stat: ['Illuminated Landing Pad + Windsock', 'Helicopter Rapid Auto-Refuel & Repair', 'Spawns Military Attack Helicopter on Pad']
+    stat: ['Illuminated Helipad + Deploys Utility Helicopter', 'Rapid Auto-Refuel & Repair + Deploys V-22 Osprey', 'Armored Helipad + Deploys Apache Gunship']
   },
 
   // ── 7. ENDGAME: OPERATION EXODUS ──
@@ -513,7 +535,7 @@ const UPGRADES = [
     name: 'OPERATION EXODUS: Evacuation Beacon',
     cat: 'Endgame',
     icon: '🚨',
-    desc: 'THE CONSTANT GAME OBJECTIVE. Construct and power the military transponder to signal the extraction carrier and trigger Rebirth!',
+    desc: 'THE MAIN GAME OBJECTIVE. Construct and power the Exodus transponder to summon the Evacuation Swarm and achieve Complete Victory!',
     maxLv: 5,
     baseCost: 1000,
     costMult: 2.5,
@@ -522,7 +544,7 @@ const UPGRADES = [
       'Stage 2: High-Gain Antenna Erected (2/5)',
       'Stage 3: Subspace Frequencies Calibrated (3/5)',
       'Stage 4: Military Evacuation Carrier Signaled (4/5)',
-      'Stage 5: EXTRACTION READY! Survive the Final 3-Minute Extinction Swarm for Complete Victory & Rebirth!'
+      'Stage 5: EXTRACTION ACTIVE! Hold off escalating Extinction Swarm Waves for 3 Minutes for Complete Victory & Rebirth!'
     ]
   },
 

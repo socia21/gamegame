@@ -23,13 +23,13 @@ const RNAMES = [
   ['Salt Wastes', 'Dune Sea', 'Karst Labyrinth', 'Lake District', 'Coral Archipelago'],
 ];
 const WILD = new Set(['alpine', 'volcanic', 'karst', 'coast', 'desert', 'saltflat', 'canyon', 'lakes', 'reef']);
-const SIZE = {stadium:[15,12],arena:[10,8],court:[8,6],circuit:[24,15],golf:[16,14],airport:[34,16],building:[8,6],big:[10,7],bank:[9,7],capitol:[11,8],
-  hospital:[11,9],milbase:[18,14],
-  mall:[14,11],park:[12,11],zoo:[14,12],market:[11,9],complex:[15,12],fort:[13,12],palace:[14,11],cathedral:[10,8],pyramid:[11,10],amphi:[12,10],mosque:[10,9],
-  rockcut:[10,9],temple:[9,7],mausoleum:[11,9],aqueduct:[18,2],terrace:[13,10],stepwell:[8,8],estate:[13,10],monastery:[10,9],silo:[11,8],dam:[16,11],green:[10,9],
-  windmill:[11,8],busterminal:[12,9],waterfront:[15,10],aquarium:[11,8],
-  mountain:[24,24],glacier:[14,12],subglacial:[11,10],pass:[14,9],canyon:[24,9],plateau:[14,14],desert:[16,14],volcano:[16,15],geyser:[9,9],karst:[13,12],
-  cenote:[8,8],delta:[16,15],lagoon:[16,13],lake:[15,12],cliff:[16,6],fjord:[22,7],saltflat:[17,15],saltlake:[11,10],waterfall:[12,11],reef:[15,14],strait:[28,10]};
+const SIZE = {stadium:[17,14],arena:[11,9],court:[8,6],circuit:[26,17],golf:[18,15],airport:[35,26],building:[8,6],big:[10,7],bank:[9,7],capitol:[12,9],
+  hospital:[12,10],milbase:[24,18],
+  mall:[15,12],park:[13,11],zoo:[15,13],market:[11,9],complex:[16,13],fort:[14,13],palace:[14,11],cathedral:[11,8],pyramid:[12,11],amphi:[12,10],mosque:[10,9],
+  rockcut:[10,9],temple:[9,7],mausoleum:[11,9],aqueduct:[18,2],terrace:[13,10],stepwell:[8,8],estate:[13,10],monastery:[10,9],silo:[11,8],dam:[18,12],green:[10,9],
+  windmill:[11,8],busterminal:[13,9],waterfront:[19,12],aquarium:[11,8],
+  mountain:[25,25],glacier:[15,13],subglacial:[12,11],pass:[15,10],canyon:[25,10],plateau:[15,15],desert:[18,15],volcano:[18,16],geyser:[10,10],karst:[14,13],
+  cenote:[9,9],delta:[22,18],lagoon:[22,17],lake:[22,17],cliff:[18,7],fjord:[26,10],saltflat:[19,16],saltlake:[15,13],waterfall:[15,13],reef:[22,18],strait:[30,12]};
 const ROT = new Set(['aqueduct', 'canyon', 'cliff', 'fjord', 'strait', 'pass']);
 const BUILD_STYLE = {'Police HQ':'police','Fire Station':'fire','High Court':'court','Art Museum':'museum','Science Centre':'science','National Archive':'archive',
   'Post Office':'post','International HQ':'intl','State Secretariat':'gov','Municipal Office':'civic','Revenue Authority':'gov','Electoral Commission':'civic',
@@ -40,7 +40,7 @@ function generateMap(seed) {
   const R = (a, b) => a + rng() * (b - a), RI = (a, b) => Math.floor(R(a, b + 1)), pick = (a) => a[Math.floor(rng() * a.length)];
   const tiles = new Uint8Array(W * H), region = new Uint8Array(W * H), occ = new Uint8Array(W * H), road = new Uint8Array(W * H);
   const rects = [], styles = [], styleIdx = {}, landmarks = [], loot = [], vspawns = [], zones = [], entrances = [];
-  const entCounts = {air: 0, univ: 0, hosp: 0, mall: 0, mil: 0, hist: 0, mus: 0, hub: 0, ind: 0};
+  const entCounts = {air: 0, univ: 0, hosp: 0, mall: 0, mil: 0, hist: 0, mus: 0, hub: 0, ind: 0, pol: 0, fire: 0, bank: 0, stad: 0, aqua: 0, sci: 0, baz: 0, pyr: 0, mosq: 0, cap: 0, pal: 0, grn: 0, mill: 0};
   const ent = (prefix, type, name, x, y) => entrances.push({id: prefix + '_' + (++entCounts[prefix]), type, name, x: Math.round(x), y: Math.round(y)});
   const idx = (x, y) => y * W + x, inb = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
   const set = (x, y, t) => { x = Math.floor(x); y = Math.floor(y); if (inb(x, y)) tiles[idx(x, y)] = t; };
@@ -87,7 +87,7 @@ function generateMap(seed) {
       case 'alpine':
         t = (elev > 0.65 || ridge > 0.90) ? (elev > 0.72 ? T.SNOW : T.ROCK)
           : n > 0.56 ? (m > 0.66 ? T.ICE : T.SNOW)
-          : (m > 0.53 ? T.FOREST : (elev < 0.30 && m > 0.45 ? T.SHALLOW : T.GRASS));
+          : (m > 0.53 ? T.FOREST : (elev < 0.34 && m > 0.44 ? (elev < 0.27 ? T.DEEP : T.SHALLOW) : T.GRASS));
         break;
       case 'volcanic':
         t = (ridge > 0.89 && elev > 0.54) ? T.LAVA
@@ -96,12 +96,14 @@ function generateMap(seed) {
         break;
       case 'karst':
         t = ((m > 0.67 && n > 0.44) || ridge > 0.91) ? T.ROCK
-          : n < 0.29 ? T.SHALLOW
+          : n < 0.33 ? T.SHALLOW
           : m < 0.44 ? T.FOREST : (elev < 0.28 ? T.SWAMP : T.GRASS);
         break;
       case 'coast':
-        t = (n > 0.66 || ridge > 0.90) ? T.ROCK
-          : elev < 0.28 ? T.SAND
+        t = (n > 0.67 || ridge > 0.90) ? T.ROCK
+          : elev < 0.24 ? T.DEEP
+          : elev < 0.32 ? T.SHALLOW
+          : elev < 0.37 ? T.SAND
           : m > 0.55 ? T.FOREST : T.GRASS;
         break;
       case 'desert': {
@@ -119,17 +121,17 @@ function generateMap(seed) {
           : elev < 0.26 ? T.SAND : (m > 0.68 ? T.GRASS : T.DIRT);
         break;
       case 'lakes':
-        t = (n < 0.31 || elev < 0.26) ? T.DEEP
-          : n < 0.38 ? T.SHALLOW
-          : m > 0.60 ? T.SWAMP
-          : m > 0.47 ? T.FOREST : T.GRASS;
+        t = (n < 0.39 || elev < 0.32) ? T.DEEP
+          : n < 0.46 ? T.SHALLOW
+          : m > 0.62 ? T.SWAMP
+          : m > 0.48 ? T.FOREST : T.GRASS;
         break;
       case 'reef':
-        t = n > 0.64 ? (m > 0.55 ? T.FOREST : T.SAND) : n > 0.54 ? T.SHALLOW : T.DEEP;
+        t = n > 0.68 ? (m > 0.56 ? T.FOREST : T.SAND) : n > 0.57 ? T.SHALLOW : T.DEEP;
         break;
       case 'rural':
         t = (ridge > 0.93 && elev > 0.66) ? T.ROCK
-          : elev < 0.23 && m > 0.62 ? T.SHALLOW
+          : elev < 0.24 && m > 0.60 ? T.SHALLOW
           : (n > 0.52 && m > 0.44) ? T.FARM : m < 0.29 ? T.FOREST : T.GRASS;
         break;
       case 'historic':
@@ -141,15 +143,15 @@ function generateMap(seed) {
       default:
         t = m > 0.66 ? T.GRASS : T.CONCRETE;
     }
-    // meandering rivers with sandy/gravel banks
+    // meandering grand rivers & tributaries with sandy/gravel banks
     const rv = Math.abs(fbm(x * 0.011, y * 0.011, seed + 99, 3) - 0.5);
     if (th !== 'reef') {
-      if (rv < 0.0105) t = (th === 'desert' || th === 'saltflat') ? T.DIRT : (rv < 0.0050 ? T.DEEP : T.SHALLOW);
-      else if (rv < 0.018 && t !== T.ROCK && t !== T.CONCRETE && t !== T.LAVA) t = (th === 'lakes' || m > 0.62) ? T.SWAMP : T.SAND;
+      if (rv < 0.0175) t = (th === 'desert' || th === 'saltflat') ? T.DIRT : (rv < 0.0085 ? T.DEEP : T.SHALLOW);
+      else if (rv < 0.025 && t !== T.ROCK && t !== T.CONCRETE && t !== T.LAVA) t = (th === 'lakes' || m > 0.60) ? T.SWAMP : T.SAND;
     }
     // ocean border
     const e = Math.min(x, y, W - 1 - x, H - 1 - y) + (vnoise(x * 0.06, y * 0.06, seed + 5) - 0.5) * 6;
-    if (e < 6) t = T.DEEP; else if (e < 8.5) t = T.SHALLOW; else if (e < 11) t = (th === 'coast' && n > 0.5) ? T.ROCK : T.SAND;
+    if (e < 8) t = T.DEEP; else if (e < 11) t = T.SHALLOW; else if (e < 13.5) t = (th === 'coast' && n > 0.5) ? T.ROCK : T.SAND;
     tiles[i] = t;
   }
 
@@ -171,34 +173,86 @@ function generateMap(seed) {
     }
   }
 
-  // ── organized highway, avenue & rural/historic lane network ──
-  const HW = [40, 120, 200, 280, 360];
-  for (const c of HW) for (let k = 12; k < W - 12; k++) for (let d = -1; d <= 1; d++) { road[idx(k, c + d)] = 1; road[idx(c + d, k)] = 1; }
+  // ── organized connected highway & regional street network ──
+  const isPassableForRoad = t => t !== T.LAVA && t !== T.ICE && t !== T.ROCK;
+  const markCorridor = (isHoriz, c) => {
+    // Only lay trunk highways across civilized regions (plus short connecting spans), never deep across outer wilderness oceans/peaks
+    const runs = [];
+    let cur = null;
+    for (let k = 14; k < W - 14; k++) {
+      const x = isHoriz ? k : c, y = isHoriz ? c : k;
+      const th = themeOf(region[idx(x, y)]);
+      const t = tiles[idx(x, y)];
+      const okCorridor = !WILD.has(th) && isPassableForRoad(t);
+      if (okCorridor) {
+        if (!cur) cur = { a: k, b: k };
+        else cur.b = k;
+      } else if (cur) {
+        runs.push(cur);
+        cur = null;
+      }
+    }
+    if (cur) runs.push(cur);
+    for (const run of runs) {
+      if (run.b - run.a < 18) continue;
+      for (let k = run.a; k <= run.b; k++) {
+        for (let d = -1; d <= 1; d++) {
+          const rx = isHoriz ? k : c + d, ry = isHoriz ? c + d : k;
+          if (inb(rx, ry)) road[idx(rx, ry)] = 1;
+        }
+      }
+    }
+  };
+  const HW = [120, 200, 280, 360];
+  for (const c of HW) {
+    markCorridor(true, c);
+    markCorridor(false, c);
+  }
+  // Remove road=1 over wide water (>6 tiles) so highways bridge rivers cleanly without cutting across seas/lakes
+  for (const c of HW) {
+    for (const isHoriz of [true, false]) {
+      let k = 14;
+      while (k < W - 14) {
+        const x = isHoriz ? k : c, y = isHoriz ? c : k;
+        if (road[idx(x, y)] === 1 && (tiles[idx(x, y)] === T.DEEP || tiles[idx(x, y)] === T.SHALLOW)) {
+          let k2 = k;
+          while (k2 < W - 14) {
+            const x2 = isHoriz ? k2 : c, y2 = isHoriz ? c : k2;
+            if (tiles[idx(x2, y2)] !== T.DEEP && tiles[idx(x2, y2)] !== T.SHALLOW) break;
+            k2++;
+          }
+          if (k2 - k > 6) {
+            for (let m = k; m < k2; m++) {
+              for (let d = -1; d <= 1; d++) {
+                const rx = isHoriz ? m : c + d, ry = isHoriz ? c + d : m;
+                if (inb(rx, ry) && road[idx(rx, ry)] === 1) road[idx(rx, ry)] = 0;
+              }
+            }
+          }
+          k = k2;
+        } else k++;
+      }
+    }
+  }
+  // Secondary avenues (2-tile wide at offsets 20, 60 -> spacious 18x18 blocks that fit large landmarks cleanly)
   for (let r = 0; r < 25; r++) {
     const th = themeOf(r);
+    if (WILD.has(th)) continue;
     const rx0 = (r % 5) * RS, ry0 = Math.floor(r / 5) * RS;
-    if (th === 'city' || th === 'gov' || th === 'culture') {
-      for (const g of [8, 24, 56, 72]) {
+    if (th === 'city' || th === 'gov' || th === 'culture' || th === 'sports' || th === 'historic') {
+      for (const g of [20, 60]) {
         for (let j = 0; j < RS; j++) for (let d = 0; d < 2; d++) {
           const x1 = rx0 + g + d, y1 = ry0 + j, x2 = rx0 + j, y2 = ry0 + g + d;
-          if (x1 >= 12 && x1 < W - 12 && y1 >= 12 && y1 < H - 12 && !road[idx(x1, y1)]) road[idx(x1, y1)] = 2;
-          if (x2 >= 12 && x2 < W - 12 && y2 >= 12 && y2 < H - 12 && !road[idx(x2, y2)]) road[idx(x2, y2)] = 2;
+          if (x1 >= 14 && x1 < W - 14 && y1 >= 14 && y1 < H - 14 && !road[idx(x1, y1)]) road[idx(x1, y1)] = 2;
+          if (x2 >= 14 && x2 < W - 14 && y2 >= 14 && y2 < H - 14 && !road[idx(x2, y2)]) road[idx(x2, y2)] = 2;
         }
       }
-    } else if (th === 'sports') {
-      for (const g of [16, 64]) {
-        for (let j = 0; j < RS; j++) for (let d = 0; d < 2; d++) {
-          const x1 = rx0 + g + d, y1 = ry0 + j, x2 = rx0 + j, y2 = ry0 + g + d;
-          if (x1 >= 12 && x1 < W - 12 && y1 >= 12 && y1 < H - 12 && !road[idx(x1, y1)]) road[idx(x1, y1)] = 2;
-          if (x2 >= 12 && x2 < W - 12 && y2 >= 12 && y2 < H - 12 && !road[idx(x2, y2)]) road[idx(x2, y2)] = 2;
-        }
-      }
-    } else if (th === 'rural' || th === 'historic') {
-      for (const g of [12, 26, 54, 68]) {
+    } else if (th === 'rural') {
+      for (const g of [20, 60]) {
         for (let j = 0; j < RS; j++) {
           const x1 = rx0 + g, y1 = ry0 + j, x2 = rx0 + j, y2 = ry0 + g;
-          if (x1 >= 12 && x1 < W - 12 && y1 >= 12 && y1 < H - 12 && !road[idx(x1, y1)]) road[idx(x1, y1)] = th === 'historic' ? 2 : 3;
-          if (x2 >= 12 && x2 < W - 12 && y2 >= 12 && y2 < H - 12 && !road[idx(x2, y2)]) road[idx(x2, y2)] = th === 'historic' ? 2 : 3;
+          if (x1 >= 14 && x1 < W - 14 && y1 >= 14 && y1 < H - 14 && !road[idx(x1, y1)]) road[idx(x1, y1)] = 3;
+          if (x2 >= 14 && x2 < W - 14 && y2 >= 14 && y2 < H - 14 && !road[idx(x2, y2)]) road[idx(x2, y2)] = 3;
         }
       }
     }
@@ -248,10 +302,10 @@ function generateMap(seed) {
       lp(P(tx) + 40, P(ty + h / 2), tag); lp(P(tx + w) - 40, P(ty + h / 2), tag);
       vs(P(tx + 1.5), P(ty + h) - 40, 0, ['sedan', 'suv', 'pickup', 'bus']); vs(P(tx + w - 1.5), P(ty + 0.5), Math.PI, ['sedan', 'sportscar', 'motorcycle']);
       if (o.noEnt) {
-        ent('hist', 'historic', it.name, P(tx + w / 2), P(ty + h - 1));
+        ent('pyr', 'pyramid', it.name, P(tx + w / 2), P(ty + h - 1));
       } else {
         fill(tx + Math.floor(w / 2) - 1, ty + h - 1, 2, 1, T.ROAD);
-        ent('hub', 'transit', it.name, P(tx + w / 2), P(ty + h - 0.85));
+        ent('stad', 'stadium', it.name, P(tx + w / 2), P(ty + h - 0.85));
       }
       lm(it, tx, ty, w, h);
     },
@@ -273,7 +327,7 @@ function generateMap(seed) {
       rect(P(L + 3), P(B - 2.2), P(3.5), P(1.1), 'club');
       vs(P(L + 3), P(Tt) + 80, 0, ['f1']); vs(P(L + 5.5), P(Tt) + 80, 0, ['f1']); vs(P(L + 8), P(Tt) + 80, 0, ['sportscar', 'f1']); vs(P(Rr - 2), P(B), Math.PI, ['sportscar', 'f1']);
       lp(P(L + 3), P(Tt + 3) + 40, 'circuit'); lp(P(L + 6), P(Tt + 3) + 40, 'circuit'); lp(P(mx + 2), P(Tt + 4), 'circuit'); lp(P(L + 4), P(B - 1.5), 'circuit');
-      ent('hub', 'transit', it.name, P(L + 4.75), P(B - 1.1));
+      ent('stad', 'stadium', it.name, P(L + 4.75), P(B - 1.1));
       lm(it, tx, ty, w, h);
     },
     golf(tx, ty, w, h, it) {
@@ -287,81 +341,97 @@ function generateMap(seed) {
       rect(P(tx + 1.2), P(ty + 1.2), P(2.4), P(1.6), 'club');
       vs(P(tx + 4.0), P(ty + 1.6), 0, ['golfcart']); vs(P(tx + 4.0), P(ty + 2.6), 0, ['golfcart']);
       lp(P(tx + 1.8), P(ty + 3.5), 'golf'); lp(P(tx + 3.2), P(ty + 3.2), 'golf'); scatter(tx + 1, ty + 1, w - 2, h - 2, 'golf', 3);
-      ent('hub', 'transit', it.name, P(tx + 2.4), P(ty + 2.85));
+      ent('stad', 'stadium', it.name, P(tx + 2.4), P(ty + 2.85));
       lm(it, tx, ty, w, h);
     },
     airport(tx, ty, w, h, it) {
-      // Huge Fenced International Airport Complex: Dual Parallel Runways, Cross-Taxiways, Grand Terminal + 3 Piers, ATC Tower, 3 Hangars, Fuel Farm & Helipads
+      // Massive Fenced International Airport Complex: Dual Long Runways, Cross-Taxiways, Grand 3-Pier Terminal, ATC Tower, 4 Hangars, Fire Station & Air Fleet
       fill(tx, ty, w, h, T.CONCRETE);
       // Grass infield safety strips between runways and perimeter
-      fill(tx + 1, ty + 3, w - 2, 2, T.GRASS);
-      fill(tx + 1, ty + 7, w - 2, 1, T.GRASS);
-      // Dual parallel wide Runways (North Runway 09L/27R & South Runway 09R/27L)
-      fill(tx + 1, ty + 1, w - 2, 2, T.RUNWAY);
-      fill(tx + 1, ty + 5, w - 2, 2, T.RUNWAY);
+      fill(tx + 1, ty + 4, w - 2, 2, T.GRASS);
+      fill(tx + 1, ty + 9, w - 2, 2, T.GRASS);
+      // Dual parallel long wide Runways (North Runway 09L/27R & South Runway 09R/27L)
+      fill(tx + 1, ty + 1, w - 2, 3, T.RUNWAY);
+      fill(tx + 1, ty + 6, w - 2, 3, T.RUNWAY);
       // Cross-taxiways connecting both runways cleanly down to main apron & southern arrival road
-      for (const txOff of [4, Math.floor(w * 0.36), Math.floor(w * 0.64), w - 6]) {
-        fill(tx + txOff, ty + 3, 2, 7, T.ROAD);
+      for (const txOff of [4, Math.floor(w * 0.34), Math.floor(w * 0.62), w - 6]) {
+        fill(tx + txOff, ty + 4, 2, 9, T.ROAD);
       }
-      fill(tx + 1, ty + 8, w - 2, 2, T.ROAD);
+      fill(tx + 1, ty + 11, w - 2, 2, T.ROAD);
+      fill(tx + 1, ty + 14, w - 2, 1, T.ROAD);
       // Southern departure/arrivals boulevard & concrete curbside
-      fill(tx + 1, ty + h - 1, w - 2, 1, T.ROAD);
-      // Perimeter security fence (openings at West cargo gate and South main arrivals)
+      fill(tx + 1, ty + h - 2, w - 2, 2, T.ROAD);
+      // Perimeter security fence (openings at South arrivals)
       walls(P(tx + 0.12), P(ty + 0.12), P(tx + w - 0.12), P(ty + h - 0.12), 14, { b: 1 }, 'milfence');
-      rect(P(tx + w / 2 - 2.3), P(ty + h - 0.88), 72, 42, 'checkpoint');
-      rect(P(tx + w / 2 + 1.4), P(ty + h - 0.88), 72, 42, 'checkpoint');
+      rect(P(tx + w / 2 - 2.6), P(ty + h - 1.1), 82, 46, 'checkpoint');
+      rect(P(tx + w / 2 + 1.6), P(ty + h - 1.1), 82, 46, 'checkpoint');
 
       // Grand International Terminal + 3 Boarding Gate Pier Wings projecting onto apron
-      const termX = tx + 7, termW = 14, termY = ty + h - 4.4;
-      rect(P(termX), P(termY), P(termW), P(2.9), 'terminal');
-      rect(P(termX + 1.4), P(termY - 1.3), P(2.2), P(1.35), 'terminal');
-      rect(P(termX + termW / 2 - 1.1), P(termY - 1.3), P(2.2), P(1.35), 'terminal');
-      rect(P(termX + termW - 3.6), P(termY - 1.3), P(2.2), P(1.35), 'terminal');
+      const termX = tx + 6.5, termW = 14.5, termY = ty + h - 7.0;
+      rect(P(termX), P(termY), P(termW), P(3.2), 'terminal');
+      rect(P(termX + 1.2), P(termY - 1.8), P(2.4), P(1.85), 'terminal');
+      rect(P(termX + termW / 2 - 1.2), P(termY - 1.8), P(2.4), P(1.85), 'terminal');
+      rect(P(termX + termW - 3.6), P(termY - 1.8), P(2.4), P(1.85), 'terminal');
 
-      // Air Traffic Control Tower (East of Terminal)
-      rect(P(termX + termW + 0.8), P(termY - 0.5), 84, 84, 'tower');
+      // Air Traffic Control Tower & Crash Fire Rescue Station
+      rect(P(termX + termW + 0.7), P(termY - 0.4), 92, 92, 'tower');
+      rect(P(termX + termW + 0.7), P(termY + 1.4), P(2.2), P(1.6), 'fire');
 
-      // 3 Huge Aircraft Maintenance Hangars (East Apron)
-      rect(P(tx + w - 11.4), P(ty + h - 5.2), P(3.3), P(3.5), 'hangar');
-      rect(P(tx + w - 7.7), P(ty + h - 5.2), P(3.3), P(3.5), 'hangar');
-      rect(P(tx + w - 4.0), P(ty + h - 5.2), P(3.1), P(3.5), 'hangar');
+      // 4 Huge Aircraft Maintenance Hangars (East Apron)
+      rect(P(tx + w - 11.4), P(ty + h - 10.2), P(3.4), P(3.6), 'hangar');
+      rect(P(tx + w - 7.6), P(ty + h - 10.2), P(3.4), P(3.6), 'hangar');
+      rect(P(tx + w - 3.8), P(ty + h - 10.2), P(3.1), P(3.6), 'hangar');
+      rect(P(tx + w - 7.6), P(ty + h - 5.6), P(4.2), P(3.2), 'hangar');
 
-      // West Cargo Logistics Hall & Aviation Fuel Farm Canopy
-      rect(P(tx + 1.1), P(ty + h - 5.1), P(3.4), P(2.2), 'hall');
-      rect(P(tx + 1.3), P(ty + h - 2.5), P(3.0), P(1.2), 'gasstation');
+      // West Cargo Logistics Hall, Ground Ops & Aviation Fuel Farm Canopy
+      rect(P(tx + 1.1), P(ty + h - 9.8), P(4.2), P(3.0), 'hall');
+      rect(P(tx + 1.1), P(ty + h - 6.0), P(3.8), P(2.0), 'gasstation');
+      rect(P(tx + 1.1), P(ty + h - 3.4), P(3.0), P(1.2), 'canopy');
 
-      // Aircraft, Helipad & Curbside Fleets
-      vs(P(tx + 5.8), P(ty + h - 4.6), 0, ['heli']);
-      vs(P(tx + w - 11.8), P(ty + h - 6.2), 0, ['heli']);
-      vs(P(tx + w - 6.0), P(ty + h - 6.2), Math.PI, ['heli']);
-      vs(P(termX + 2.5), P(ty + h - 0.55), 0, ['bus']);
-      vs(P(termX + 6.5), P(ty + h - 0.55), 0, ['bus']);
-      vs(P(termX + 10.5), P(ty + h - 0.55), 0, ['suv', 'sedan', 'sportscar']);
-      vs(P(tx + 3.0), P(ty + h - 1.0), 0, ['pickup', 'humvee']);
+      // Diverse Air Fleet on Runways & Aprons + Ground Support Vehicles
+      vs(P(tx + 5.0), P(ty + 2.5), 0, ['jet', 'bushplane']);
+      vs(P(tx + w - 8.0), P(ty + 2.5), Math.PI, ['osprey', 'jet']);
+      vs(P(tx + 8.0), P(ty + 7.5), 0, ['bushplane', 'seaplane']);
+      vs(P(tx + w - 9.5), P(ty + h - 11.2), 0, ['heli', 'transport_heli']);
+      vs(P(tx + w - 4.5), P(ty + h - 11.2), Math.PI, ['attack_heli', 'osprey']);
+      vs(P(tx + 6.0), P(ty + h - 11.0), 0, ['bushplane', 'heli']);
+      vs(P(termX + termW + 1.6), P(ty + h - 3.2), 0, ['firetruck']);
+      vs(P(termX + 2.0), P(ty + h - 2.4), 0, ['bus']);
+      vs(P(termX + 6.0), P(ty + h - 2.4), 0, ['bus']);
+      vs(P(termX + 10.5), P(ty + h - 2.4), 0, ['suv', 'sedan', 'sportscar']);
+      vs(P(tx + 3.0), P(ty + h - 2.4), 0, ['pickup', 'humvee']);
 
       // Multi-zone Airport & Hangar Loot
-      for (let k = 0; k < 6; k++) lp(P(termX + 1.5 + k * 2.2), P(termY + 3.2), 'airport');
-      lp(P(tx + 2.8), P(ty + h - 2.7), 'gas');
-      lp(P(tx + w - 9.7), P(ty + h - 5.6), 'airport');
-      lp(P(tx + w - 6.0), P(ty + h - 5.6), 'airport');
-      lp(P(tx + w - 2.5), P(ty + h - 5.6), 'military');
+      for (let k = 0; k < 6; k++) lp(P(termX + 1.5 + k * 2.2), P(termY + 3.5), 'airport');
+      lp(P(tx + 2.8), P(ty + h - 3.9), 'gas');
+      lp(P(tx + w - 9.7), P(ty + h - 6.3), 'airport');
+      lp(P(tx + w - 5.9), P(ty + h - 6.3), 'airport');
+      lp(P(tx + w - 2.2), P(ty + h - 6.3), 'military');
+      lp(P(tx + w - 5.5), P(ty + h - 2.2), 'military');
 
       // Dedicated Huge Enterable Airport Sub-Map Portal at Grand Terminal Entrance
-      ent('air', 'airport', it.name, P(termX + termW / 2), P(termY + 2.95));
+      ent('air', 'airport', it.name, P(termX + termW / 2), P(termY + 3.25));
       lm(it, tx, ty, w, h);
     },
     building(tx, ty, w, h, it, style) {
       fill(tx, ty, w, h, T.CONCRETE);
       fill(tx, ty, 1, h, T.GRASS); fill(tx + w - 1, ty, 1, h, T.GRASS);
       set(tx, ty, T.FOREST); set(tx + w - 1, ty, T.FOREST);
-      fill(tx + 1, ty + h - 1, w - 2, 1, T.ROAD);
+      fill(tx + 1, ty + h - 1, w - 2, 1, T.CONCRETE);
       rect(P(tx + 1.3), P(ty + 0.9), P(w - 2.6), P(h - 2.2), style || BUILD_STYLE[it.pc.cat] || 'b');
       around(tx + 0.5, ty + 0.3, w - 1, h - 1, it.pc.loot, 5);
       if (/Parliament|Central Bank/.test(it.pc.cat) || /NATO|Pentagon|Federal Reserve|Bank of England/.test(it.name)) lp(P(tx + w) - 55, P(ty) + 55, 'vault', 1);
       if (it.pc.cat === 'Science Centre' && rng() < 0.5) zones.push(['toxic', Math.round(P(tx + w / 2)), Math.round(P(ty + h)), 260]);
       vehFor(it.pc.loot, tx, ty, w, h);
-      const isMus = /Art Museum|Science Centre|National Archive|International HQ|High Court|Central Bank|Parliament/.test(it.pc.cat) || style === 'bank' || style === 'capitol';
-      ent(isMus ? 'mus' : 'hub', isMus ? 'museum' : 'transit', it.name, P(tx + w / 2), P(ty + h - 1.25));
+      const effS = style || BUILD_STYLE[it.pc.cat] || 'b';
+      const [ep, et] = effS === 'police' ? ['pol', 'police']
+        : effS === 'fire' ? ['fire', 'fire']
+        : effS === 'bank' ? ['bank', 'bank']
+        : effS === 'science' ? ['sci', 'science']
+        : effS === 'museum' ? ['mus', 'museum']
+        : /court|capitol|gov|civic|intl|archive/.test(effS) ? ['cap', 'capitol']
+        : ['hub', 'transit'];
+      ent(ep, et, it.name, P(tx + w / 2), P(ty + h - 1.25));
       lm(it, tx, ty, w, h);
     },
     big(tx, ty, w, h, it) {
@@ -369,7 +439,7 @@ function generateMap(seed) {
       fill(tx, ty, 1, h, T.GRASS); fill(tx + w - 1, ty, 1, h, T.GRASS);
       set(tx, ty, T.FOREST); set(tx + w - 1, ty, T.FOREST);
       set(tx, ty + h - 1, T.FOREST); set(tx + w - 1, ty + h - 1, T.FOREST);
-      fill(tx + 1, ty + h - 1, w - 2, 1, T.ROAD);
+      fill(tx + 1, ty + h - 1, w - 2, 1, T.CONCRETE);
       const s = BUILD_STYLE[it.pc.cat] || 'b';
       rect(P(tx + 1.6), P(ty + 0.9), P(w - 3.2), P(h - 2.5), s);
       // Flanking civic wings / forecourt pavilions
@@ -380,14 +450,18 @@ function generateMap(seed) {
       if (/Parliament|Central Bank/.test(it.pc.cat) || /NATO|Federal Reserve/.test(it.name)) lp(P(tx + w) - 60, P(ty) + 60, 'vault', 1);
       if (it.pc.cat === 'Science Centre' && rng() < 0.5) zones.push(['toxic', Math.round(P(tx + w / 2)), Math.round(P(ty + h)), 260]);
       vehFor(it.pc.loot, tx, ty, w, h);
-      ent('mus', 'museum', it.name, P(tx + w / 2), P(ty + h - 1.5));
+      const [ep, et] = s === 'bank' ? ['bank', 'bank']
+        : s === 'science' ? ['sci', 'science']
+        : /court|capitol|gov|civic|intl|archive/.test(s) ? ['cap', 'capitol']
+        : ['mus', 'museum'];
+      ent(ep, et, it.name, P(tx + w / 2), P(ty + h - 1.5));
       lm(it, tx, ty, w, h);
     },
     bank(tx, ty, w, h, it) { BUILD.big(tx, ty, w, h, it); lp(P(tx + 1.5), P(ty + 1.5), 'vault', 1); },
     capitol(tx, ty, w, h, it) {
       fill(tx, ty, w, h, T.CONCRETE);
       fill(tx, ty, w, 1, T.GRASS); fill(tx + 1, ty + h - 2, w - 2, 1, T.GRASS);
-      fill(tx + 1, ty + h - 1, w - 2, 1, T.ROAD);
+      fill(tx + 1, ty + h - 1, w - 2, 1, T.CONCRETE);
       set(tx, ty, T.FOREST); set(tx + w - 1, ty, T.FOREST);
       // Grand central Capitol dome hall + symmetric legislative wings + reflecting pool
       rect(P(tx + 2.5), P(ty + 1.1), P(w - 5), P(h - 3.4), 'capitol');
@@ -397,14 +471,14 @@ function generateMap(seed) {
       around(tx + 0.5, ty + 0.5, w - 1, h - 1, it.pc.loot, 6);
       lp(P(tx + w) - 60, P(ty) + 60, 'vault', 1);
       vehFor('gov', tx, ty, w, h);
-      ent('mus', 'museum', it.name, P(tx + w / 2), P(ty + h - 2.2));
+      ent('cap', 'capitol', it.name, P(tx + w / 2), P(ty + h - 2.2));
       lm(it, tx, ty, w, h);
     },
     hospital(tx, ty, w, h, it) {
       // Multi-Wing Medical Center with East/West Ward Towers, Central ER Atrium, Ambulance Bay & Ground Helipad
       fill(tx, ty, w, h, T.CONCRETE);
       fill(tx, ty, 1, h - 1, T.GRASS); set(tx, ty, T.FOREST); set(tx + w - 1, ty, T.FOREST);
-      fill(tx + 1, ty + h - 1, w - 2, 1, T.ROAD);
+      fill(tx + 1, ty + h - 1, w - 2, 1, T.CONCRETE);
       rect(P(tx + 2.8), P(ty + 1.4), P(w - 5.6), P(h - 3.3), 'hospital');
       rect(P(tx + 1.1), P(ty + 0.9), P(1.8), P(h - 2.8), 'hospital');
       rect(P(tx + w - 2.9), P(ty + 0.9), P(1.8), P(h - 2.8), 'hospital');
@@ -444,14 +518,15 @@ function generateMap(seed) {
       vs(P(tx + 2.5), P(ty + h * 0.54 + 1.5), 0, ['humvee', 'apc']);
       vs(P(tx + 5.6), P(ty + h * 0.54 + 1.5), 0, ['tank', 'apc']);
       vs(P(tx + w - 3.0), P(ty + h * 0.54 + 1.5), Math.PI, ['tank', 'himars', 'apc']);
-      vs(P(tx + w - 3.0), P(ty + h - 3.0), 0, ['heli']);
-      vs(P(tx + w - 5.5), P(ty + h - 3.0), 0, ['heli']);
+      vs(P(tx + 5.0), P(ty + 2.0), 0, ['jet', 'osprey']);
+      vs(P(tx + w - 3.0), P(ty + h - 3.0), 0, ['attack_heli', 'heli']);
+      vs(P(tx + w - 6.0), P(ty + h - 3.0), 0, ['transport_heli', 'osprey']);
       ent('mil', 'military', it.name, P(tx + w / 2), P(ty + h * 0.54 + 0.08));
       lm(it, tx, ty, w, h);
     },
     mall(tx, ty, w, h, it) {
       fill(tx, ty, w, h, T.CONCRETE);
-      fill(tx + 1, ty + h - 2, w - 2, 1, T.ROAD);
+      fill(tx + 1, ty + h - 2, w - 2, 1, T.CONCRETE);
       fill(tx + 1, ty + h - 3, 2, 1, T.GRASS); fill(tx + w - 3, ty + h - 3, 2, 1, T.GRASS);
       const ms = it.pc.cat === 'Convention Centre' ? 'hall' : 'mall';
       rect(P(tx + 2.5), P(ty + 0.9), P(w - 5), P(h - 4.0), ms);
@@ -472,11 +547,11 @@ function generateMap(seed) {
       if (zoo) {
         for (const [ex, ey] of [[tx + 1, ty + 1], [tx + w / 2 + 1, ty + 1], [tx + 1, ty + h / 2 + 1]]) walls(P(ex), P(ey), P(ex + w / 2 - 2), P(ey + h / 2 - 2), 8, { b: 1 }, 'fence');
         rect(P(tx + w / 2 + 1.2), P(ty + h / 2 + 1.2), P(2.6), P(1.7), 'glass');
-        ent('hub', 'transit', it.name, P(tx + w / 2 + 2.5), P(ty + h / 2 + 2.9));
+        ent('grn', 'greenhouse', it.name, P(tx + w / 2 + 2.5), P(ty + h / 2 + 2.9));
       } else {
         rect(P(tx + 1.2), P(ty + 1.2), P(2.8), P(1.8), 'glass');
         rect(P(tx + w - 4.0), P(ty + h - 3.0), P(2.8), P(1.8), 'glass');
-        ent('mus', 'museum', it.name, P(tx + 2.6), P(ty + 3.0));
+        ent('grn', 'greenhouse', it.name, P(tx + 2.6), P(ty + 3.0));
       }
       scatter(tx, ty, w, h, it.pc.loot, 6); lm(it, tx, ty, w, h);
     },
@@ -485,7 +560,7 @@ function generateMap(seed) {
       fill(tx, ty, w, h, T.CONCRETE);
       fill(tx + Math.floor(w / 2) - 1, ty + 2, 2, h - 2, T.ROAD);
       rect(P(tx + w / 2 - 1.8), P(ty + 0.6), P(3.6), P(1.6), 'hall');
-      ent('mall', 'mall', it.name, P(tx + w / 2), P(ty + 2.3));
+      ent('baz', 'bazaar', it.name, P(tx + w / 2), P(ty + 2.3));
       for (let i = tx + 0.8; i < tx + w - 1.3; i += 1.45) {
         if (Math.abs((i + 0.35) - (tx + w / 2)) < 1.3) continue;
         for (let j = ty + 2.8; j < ty + h - 1.3; j += 1.55) {
@@ -509,8 +584,8 @@ function generateMap(seed) {
         rect(rx, ry, rw, rh, st);
         if (c === 1 && r === 1) {
           if (st === 'campus') ent('univ', 'university', it.name, rx + rw / 2, ry + rh);
-          else if (st === 'hall') ent('hub', 'transit', it.name, rx + rw / 2, ry + rh);
-          else ent('mus', 'museum', it.name, rx + rw / 2, ry + rh);
+          else if (st === 'hall') ent('stad', 'stadium', it.name, rx + rw / 2, ry + rh);
+          else ent('cap', 'capitol', it.name, rx + rw / 2, ry + rh);
         }
       }
       for (let c = 0; c < 3; c++) lp(P(tx + 1 + c * bw + bw / 2), P(ty + 1 + bh), it.pc.loot);
@@ -526,7 +601,7 @@ function generateMap(seed) {
       rect(P(tx + w - 3.6), P(ty + 1.6), P(2.0), P(1.4), 'stone');
       lp(P(tx + 2.5), P(ty + 3.4), 'military'); lp(P(tx + w - 2.5), P(ty + 3.4), 'military'); lp(P(tx + 2.5), P(ty + h - 2), 'historic'); lp(P(tx + w - 2.5), P(ty + h - 2), 'museum');
       vs(P(tx + 2.5), P(ty + h / 2 + 1.5), Math.PI / 2, ['humvee', 'pickup']);
-      ent('hist', 'historic', it.name, P(tx + w / 2), P(ty + h / 2 + 1.05));
+      ent('pal', 'palace', it.name, P(tx + w / 2), P(ty + h / 2 + 1.05));
       lm(it, tx, ty, w, h);
     },
     palace(tx, ty, w, h, it) {
@@ -542,14 +617,14 @@ function generateMap(seed) {
       ell(tx + w / 2, ty + h - 2.1, 1.3, 0.8, T.SHALLOW);
       around(tx + 0.5, ty + 0.5, w - 1, h - 1, it.pc.loot, 6); lp(P(tx + w / 2) - 170, P(ty + h - 2.2), it.pc.loot);
       vs(P(tx + 1.8), P(ty + h - 1.4), 0, ['sportscar', 'suv']);
-      ent('mus', 'museum', it.name, P(tx + w / 2), P(ty + h - 3.95));
+      ent('pal', 'palace', it.name, P(tx + w / 2), P(ty + h - 3.95));
       lm(it, tx, ty, w, h);
     },
     cathedral(tx, ty, w, h, it) {
       fill(tx, ty, w, h, T.CONCRETE);
       fill(tx, ty, 1, h, T.GRASS); fill(tx + w - 1, ty, 1, h, T.GRASS);
       set(tx, ty, T.FOREST); set(tx + w - 1, ty, T.FOREST);
-      fill(tx + 1, ty + h - 1, w - 2, 1, T.ROAD);
+      fill(tx + 1, ty + h - 1, w - 2, 1, T.CONCRETE);
       rect(P(tx + 1.4), P(ty + 1.0), P(w - 2.8), P(h - 2.4), 'church');
       rect(P(tx + 1.2), P(ty + 0.9), 52, 52, 'tower');
       rect(P(tx + w - 1.2) - 52, P(ty + 0.9), 52, 52, 'tower');
@@ -563,7 +638,7 @@ function generateMap(seed) {
       set(tx, ty, T.FOREST); set(tx + w - 1, ty, T.FOREST);
       rect(P(tx + 1.4), P(ty + 1.0), P(w - 2.8), P(h - 2.2), 'temple');
       around(tx + 0.5, ty + 0.4, w - 1, h - 1, it.pc.loot, 5);
-      ent('hist', 'historic', it.name, P(tx + w / 2), P(ty + h - 1.2));
+      ent('pyr', 'pyramid', it.name, P(tx + w / 2), P(ty + h - 1.2));
       lm(it, tx, ty, w, h);
     },
     pyramid(tx, ty, w, h, it) {
@@ -574,7 +649,7 @@ function generateMap(seed) {
       rect(P(tx + 0.5), P(ty + h - 2.7), P(1.6), P(1.6), 'pyramid');
       rect(P(tx + w - 2.1), P(ty + h - 2.7), P(1.6), P(1.6), 'pyramid');
       around(tx + 0.6, ty + 0.6, w - 1.2, h - 1.2, 'museum', 6); lp(P(tx + w / 2) - 100, P(ty + h) - 40, 'vault', 1);
-      ent('hist', 'historic', it.name, P(tx + w / 2), P(ty + h - 2.3));
+      ent('pyr', 'pyramid', it.name, P(tx + w / 2), P(ty + h - 2.3));
       lm(it, tx, ty, w, h);
     },
     mosque(tx, ty, w, h, it) {
@@ -583,14 +658,14 @@ function generateMap(seed) {
       rect(P(tx + 1.8), P(ty + 1.5), P(w - 3.6), P(h - 3.4), 'mosque');
       for (const [cx, cy] of [[tx + 0.85, ty + 0.85], [tx + w - 0.85, ty + 0.85], [tx + 0.85, ty + h - 0.85], [tx + w - 0.85, ty + h - 0.85]]) rect(P(cx) - 22, P(cy) - 22, 44, 44, 'minaret');
       lp(P(tx + w / 2), P(ty) + 45, it.pc.loot); lp(P(tx + w / 2), P(ty + h) - 45, it.pc.loot); lp(P(tx) + 45, P(ty + h / 2), it.pc.loot);
-      ent('hist', 'historic', it.name, P(tx + w / 2), P(ty + h - 1.9));
+      ent('mosq', 'mosque', it.name, P(tx + w / 2), P(ty + h - 1.9));
       lm(it, tx, ty, w, h);
     },
     rockcut(tx, ty, w, h, it) {
       fill(tx, ty, w, h, T.ROCK); fill(tx + 2, ty + 2, w - 4, h - 4, T.DIRT); fill(tx + Math.floor(w / 2) - 1, ty + h - 2, 2, 2, T.DIRT);
       rect(P(tx + 2.5), P(ty + 2.0), P(w - 5), P(1.6), 'temple');
       lp(P(tx + 2.5), P(ty + h - 3), 'museum'); lp(P(tx + w - 2.5), P(ty + h - 3), 'museum'); lp(P(tx + w / 2), P(ty + 4.8), 'museum');
-      ent('hist', 'historic', it.name, P(tx + w / 2), P(ty + 3.65));
+      ent('pyr', 'pyramid', it.name, P(tx + w / 2), P(ty + 3.65));
       lm(it, tx, ty, w, h);
     },
     mausoleum(tx, ty, w, h, it) {
@@ -602,7 +677,7 @@ function generateMap(seed) {
       rect(P(tx + 2.4), P(ty + 1.0), P(w - 4.8), P(h - 4.6), 'dome');
       for (const [cx, cy] of [[tx + 1.6, ty + 1.0], [tx + w - 1.6, ty + 1.0], [tx + 1.6, ty + h - 3.6], [tx + w - 1.6, ty + h - 3.6]]) rect(P(cx) - 18, P(cy) - 18, 36, 36, 'minaret');
       around(tx + 0.5, ty + 0.5, w - 1, h - 1, it.pc.loot, 5);
-      ent('hist', 'historic', it.name, P(tx + w / 2), P(ty + h - 3.6));
+      ent('pyr', 'pyramid', it.name, P(tx + w / 2), P(ty + h - 3.6));
       lm(it, tx, ty, w, h);
     },
     aqueduct(tx, ty, w, h, it) {
@@ -621,7 +696,7 @@ function generateMap(seed) {
       fill(tx, ty, w, h, T.CONCRETE); fill(tx + 1, ty + 1, w - 2, h - 2, T.SHALLOW); fill(tx + 2, ty + 2, w - 4, h - 4, T.DEEP);
       walls(P(tx + 1) - 14, P(ty + 1) - 14, P(tx + w - 1) + 14, P(ty + h - 1) + 14, 24, {b: 1}, 'stone');
       lp(P(tx) + 30, P(ty) + 30, 'historic'); lp(P(tx + w) - 30, P(ty + h) - 30, 'rural');
-      ent('hist', 'historic', it.name, P(tx + w / 2), P(ty + h - 0.7));
+      ent('pyr', 'pyramid', it.name, P(tx + w / 2), P(ty + h - 0.7));
       lm(it, tx, ty, w, h);
     },
     estate(tx, ty, w, h, it) {
@@ -630,7 +705,7 @@ function generateMap(seed) {
       rect(P(tx + 2), P(ty + 2), P(w - 4), P(h - 5), 'manor'); ell(tx + w / 2, ty + h - 1.5, 0.9, 0.5, T.SHALLOW);
       walls(P(tx) + 10, P(ty) + 10, P(tx + w) - 10, P(ty + h) - 10, 12, {b: 1}, 'fence');
       around(tx + 0.5, ty + 0.5, w - 1, h - 1, 'house', 6); vs(P(tx + 2), P(ty + h - 1.5), 0, ['sportscar', 'suv', 'pickup']);
-      ent('hub', 'transit', it.name, P(tx + w / 2), P(ty + h - 3));
+      ent('pal', 'palace', it.name, P(tx + w / 2), P(ty + h - 3));
       lm(it, tx, ty, w, h);
     },
     monastery(tx, ty, w, h, it) {
@@ -643,11 +718,11 @@ function generateMap(seed) {
     },
     silo(tx, ty, w, h, it) {
       fill(tx, ty, w, h, T.FARM); fill(tx, ty + h - 3, w, 3, T.DIRT);
-      fill(tx + 1, ty + h - 1, w - 2, 1, T.ROAD);
+      fill(tx + 1, ty + h - 1, w - 2, 1, T.CONCRETE);
       for (let k = 0; k < 5; k++) rect(P(tx + 1.1 + k * 1.85), P(ty + 1.2), 74, 74, 'silo');
       rect(P(tx + 1.2), P(ty + h - 3.0), P(3.2), P(1.8), 'barn');
       vs(P(tx + w - 2.2), P(ty + h - 1.5), 0, ['pickup', 'tractor']); scatter(tx, ty + h / 2, w, h / 2, 'rural', 4);
-      ent('ind', 'industrial', it.name, P(tx + 2.8), P(ty + h - 1.2));
+      ent('mill', 'mill', it.name, P(tx + 2.8), P(ty + h - 1.2));
       lm(it, tx, ty, w, h);
     },
     dam(tx, ty, w, h, it) {
@@ -672,7 +747,7 @@ function generateMap(seed) {
       for (let k = 0; k < 4; k++) rect(P(tx + (water ? 3.4 : 1) + k * 2), P(ty + 1.5 + (k % 2)), 72, 72, water ? 'watermill' : 'windmill');
       rect(P(tx + 1.2), P(ty + h - 2.5), P(2.8), P(1.6), 'farmhouse');
       scatter(tx, ty, w, h, 'rural', 4); vs(P(tx + w - 1.5), P(ty + h - 1), 0, ['tractor', 'pickup']);
-      ent('ind', 'industrial', it.name, P(tx + 2.6), P(ty + h - 0.9));
+      ent('mill', 'mill', it.name, P(tx + 2.6), P(ty + h - 0.9));
       lm(it, tx, ty, w, h);
     },
     busterminal(tx, ty, w, h, it) {
@@ -688,10 +763,10 @@ function generateMap(seed) {
       fill(tx + 2, ty + 1, 2, hh, T.CONCRETE);
       fill(tx + Math.floor(w / 2) - 1, ty + 1, 2, hh, T.CONCRETE);
       fill(tx + w - 4, ty + 1, 2, hh, T.CONCRETE);
-      fill(tx + 1, ty + h - 1, w - 2, 1, T.ROAD);
+      fill(tx + 1, ty + h - 1, w - 2, 1, T.CONCRETE);
       rect(P(tx + w / 2 - 2.0), P(ty + hh + 0.5), P(4.0), P(1.8), 'hall');
       for (let k = 0; k < 4; k++) if (k !== 1 && k !== 2) rect(P(tx + 1 + k * 3.4), P(ty + h - 2.4), 72, 56, 'stall');
-      vs(P(tx + 3), P(ty + 1.5), 0, ['boat']); vs(P(tx + w / 2 + 2.5), P(ty + 1.5), 0, ['jetski', 'hovercraft']);
+      vs(P(tx + 3), P(ty + 1.5), 0, ['boat', 'seaplane']); vs(P(tx + w / 2 + 2.5), P(ty + 1.5), 0, ['jetski', 'hovercraft', 'seaplane']);
       for (let k = 0; k < 5; k++) lp(P(tx + 1.5 + k * 3), P(ty + hh + 1.2), it.pc.loot);
       ent('hub', 'transit', it.name, P(tx + w / 2), P(ty + hh + 2.3));
       lm(it, tx, ty, w, h);
@@ -699,7 +774,7 @@ function generateMap(seed) {
     aquarium(tx, ty, w, h, it) {
       fill(tx, ty, w, h, T.CONCRETE); rect(P(tx + 0.8), P(ty + 0.8), P(w * 0.56), P(h - 1.6), 'aquarium'); fill(tx + Math.ceil(w * 0.66), ty + 1, Math.floor(w * 0.28), h - 2, T.SHALLOW);
       around(tx, ty, w, h, it.pc.loot, 4);
-      ent('mus', 'museum', it.name, P(tx + 0.8 + w * 0.56 / 2), P(ty + h - 0.8));
+      ent('aqua', 'aquarium', it.name, P(tx + 0.8 + w * 0.56 / 2), P(ty + h - 0.8));
       lm(it, tx, ty, w, h);
     },
     // ── natural (sculpted multi-ridge alpine massif for K2 / Everest / Fuji etc.) ──
@@ -827,14 +902,14 @@ function generateMap(seed) {
       const cx = tx + w / 2, cy = ty + h / 2; ell(cx, cy, w / 2 + 0.5, h / 2 + 0.5, T.SAND, 0.3, 34); ell(cx, cy, w / 2 - 0.5, h / 2 - 0.8, T.SHALLOW, 0.4, 35);
       if (/Venetian/.test(it.name)) for (let k = 0; k < 5; k++) { const px = cx + R(-4, 4), py = cy + R(-3, 3); ell(px, py, 1.2, 1, T.CONCRETE); rect(P(px) - 30, P(py) - 25, 60, 50, 'house'); lp(P(px) + 50, P(py), 'house'); }
       if (/Kerala|Chilika|Pulicat/.test(it.name)) for (let k = 0; k < 5; k++) ell(cx + R(-4, 4), cy + R(-3, 3), 1, 0.8, T.FOREST);
-      vs(P(cx), P(cy), 0, ['boat', 'jetski', 'hovercraft']); lp(P(cx - w / 2 + 0.5), P(cy), 'nature'); lm(it, tx, ty, w, h);
+      vs(P(cx), P(cy), 0, ['boat', 'jetski', 'hovercraft', 'seaplane']); lp(P(cx - w / 2 + 0.5), P(cy), 'nature'); lm(it, tx, ty, w, h);
     },
     lake(tx, ty, w, h, it) {
       const cx = tx + w / 2, cy = ty + h / 2;
       if (/Crater/.test(it.name)) { ell(cx, cy, w / 2, h / 2, T.ROCK, 0.3, 36); fill(Math.floor(cx), Math.floor(cy), 1, h / 2 + 1, T.DIRT); }
       else ell(cx, cy, w / 2, h / 2, /Pangong|Titicaca/.test(it.name) ? T.DIRT : T.SAND, 0.4, 37);
-      ell(cx, cy, w / 2 - 1, h / 2 - 1, T.SHALLOW, 0.4, 38); ell(cx, cy, w / 2 - 2.2, h / 2 - 2.2, T.DEEP, 0.4, 39);
-      vs(P(cx - w / 2 + 2), P(cy), 0, ['boat', 'jetski']); lp(P(cx + w / 2 - 0.8), P(cy), 'nature'); lm(it, tx, ty, w, h);
+      ell(cx, cy, w / 2 - 1, h / 2 - 1, T.SHALLOW, 0.4, 38); ell(cx, cy, w / 2 - 2.4, h / 2 - 2.4, T.DEEP, 0.4, 39);
+      vs(P(cx - w / 2 + 2.5), P(cy), 0, ['boat', 'jetski', 'seaplane']); lp(P(cx + w / 2 - 0.8), P(cy), 'nature'); lm(it, tx, ty, w, h);
     },
     cliff(tx, ty, w, h, it) {
       const horiz = w > h;
@@ -850,10 +925,10 @@ function generateMap(seed) {
       const horiz = w > h;
       for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
         const off = horiz ? j - h / 2 : i - w / 2, nz = vnoise((tx + i) * 0.5, (ty + j) * 0.5, seed + 40);
-        set(tx + i, ty + j, Math.abs(off + 0.5) < 1.2 ? T.DEEP : Math.abs(off + 0.5) < 2 + nz ? T.ROCK : T.FOREST);
+        set(tx + i, ty + j, Math.abs(off + 0.5) < 1.8 ? T.DEEP : Math.abs(off + 0.5) < 2.6 + nz ? T.ROCK : T.FOREST);
       }
       if (/Ilulissat|Scoresby/.test(it.name)) for (let k = 0; k < 4; k++) set(tx + (horiz ? 3 + k * 4 : w / 2), ty + (horiz ? h / 2 : 3 + k * 4), T.ICE);
-      vs(P(tx + (horiz ? 2 : w / 2)), P(ty + (horiz ? h / 2 : 2)), horiz ? 0 : Math.PI / 2, ['boat']); lm(it, tx, ty, w, h);
+      vs(P(tx + (horiz ? 2 : w / 2)), P(ty + (horiz ? h / 2 : 2)), horiz ? 0 : Math.PI / 2, ['boat', 'seaplane']); lm(it, tx, ty, w, h);
     },
     saltflat(tx, ty, w, h, it) {
       const cx = tx + w / 2, cy = ty + h / 2; ell(cx, cy, w / 2, h / 2, T.SALT, 0.3, 41);
@@ -866,22 +941,22 @@ function generateMap(seed) {
     },
     waterfall(tx, ty, w, h, it) {
       fill(tx, ty, w, h, T.FOREST); const mid = ty + Math.floor(h / 2);
-      fill(tx, mid - 1, w, 2, T.ROCK); fill(tx + Math.floor(w / 2) - 1, ty, 2, h, T.SHALLOW); ell(tx + w / 2, mid + 2.5, 2.2, 1.6, T.DEEP);
+      fill(tx, mid - 1, w, 2, T.ROCK); fill(tx + Math.floor(w / 2) - 1, ty, 2, h, T.SHALLOW); ell(tx + w / 2, mid + 2.5, 2.8, 2.0, T.DEEP);
       lp(P(tx + 1), P(mid + 2), 'nature'); lm(it, tx, ty, w, h);
     },
     reef(tx, ty, w, h, it) {
       const cx = tx + w / 2, cy = ty + h / 2; ell(cx, cy, w / 2, h / 2, T.SHALLOW, 0.5, 44);
       if (/Atoll|Maldivian|Lakshadweep/.test(it.name)) { ell(cx, cy, w / 2 * 0.8, h / 2 * 0.8, T.SAND, 0.2, 45); ell(cx, cy, w / 2 * 0.6, h / 2 * 0.6, T.SHALLOW, 0.2, 46); if (/Bikini/.test(it.name)) ell(cx, cy, w / 2 * 0.8, h / 2 * 0.8, T.TOXIC, 0.2, 47, t => t === T.SAND); }
       else { ell(cx, cy, 2, 1.6, T.SAND); ell(cx, cy, 0.9, 0.9, T.FOREST); }
-      lp(P(cx), P(cy - 1), 'drop'); vs(P(cx + w / 2 - 1.5), P(cy), Math.PI / 2, ['jetski', 'boat']); lm(it, tx, ty, w, h);
+      lp(P(cx), P(cy - 1), 'drop'); vs(P(cx + w / 2 - 1.5), P(cy), Math.PI / 2, ['jetski', 'boat', 'seaplane']); lm(it, tx, ty, w, h);
     },
     strait(tx, ty, w, h, it) {
       const horiz = w > h;
       for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
         const off = Math.abs((horiz ? j - h / 2 : i - w / 2) + 0.5);
-        set(tx + i, ty + j, off < 1.5 ? T.DEEP : off < 2.3 ? T.SHALLOW : off < 3 ? T.SAND : T.GRASS);
+        set(tx + i, ty + j, off < 2.2 ? T.DEEP : off < 3.2 ? T.SHALLOW : off < 4.0 ? T.SAND : T.GRASS);
       }
-      vs(P(tx + w / 2), P(ty + h / 2), horiz ? 0 : Math.PI / 2, ['boat', 'hovercraft']);
+      vs(P(tx + w / 2), P(ty + h / 2), horiz ? 0 : Math.PI / 2, ['boat', 'hovercraft', 'seaplane']);
       lp(P(tx + (horiz ? 2 : 0.6)), P(ty + (horiz ? 0.6 : 2)), 'nature'); lp(P(tx + w - 2), P(ty + h - 0.6), 'transit'); lm(it, tx, ty, w, h);
     },
   };
@@ -889,30 +964,26 @@ function generateMap(seed) {
   // ── placement ──
   const regionsOf = th => { const a = []; for (let r = 0; r < 25; r++) if (themeOf(r) === th) a.push(r); return a; };
   const DEV_R = [], WILD_R = []; for (let r = 0; r < 25; r++) (WILD.has(themeOf(r)) ? WILD_R : DEV_R).push(r);
-  const fits = (tx, ty, w, h, wild, kind, keepAvenues = false) => {
-    if (tx < 12 || ty < 12 || tx + w > W - 12 || ty + h > H - 12) return false;
-    let over = 0;
+  const fits = (tx, ty, w, h, wild, kind, keepAvenues = false, allowShallow = false) => {
+    if (tx < 13 || ty < 13 || tx + w > W - 13 || ty + h > H - 13) return false;
     for (let j = ty; j < ty + h; j++) for (let i = tx; i < tx + w; i++) {
       const idx2 = idx(i, j);
-      const o = occ[idx2];
-      if (o >= 3) return false;
-      if (wild) {
-        if (road[idx2] === 1) return false;
-        if (o === 2) over++;
+      if (occ[idx2] !== 0) return false;
+      if (road[idx2] === 1) return false;
+      if (keepAvenues && road[idx2]) return false;
+      const t = tiles[idx2];
+      if (!wild) {
+        if (t === T.DEEP || t === T.LAVA || t === T.ICE) return false;
+        if (!allowShallow && (t === T.ROCK || t === T.SHALLOW)) return false;
       } else {
-        if (o) return false;
-        if (keepAvenues && road[idx2]) return false;
-        const t = tiles[idx2]; if (t === T.DEEP || t === T.ROCK || t === T.SHALLOW || t === T.LAVA) return false;
+        if (t === T.DEEP && !['reef', 'strait', 'lagoon', 'fjord', 'lake'].includes(kind)) return false;
       }
     }
-    if (wild && over > w * h * 0.12) return false;
     if (wild && !['reef', 'strait', 'lagoon', 'fjord'].includes(kind) && tiles[idx(Math.floor(tx + w / 2), Math.floor(ty + h / 2))] === T.DEEP) return false;
     return true;
   };
   const CORE_KINDS = new Set(['capitol', 'bank', 'palace', 'hospital', 'mall', 'complex', 'big', 'building', 'busterminal']);
-  const URBAN_QUADS = [10, 26, 42, 58];
-  const SPORTS_QUADS = [2, 18, 42, 66];
-  const HIST_QUADS = [13, 27, 42, 55];
+  const BLOCK_OFFS = [2, 22, 42, 62];
   const items = []; const seen = new Set();
   for (const pc of PLACES) for (const name of pc.names) { if (seen.has(name)) continue; seen.add(name); items.push({name, pc}); }
   items.sort((a, b) => { const A = SIZE[a.pc.kind], B = SIZE[b.pc.kind]; return B[0] * B[1] - A[0] * A[1]; });
@@ -921,40 +992,49 @@ function generateMap(seed) {
     const kind = it.pc.kind; let [w, h] = SIZE[kind]; if (ROT.has(kind) && rng() < 0.5) [w, h] = [h, w];
     const wild = WILD.has(it.pc.theme);
     const isCore = CORE_KINDS.has(kind);
-    const tryR = (list, tries) => {
-      const largeAnchor = w >= 18 || h >= 14;
+    const tryR = (list, tries, allowShallow = false, scanGrid = false) => {
+      const largeAnchor = w >= 19 || h >= 15;
       for (let t = 0; t < tries; t++) {
         const r = pick(list), rx0 = (r % 5) * RS, ry0 = Math.floor(r / 5) * RS;
         const rth = themeOf(r);
         let tx, ty;
-        // Large compounds (Airports, Military Bases, Circuits) try clean quadrant-anchored positions first so they never straddle highways
-        if (largeAnchor && t < tries * 0.6) {
-          tx = rx0 + (w >= 28 ? pick([2, 43]) : pick([2, 18, 43, 58]));
-          ty = ry0 + pick([2, 20, 43, 60]);
-          if (tx + w <= rx0 + RS - 2 && ty + h <= ry0 + RS - 2 && fits(tx, ty, w, h, wild, kind, t < tries * 0.22)) return [tx, ty];
+        // Large compounds (Airports, Military Bases, Circuits) anchor cleanly to quadrant corners
+        if (largeAnchor && t < tries * 0.65) {
+          tx = rx0 + (w >= 22 ? pick([2, 42]) : pick(BLOCK_OFFS));
+          ty = ry0 + (h >= 19 ? pick([2, 42]) : pick(BLOCK_OFFS));
+          if (tx + w <= rx0 + RS - 2 && ty + h <= ry0 + RS - 2 && fits(tx, ty, w, h, wild, kind, t < tries * 0.25, allowShallow)) return [tx, ty];
         }
-        // District-zoned snapped grid placement for structured urban, civic, historic & sports quarters
-        if (!wild && !largeAnchor && t < tries * 0.72) {
-          const slots = (rth === 'city' || rth === 'gov' || rth === 'culture') ? URBAN_QUADS
-            : rth === 'sports' ? SPORTS_QUADS
-            : (rth === 'historic' || rth === 'rural') ? HIST_QUADS : null;
-          if (slots) {
-            const pref = isCore && slots === URBAN_QUADS && t < tries * 0.45 ? [26, 42] : slots;
-            tx = rx0 + pick(pref);
-            ty = ry0 + pick(pref);
-            if (fits(tx, ty, w, h, wild, kind, t < tries * 0.48)) return [tx, ty];
-          }
+        // Structured urban, gov, culture, sports & historic blocks: 17x17 / 18x18 blocks keep streets intact!
+        if (!wild && !largeAnchor && !WILD.has(rth) && t < tries * 0.78) {
+          const pref = isCore && (rth === 'city' || rth === 'gov' || rth === 'culture') && t < tries * 0.45 ? [22, 42] : BLOCK_OFFS;
+          tx = rx0 + pick(pref);
+          ty = ry0 + pick(pref);
+          if (fits(tx, ty, w, h, wild, kind, true, allowShallow)) return [tx, ty];
         }
         tx = RI(rx0 + 2, rx0 + RS - 2 - w); ty = RI(ry0 + 2, ry0 + RS - 2 - h);
-        if (fits(tx, ty, w, h, wild, kind, !wild && !largeAnchor && t < tries * 0.35)) return [tx, ty];
+        if (fits(tx, ty, w, h, wild, kind, !wild && t < tries * 0.6, allowShallow)) return [tx, ty];
+      }
+      if (scanGrid) {
+        const shuffled = [...list].sort(() => rng() - 0.5);
+        for (const r of shuffled) {
+          const rx0 = (r % 5) * RS, ry0 = Math.floor(r / 5) * RS;
+          for (let ty = ry0 + 2; ty <= ry0 + RS - 2 - h; ty += 3) {
+            for (let tx = rx0 + 2; tx <= rx0 + RS - 2 - w; tx += 3) {
+              if (fits(tx, ty, w, h, wild, kind, false, allowShallow)) return [tx, ty];
+            }
+          }
+        }
       }
       return null;
     };
-    const pos = tryR(regionsOf(it.pc.theme), 450) || tryR(wild ? WILD_R : DEV_R, 900) || (wild ? null : tryR(WILD_R, 600)) || tryR([...DEV_R, ...WILD_R], 1500);
+    const pos = tryR(regionsOf(it.pc.theme), 500, false)
+      || tryR(wild ? WILD_R : DEV_R, 1200, false, true)
+      || tryR(wild ? WILD_R : DEV_R, 800, true, true)
+      || (wild ? tryR(DEV_R, 800, true, true) : tryR(WILD_R, 900, true, true));
     if (!pos) { skipped++; skippedK[kind] = (skippedK[kind] || 0) + 1; continue; }
     for (let j = pos[1] - 1; j <= pos[1] + h; j++) for (let i = pos[0] - 1; i <= pos[0] + w; i++) if (inb(i, j)) {
       if (occ[idx(i, j)] < 2) occ[idx(i, j)] = wild ? 2 : 3;
-      if (!wild && road[idx(i, j)] >= 2 && i >= pos[0] && j >= pos[1] && i < pos[0] + w && j < pos[1] + h) road[idx(i, j)] = 0;
+      if (road[idx(i, j)] >= 2 && i >= pos[0] && j >= pos[1] && i < pos[0] + w && j < pos[1] + h) road[idx(i, j)] = 0;
     }
     BUILD[kind](pos[0], pos[1], w, h, it);
   }
@@ -978,13 +1058,13 @@ function generateMap(seed) {
     const roll = rng();
     if (role === 'civic') {
       if (roll < 0.38) {
-        fill(gx + 2, gy + 5, 2, 1, T.ROAD); rect(P(gx + 1), P(gy + 1), P(4), P(4), 'hospital');
+        fill(gx + 2, gy + 5, 2, 1, T.CONCRETE); rect(P(gx + 1), P(gy + 1), P(4), P(4), 'hospital');
         for (const [a, b] of [[0.5, 3], [5.5, 3], [3, 0.5], [3, 5.5]]) lp(P(gx + a), P(gy + b), 'hospital');
         vs(P(gx + 0.5), P(gy + 5.5), 0, ['ambulance']); ent('hosp', 'hospital', 'City General Hospital', P(gx + 3), P(gy + 5));
       } else if (roll < 0.7) {
-        fill(gx + 2, gy + 4, 2, 2, T.ROAD); rect(P(gx + 1), P(gy + 1), P(4), P(3), 'police');
+        fill(gx + 2, gy + 4, 2, 2, T.CONCRETE); rect(P(gx + 1), P(gy + 1), P(4), P(3), 'police');
         lp(P(gx + 3), P(gy + 4.6), 'police'); lp(P(gx + 0.5), P(gy + 2), 'police');
-        vs(P(gx + 1.5), P(gy + 5.3), 0, ['police']); ent('hub', 'transit', 'Sector Police Precinct', P(gx + 3), P(gy + 4));
+        vs(P(gx + 1.5), P(gy + 5.3), 0, ['police']); ent('pol', 'police', 'Sector Police Precinct', P(gx + 3), P(gy + 4));
       } else {
         rect(P(gx + 1), P(gy + 1), P(2.5), P(1.6), 'gasstation'); rect(P(gx + 1), P(gy + 3.4), P(3.4), P(0.6), 'canopy');
         lp(P(gx + 4.2), P(gy + 1.5), 'gas'); lp(P(gx + 1.5), P(gy + 4.8), 'gas'); vs(P(gx + 4.5), P(gy + 4.6), 0, ['sedan', 'pickup', 'motorcycle']);
@@ -1011,70 +1091,79 @@ function generateMap(seed) {
     if (WILD.has(th)) continue;
     const rx0 = (r % 5) * RS, ry0 = Math.floor(r / 5) * RS;
     if (th === 'rural') {
-      // Neat rural farmsteads along the 12/26/40/54/68 country lane grid
-      const spans = [[1, 11], [13, 25], [27, 38], [42, 53], [55, 67], [69, 78]];
+      // Neat rural farmsteads along the 20/40/60 country lane grid
+      const spans = [[2, 18], [22, 38], [42, 58], [62, 77]];
       for (const [sy0, sy1] of spans) for (const [sx0, sx1] of spans) {
-        if (sx1 - sx0 < 6 || sy1 - sy0 < 6 || rng() > 0.34) continue;
-        const gx = rx0 + sx0 + 1, gy = ry0 + sy0 + 1;
-        if (gx < 13 || gy < 13 || gx + 6 > W - 13 || gy + 6 > H - 13) continue;
-        let ok = true;
-        for (let j = gy; j < gy + 6 && ok; j++) for (let i = gx; i < gx + 6; i++) {
-          const t = tiles[idx(i, j)];
-          if (occ[idx(i, j)] || road[idx(i, j)] || t === T.DEEP || t === T.SHALLOW || t === T.ROCK) ok = false;
+        if (rng() > 0.36) continue;
+        for (const [ox, oy] of [[2, 2], [10, 2], [2, 10], [10, 10]]) {
+          if (rng() > 0.55) continue;
+          const gx = rx0 + sx0 + ox, gy = ry0 + sy0 + oy;
+          if (gx < 14 || gy < 14 || gx + 6 > W - 14 || gy + 6 > H - 14 || gx + 6 > rx0 + sx1 || gy + 6 > ry0 + sy1) continue;
+          let ok = true;
+          for (let j = gy; j < gy + 6 && ok; j++) for (let i = gx; i < gx + 6; i++) {
+            const t = tiles[idx(i, j)];
+            if (occ[idx(i, j)] || road[idx(i, j)] || t === T.DEEP || t === T.SHALLOW || t === T.ROCK) ok = false;
+          }
+          if (!ok) continue;
+          for (let j = gy; j < gy + 6; j++) for (let i = gx; i < gx + 6; i++) occ[idx(i, j)] = 3;
+          fill(gx, gy, 6, 6, T.FARM); fill(gx, gy, 3, 3, T.GRASS);
+          set(gx + 5, gy, T.FOREST); set(gx + 5, gy + 1, T.FOREST);
+          rect(P(gx + 0.6), P(gy + 0.6), P(1.8), P(1.2), rng() < 0.35 ? 'barn' : 'farmhouse');
+          lp(P(gx + 0.6), P(gy + 2.4), 'rural'); lp(P(gx + 2.6), P(gy + 1.2), 'rural');
+          if (rng() < 0.42) vs(P(gx + 2.8), P(gy + 2.6), 0, ['pickup', 'tractor', 'quad', 'sedan']);
         }
-        if (!ok) continue;
-        for (let j = gy; j < gy + 6; j++) for (let i = gx; i < gx + 6; i++) occ[idx(i, j)] = 3;
-        fill(gx, gy, 6, 6, T.FARM); fill(gx, gy, 3, 3, T.GRASS);
-        set(gx + 5, gy, T.FOREST); set(gx + 5, gy + 1, T.FOREST);
-        rect(P(gx + 0.6), P(gy + 0.6), P(1.8), P(1.2), rng() < 0.35 ? 'barn' : 'farmhouse');
-        lp(P(gx + 0.6), P(gy + 2.4), 'rural'); lp(P(gx + 2.6), P(gy + 1.2), 'rural');
-        if (rng() < 0.42) vs(P(gx + 2.8), P(gy + 2.6), 0, ['pickup', 'tractor', 'quad', 'sedan']);
       }
       continue;
     }
-    const spans = (th === 'city' || th === 'gov' || th === 'culture')
-      ? [[10, 23], [26, 38], [42, 55], [58, 71]]
-      : th === 'sports'
-        ? [[2, 15], [18, 38], [42, 63], [66, 77]]
-        : [[13, 25], [27, 38], [42, 53], [55, 67]];
-    const blockDens = th === 'city' ? 0.72 : th === 'culture' ? 0.62 : th === 'gov' ? 0.58 : th === 'historic' ? 0.56 : 0.44;
+    const spans = [[2, 19], [22, 38], [42, 59], [62, 77]];
+    const blockDens = th === 'city' ? 0.78 : th === 'culture' ? 0.66 : th === 'gov' ? 0.62 : th === 'historic' ? 0.58 : 0.48;
     for (const [sy0, sy1] of spans) for (const [sx0, sx1] of spans) {
       const bw = sx1 - sx0 + 1, bh = sy1 - sy0 + 1;
       if (bw < 6 || bh < 6 || rng() > blockDens) continue;
-      // Assign cohesive block zoning per street-bounded block
+      // Subdivide 17x17 / 18x18 street-bounded city blocks cleanly into aligned 6x6 corner lots
       const bRoll = rng();
       const blockRole = bRoll < 0.16 ? 'park' : bRoll < 0.32 ? 'civic' : bRoll < 0.62 ? 'commercial' : 'residential';
-      if (bw >= 13 && bh >= 13) {
-        // Subdivide large city quadrant cleanly into 4 aligned 6x6 corner lots with greenway alleys
-        const xs = [rx0 + sx0, rx0 + sx1 - 5], ys = [ry0 + sy0, ry0 + sy1 - 5];
-        for (const ly of ys) for (const lx of xs) {
-          if (lx < 12 || ly < 12 || lx + 6 > W - 12 || ly + 6 > H - 12) continue;
-          const lotRole = (blockRole === 'civic' && (lx !== xs[0] || ly !== ys[0])) ? (rng() < 0.5 ? 'park' : 'commercial') : blockRole;
-          if (rng() < 0.85) buildUrbanLot(lx, ly, th, lotRole);
-        }
-      } else {
-        const lx = rx0 + sx0, ly = ry0 + sy0;
-        if (lx >= 12 && ly >= 12 && lx + 6 <= W - 12 && ly + 6 <= H - 12) buildUrbanLot(lx, ly, th, blockRole);
+      const xs = [rx0 + sx0 + 1, rx0 + sx1 - 6], ys = [ry0 + sy0 + 1, ry0 + sy1 - 6];
+      for (const ly of ys) for (const lx of xs) {
+        if (lx < 14 || ly < 14 || lx + 6 > W - 14 || ly + 6 > H - 14) continue;
+        const lotRole = (blockRole === 'civic' && (lx !== xs[0] || ly !== ys[0])) ? (rng() < 0.5 ? 'park' : 'commercial') : blockRole;
+        if (rng() < 0.85) buildUrbanLot(lx, ly, th, lotRole);
       }
     }
   }
-  // parked cars along highways
-  for (const c of HW) for (let k = 16; k < W - 16; k += 7) {
-    if (rng() < 0.1) vs(P(k) + 40, P(c + 1) + 40, 0, ['sedan', 'suv', 'pickup', 'motorcycle', 'sportscar', 'bus']);
-    if (rng() < 0.1) vs(P(c - 1) + 40, P(k) + 40, Math.PI / 2, ['sedan', 'suv', 'pickup', 'motorcycle', 'police']);
+  // parked cars along trunk highways (only on dry road tiles)
+  for (const c of HW) for (let k = 18; k < W - 18; k += 8) {
+    if (road[idx(k, c)] === 1 && tiles[idx(k, c)] !== T.DEEP && tiles[idx(k, c)] !== T.SHALLOW && rng() < 0.12) {
+      vs(P(k) + 40, P(c + 1) + 40, 0, ['sedan', 'suv', 'pickup', 'motorcycle', 'sportscar', 'bus']);
+    }
+    if (road[idx(c, k)] === 1 && tiles[idx(c, k)] !== T.DEEP && tiles[idx(c, k)] !== T.SHALLOW && rng() < 0.12) {
+      vs(P(c - 1) + 40, P(k) + 40, Math.PI / 2, ['sedan', 'suv', 'pickup', 'motorcycle', 'police']);
+    }
   }
-  // roads (highways always painted; secondary avenues over water/land unless occupied by landmark; country lanes dirt)
+  // paint connected roads ONLY where buildable (no roads across landmarks, wide lakes/oceans, lava or cliffs)
   for (let i = 0; i < W * H; i++) {
-    if (road[i] === 1 || (road[i] === 2 && occ[i] < 3)) tiles[i] = T.ROAD;
-    else if (road[i] === 3 && occ[i] < 3 && tiles[i] !== T.DEEP && tiles[i] !== T.SHALLOW && tiles[i] !== T.LAVA) tiles[i] = T.DIRT;
-  }
-  for (let y = 14; y < H - 14; y++) for (let x = 14; x < W - 14; x++) {
-    const i = idx(x, y);
-    if (road[i] || occ[i] >= 2) continue;
     const t = tiles[i];
-    if (t === T.DEEP || t === T.SHALLOW || t === T.LAVA || t === T.CONCRETE) continue;
-    const tr = Math.abs(fbm(x * 0.019, y * 0.019, seed + 211, 3) - 0.5);
-    if (tr < 0.0055) tiles[i] = T.DIRT;
+    if (road[i] === 1 && t !== T.LAVA && t !== T.ROCK && t !== T.ICE) {
+      tiles[i] = T.ROAD;
+    } else if (road[i] === 2 && occ[i] === 0 && t !== T.DEEP && t !== T.SHALLOW && t !== T.SWAMP && t !== T.LAVA && t !== T.ROCK && t !== T.ICE) {
+      tiles[i] = T.ROAD;
+    } else if (road[i] === 3 && occ[i] === 0 && t !== T.DEEP && t !== T.SHALLOW && t !== T.SWAMP && t !== T.LAVA && t !== T.ROCK && t !== T.ICE) {
+      tiles[i] = T.DIRT;
+    } else {
+      road[i] = 0;
+    }
+  }
+  // Prune isolated dead-end road nubs pinched between landmarks/water so zero stray road tiles appear
+  for (let pass = 0; pass < 3; pass++) {
+    for (let y = 14; y < H - 14; y++) for (let x = 14; x < W - 14; x++) {
+      const i = idx(x, y);
+      if (road[i] < 2) continue;
+      const rn = (road[i - 1] > 0) + (road[i + 1] > 0) + (road[i - W] > 0) + (road[i + W] > 0);
+      if (rn <= 1) {
+        road[i] = 0;
+        tiles[i] = T.CONCRETE;
+      }
+    }
   }
 
   // ── clear shelter plots & raid bunker pads (guarantee unobstructed compounds + starter vehicles) ──

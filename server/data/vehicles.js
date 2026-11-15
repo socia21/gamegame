@@ -1,6 +1,6 @@
 'use strict';
 // No vehicle list was attached, so this is a full set that fits the map's regions.
-// kind: car | boat (water only) | hover (land + water) | heli (flies over everything)
+// kind: car | boat (water only) | hover (land + water) | heli (VTOL aircraft) | plane (runway/VTOL aircraft) | seaplane (amphibious aircraft)
 // exposed: riders can be shot/bitten. shoot: seat indices that may fire their own weapons.
 // guns: mounted weapons — seat that controls it (driver can use an empty gunner seat), alt = right mouse.
 const OFF = {3:0.95,4:0.75,7:0.9,13:0.95,2:0.9,18:0.8,9:0.8,14:0.6,1:0.6};
@@ -9,7 +9,10 @@ const coax = {name:'Coax MG',mode:'hitscan',dmg:20,rof:11,mag:200,reload:5,sprea
 const hmg = {name:'M2 .50 Cal',mode:'hitscan',dmg:42,rof:8,mag:200,reload:5,spread:0.05,range:1500,auto:1,pierce:2,vdmg:2,noise:1700};
 const autocannon = {name:'30mm Autocannon',mode:'projectile',proj:1400,radius:75,dmg:85,rof:3,mag:40,reload:4,range:1800,auto:1,kind:'shell',fx:'frag',noise:2000,vdmg:2,spread:0.02};
 const minigun = {name:'Minigun',mode:'hitscan',dmg:18,rof:28,mag:500,reload:6,spread:0.06,range:1500,auto:1,noise:1800};
+const twinMinigun = {name:'Twin Door Miniguns',mode:'hitscan',dmg:24,rof:32,mag:700,reload:6,spread:0.065,range:1600,auto:1,noise:1900};
 const hydra = {name:'Hydra Rockets',mode:'projectile',proj:950,radius:120,dmg:150,rof:4,mag:14,reload:8,range:1800,auto:1,kind:'rocket',fx:'frag',spread:0.03,vdmg:2,noise:2000};
+const rotary20mm = {name:'M61 20mm Vulcan',mode:'hitscan',dmg:38,rof:22,mag:450,reload:6,spread:0.035,range:1850,auto:1,pierce:2,vdmg:2,noise:2100};
+const airMissile = {name:'AIM-9X Sidewinder',mode:'projectile',proj:1550,radius:170,dmg:420,rof:0.8,mag:6,reload:10,range:2800,kind:'rocket',homing:1,fx:'frag',spread:0.01,vdmg:3,svd:4,noise:2500};
 const gmlrs = {name:'GMLRS Rocket Pod',mode:'barrage',salvo:6,spreadR:160,delay:3,radius:150,dmg:260,rof:0.15,mag:1,reload:12,range:5000,minRange:600,fx:'frag',vdmg:2,svd:3,noise:3000};
 const water = {name:'Water Cannon',mode:'cone',range:430,arc:0.35,knock:430,dmg:2,rof:10,auto:1,water:1,stun:0.25,noise:300};
 const lmg = {name:'Pintle MG',mode:'hitscan',dmg:24,rof:10,mag:150,reload:4,spread:0.06,range:1300,auto:1,noise:1500};
@@ -33,7 +36,13 @@ module.exports = {
   apc:{n:'APC',kind:'car',speed:760,accel:400,turn:2,hp:2600,seats:8,r:36,len:92,wid:44,fuel:180,burn:0.9,mass:2.8,military:1,armor:0.4,tough:1,c:'#4f5d2f',guns:[{seat:1,w:autocannon}],terrain:OFF},
   tank:{n:'Main Battle Tank',kind:'car',speed:540,accel:260,turn:1.5,hp:4200,seats:3,r:42,len:100,wid:56,fuel:220,burn:1.1,mass:5,military:1,armor:0.6,tough:1,crush:1,c:'#5c6b3a',guns:[{seat:0,w:tankCannon},{seat:0,alt:1,w:coax}],terrain:{3:0.95,4:0.9,7:0.95,13:0.95,2:0.9,18:0.85,9:0.85,14:0.8,1:0.7}},
   himars:{n:'M142 HIMARS',kind:'car',speed:780,accel:380,turn:1.9,hp:1600,seats:2,r:34,len:96,wid:40,fuel:160,burn:0.8,mass:2.6,military:1,armor:0.2,tough:1,c:'#6c7a4b',guns:[{seat:0,w:gmlrs}]},
-  heli:{n:'Helicopter',kind:'heli',speed:1150,accel:520,turn:2.4,hp:950,seats:4,r:30,len:90,wid:30,fuel:140,burn:1.2,mass:1.5,c:'#344e41',guns:[{seat:1,w:minigun},{seat:1,alt:1,w:hydra}],shoot:[2,3]},
+  heli:{n:'Utility Helicopter',kind:'heli',air:1,liftMode:'vtol',speed:1150,accel:520,turn:2.4,hp:950,seats:4,r:30,len:90,wid:30,fuel:140,burn:1.2,mass:1.5,c:'#344e41',guns:[{seat:1,w:minigun},{seat:1,alt:1,w:hydra}],shoot:[2,3]},
+  transport_heli:{n:'Chinook Transport Heli',kind:'heli',air:1,liftMode:'vtol',speed:1040,accel:470,turn:1.9,hp:1750,armor:0.3,tough:1,seats:8,r:42,len:124,wid:42,fuel:220,burn:1.4,mass:3.0,c:'#4a5738',guns:[{seat:1,w:twinMinigun}],shoot:[2,3,4,5,6,7]},
+  attack_heli:{n:'Apache Gunship',kind:'heli',air:1,liftMode:'vtol',speed:1280,accel:600,turn:2.5,hp:1550,armor:0.35,tough:1,military:1,seats:2,r:34,len:102,wid:40,fuel:180,burn:1.3,mass:2.2,c:'#2b3628',guns:[{seat:0,w:autocannon},{seat:0,alt:1,w:hydra},{seat:1,w:minigun}]},
+  osprey:{n:'V-22 Osprey Tiltrotor',kind:'plane',air:1,liftMode:'vtol',speed:1650,accel:660,turn:2.2,hp:1900,armor:0.35,tough:1,military:1,seats:6,r:42,len:106,wid:108,fuel:240,burn:1.3,mass:2.8,c:'#495057',guns:[{seat:1,w:minigun}],shoot:[2,3,4,5]},
+  bushplane:{n:'Cessna Bush Plane',kind:'plane',air:1,liftMode:'runway',takeoffSpd:280,stallSpd:200,speed:1420,accel:480,turn:2.1,hp:680,seats:4,r:36,len:90,wid:114,fuel:170,burn:0.9,mass:1.3,c:'#e76f51',shoot:[1,2,3]},
+  seaplane:{n:'Catalina Seaplane',kind:'seaplane',air:1,liftMode:'amphib',floatWater:1,takeoffSpd:270,stallSpd:190,speed:1340,accel:450,turn:1.9,hp:950,seats:4,r:38,len:96,wid:120,fuel:200,burn:1.0,mass:1.7,c:'#f4a261',shoot:[1,2,3]},
+  jet:{n:'F-16 Strike Fighter',kind:'plane',air:1,liftMode:'runway',takeoffSpd:420,stallSpd:320,speed:2150,accel:860,turn:2.6,hp:1250,armor:0.25,military:1,seats:2,r:38,len:104,wid:90,fuel:210,burn:1.6,mass:2.0,c:'#64748b',guns:[{seat:0,w:rotary20mm},{seat:0,alt:1,w:airMissile}]},
   boat:{n:'Speedboat',kind:'boat',speed:1050,accel:600,turn:2.3,hp:420,seats:4,r:28,len:74,wid:30,fuel:100,burn:0.6,mass:1.1,exposed:1,shoot:[1,2,3],c:'#f8f9fa'},
   jetski:{n:'Jet Ski',kind:'boat',speed:1150,accel:900,turn:3.2,hp:160,seats:2,r:18,len:40,wid:16,fuel:40,burn:0.5,mass:0.5,exposed:1,shoot:[1],c:'#ef476f'},
   hovercraft:{n:'Hovercraft',kind:'hover',speed:850,accel:450,turn:2,hp:700,seats:4,r:32,len:80,wid:44,fuel:140,burn:0.8,mass:1.6,shoot:[2,3],c:'#ffd166',guns:[{seat:1,w:lmg}]},
